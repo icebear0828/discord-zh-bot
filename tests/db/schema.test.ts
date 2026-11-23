@@ -181,4 +181,36 @@ describe('env & database schema', () => {
 
     db.close();
   });
+
+  it('migrates legacy v1 guild_configs table by adding admin_user_ids_json and supports updateAdminUsers', () => {
+    const db = new Database(':memory:');
+    db.exec(`
+      CREATE TABLE guild_configs (
+        guild_id TEXT PRIMARY KEY,
+        modules_json TEXT NOT NULL,
+        admin_role_ids_json TEXT NOT NULL,
+        leveling_config_json TEXT NOT NULL,
+        economy_config_json TEXT NOT NULL,
+        welcome_config_json TEXT NOT NULL,
+        ticket_config_json TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      INSERT INTO guild_configs VALUES (
+        'g1', '{}', '[]', '{}', '{}', '{}', '{}', 1000
+      );
+    `);
+
+    initSchema(db);
+    initSchema(db);
+
+    const cols = db.pragma('table_info(guild_configs)') as Array<{ name: string }>;
+    expect(cols.map((c) => c.name)).toContain('admin_user_ids_json');
+
+    const repo = new GuildConfigRepo(db);
+    expect(repo.getOrCreate('g1').adminUserIds).toEqual([]);
+    repo.updateAdminUsers('g1', ['u100', 'u200']);
+    expect(repo.getOrCreate('g1').adminUserIds).toEqual(['u100', 'u200']);
+
+    db.close();
+  });
 });

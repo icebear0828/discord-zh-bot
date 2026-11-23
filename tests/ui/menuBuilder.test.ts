@@ -212,6 +212,11 @@ describe('menuBuilder Discord component constraints & schema integration', () =>
       { page: 'leaderboard', lbType: 'xp', lbPage: 1 },
       { page: 'leaderboard', lbType: 'coins', lbPage: 1 },
       { page: 'leaderboard', lbType: 'invites', lbPage: 1 },
+      { page: 'admin' },
+      { page: 'admin_econ' },
+      { page: 'admin_lvl' },
+      { page: 'admin_mod' },
+      { page: 'admin_ops' },
     ];
 
     for (const view of views) {
@@ -225,6 +230,20 @@ describe('menuBuilder Discord component constraints & schema integration', () =>
       assertDiscordMessageLimits(msgWithFeedback, `view:${view.page}:feedback`);
       expect(msgWithFeedback.embeds[0]!.toJSON().description).toContain('测试状态提示框渲染');
     }
+
+    // Home admin button visibility check
+    const regularHome = buildMenuMessage(ctx, 'g1', { ...ACTOR, isAdmin: false }, { page: 'home' });
+    const regularRow2Ids = regularHome.components[1]!.toJSON().components.map((c) =>
+      'custom_id' in c ? c.custom_id : '',
+    );
+    expect(regularRow2Ids).not.toContain('menu:nav:admin');
+
+    const adminHome = buildMenuMessage(ctx, 'g1', { ...ACTOR, isAdmin: true }, { page: 'home' });
+    assertDiscordMessageLimits(adminHome, 'view:home:admin');
+    const adminRow2Ids = adminHome.components[1]!.toJSON().components.map((c) =>
+      'custom_id' in c ? c.custom_id : '',
+    );
+    expect(adminRow2Ids).toContain('menu:nav:admin');
 
     // Visibility cues & share buttons
     const homeJson = buildMenuMessage(ctx, 'g1', ACTOR, { page: 'home' }).embeds[0]!.toJSON();

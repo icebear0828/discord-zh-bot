@@ -4,10 +4,22 @@ import {
   type ChatInputCommandInteraction,
   type GuildMember,
 } from 'discord.js';
-import type { ModuleKey } from '../config/defaults.js';
+import type { GuildConfig, ModuleKey } from '../config/defaults.js';
 import { isBotAdmin } from '../services/permissionService.js';
 import type { AppContext } from '../ui/embeds.js';
 import { createErrorEmbed } from '../ui/embeds.js';
+
+export function checkMemberIsBotAdmin(member: GuildMember, cfg: GuildConfig): boolean {
+  const perms = member.permissions;
+  return isBotAdmin({
+    isGuildAdmin: perms.has(PermissionFlagsBits.Administrator),
+    hasManageGuild: perms.has(PermissionFlagsBits.ManageGuild),
+    memberRoleIds: [...member.roles.cache.keys()],
+    configuredAdminRoleIds: cfg.adminRoleIds,
+    userId: member.id,
+    configuredAdminUserIds: cfg.adminUserIds,
+  });
+}
 
 export async function requireGuildMember(
   interaction: ChatInputCommandInteraction,
@@ -60,20 +72,14 @@ export async function requireBotAdmin(
   }
 
   const cfg = ctx.repos.guildConfig.getOrCreate(ctxGuild.guildId);
-  const perms = ctxGuild.member.permissions;
-  const allowed = isBotAdmin({
-    isGuildAdmin: perms.has(PermissionFlagsBits.Administrator),
-    hasManageGuild: perms.has(PermissionFlagsBits.ManageGuild),
-    memberRoleIds: [...ctxGuild.member.roles.cache.keys()],
-    configuredAdminRoleIds: cfg.adminRoleIds,
-  });
+  const allowed = checkMemberIsBotAdmin(ctxGuild.member, cfg);
 
   if (!allowed) {
     await interaction.reply({
       embeds: [
         createErrorEmbed(
           '🔒 权限不足',
-          '需要服务器管理员、`管理服务器` 权限，或已配置的 Bot 管理员身份组才能执行此操作。',
+          '需要服务器管理员、`管理服务器` 权限，或已配置的 Bot 管理员用户/身份组才能执行此操作。',
         ),
       ],
       flags: MessageFlags.Ephemeral,

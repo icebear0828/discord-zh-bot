@@ -7,7 +7,7 @@ import {
   StringSelectMenuOptionBuilder,
   UserSelectMenuBuilder,
 } from 'discord.js';
-import type { EconomyConfig } from '../config/defaults.js';
+import type { EconomyConfig, ModuleKey } from '../config/defaults.js';
 import type { RedPacket, RedPacketClaim } from '../db/repositories/redPacketRepo.js';
 import {
   evaluateHand,
@@ -29,6 +29,7 @@ export interface MenuActor {
   id: string;
   displayName: string;
   avatarUrl: string;
+  isAdmin?: boolean;
 }
 
 export interface MenuFeedback {
@@ -51,7 +52,12 @@ export type MenuView =
   | { page: 'shop' }
   | { page: 'bag' }
   | { page: 'rank' }
-  | { page: 'leaderboard'; lbType: LeaderboardType; lbPage: number };
+  | { page: 'leaderboard'; lbType: LeaderboardType; lbPage: number }
+  | { page: 'admin' }
+  | { page: 'admin_econ' }
+  | { page: 'admin_lvl' }
+  | { page: 'admin_mod' }
+  | { page: 'admin_ops' };
 
 export type MenuComponentRow =
   | ActionRowBuilder<ButtonBuilder>
@@ -228,12 +234,16 @@ function buildHomeView(
     makeButton('menu:nav:rank', '🏆 排行名片', ButtonStyle.Secondary),
   );
 
-  const quickRow = buttonRow(
+  const quickButtons = [
     makeButton('menu:act:daily', '📅 每日签到', ButtonStyle.Success),
     makeButton('menu:act:work', '💼 立即打工', ButtonStyle.Secondary),
     makeButton('menu:act:fortune', '🎴 今日运势', ButtonStyle.Secondary),
     makeButton('menu:nav:home', '🔄 刷新', ButtonStyle.Secondary),
-  );
+  ];
+  if (actor.isAdmin) {
+    quickButtons.push(makeButton('menu:nav:admin', '⚙️ 管理后台', ButtonStyle.Danger));
+  }
+  const quickRow = buttonRow(...quickButtons);
 
   return { embeds: [embed], components: [navRow, quickRow] };
 }
@@ -1192,6 +1202,278 @@ function buildLeaderboardView(
   return { embeds: [embed], components: [tabRow, pagerRow] };
 }
 
+const MODULE_META: ReadonlyArray<{ key: ModuleKey; label: string; emoji: string }> = [
+  { key: 'leveling', label: '等级与热度', emoji: '📈' },
+  { key: 'economy', label: '经济系统', emoji: '🪙' },
+  { key: 'fun', label: '娱乐互动', emoji: '🎴' },
+  { key: 'welcome', label: '欢迎与离开', emoji: '👋' },
+  { key: 'tickets', label: '工单系统', emoji: '🎫' },
+  { key: 'giveaways', label: '抽奖系统', emoji: '🎁' },
+  { key: 'invites', label: '邀请追踪', emoji: '📨' },
+  { key: 'rolePanels', label: '自助身份组', emoji: '🎭' },
+];
+
+function buildAdminOverviewView(
+  ctx: AppContext,
+  guildId: string,
+  actor: MenuActor,
+  feedback: MenuFeedback | undefined,
+): BuiltMenuMessage {
+  const cfg = ctx.repos.guildConfig.getOrCreate(guildId);
+  const modLine = MODULE_META.map(
+    (m) => `${cfg.modules[m.key] ? '✅' : '⛔'} ${m.label}`,
+  ).join(' ｜ ');
+  const adminUsersText =
+    cfg.adminUserIds.length > 0
+      ? cfg.adminUserIds.map((id) => `<@${id}>`).join('、')
+      : '未单独指定（仅限服务器管理员）';
+  const adminRolesText =
+    cfg.adminRoleIds.length > 0
+      ? cfg.adminRoleIds.map((id) => `<@&${id}>`).join('、')
+      : '无';
+
+  const description = [
+    '欢迎进入可视化调参管理后台，所有修改将实时保存至 SQLite 并立即生效。',
+    '',
+    `🧩 **模块状态**：${modLine}`,
+    `💰 **经济 / 抢钱 / 银行**：每日签到 ${cfg.economy.dailyBase}（连签+${cfg.economy.dailyStreakBonus}/天，封顶+${cfg.economy.dailyMaxStreakBonus}）｜ 打工 ${cfg.economy.workMin}~${cfg.economy.workMax}（冷却 ${cfg.economy.workCooldownSec}s）｜ 抢钱成功率 ${formatRatePercent(cfg.economy.robSuccessRate)}（冷却 ${cfg.economy.robCooldownSec}s / 盾 ${cfg.economy.robTargetShieldSec}s）｜ 银行日息 ${formatRatePercent(cfg.economy.bankInterestRate)}（上限 ${cfg.economy.bankInterestMax}）`,
+    `📈 **等级 / 热度 / 语音**：基础 XP ${cfg.leveling.baseMinXp}~${cfg.leveling.baseMaxXp}（冷却 ${cfg.leveling.cooldownSec}s）｜ 热度上限 ${cfg.leveling.heatMaxMultiplier}x（窗口 ${cfg.leveling.heatWindowSec}s）｜ 语音 ${cfg.leveling.voiceEnabled ? `${cfg.leveling.voiceXpPerMin} XP/分` : '关闭'} ｜ 升级奖励 +${cfg.leveling.levelUpCoinReward}`,
+    `👑 **Bot 管理员用户**：${adminUsersText}`,
+    `🛡️ **Bot 管理员身份组**：${adminRolesText}`,
+  ].join('\n');
+
+  const embed = new EmbedBuilder()
+    .setColor(resolveColor(COLORS.ERROR, feedback))
+    .setAuthor({ name: `${actor.displayName} · 管理员控制中心`, iconURL: actor.avatarUrl })
+    .setTitle('⚙️ 管理后台总览')
+    .setDescription(withFeedback(description, feedback))
+    .setFooter({ text: '🔒 仅管理员可见；点击下方按钮即可可视化调参、开关模块、发币或授权管理员' })
+    .setTimestamp();
+
+  return {
+    embeds: [embed],
+    components: [
+      buttonRow(
+        makeButton('menu:nav:admin_econ', '💰 经济/抢钱/银行', ButtonStyle.Primary),
+        makeButton('menu:nav:admin_lvl', '📈 等级/热度/语音', ButtonStyle.Primary),
+        makeButton('menu:nav:admin_mod', '🧩 模块开关', ButtonStyle.Secondary),
+        makeButton('menu:nav:admin_ops', '👥 发币与管理员', ButtonStyle.Secondary),
+        makeButton('menu:nav:home', '🏠 主菜单', ButtonStyle.Secondary),
+      ),
+      buttonRow(
+        makeButton('menu:admin:send_lobby', '📌 发送频道大厅入口', ButtonStyle.Success),
+        makeButton('menu:nav:admin', '🔄 刷新配置', ButtonStyle.Secondary),
+      ),
+    ],
+  };
+}
+
+function buildAdminEconView(
+  ctx: AppContext,
+  guildId: string,
+  actor: MenuActor,
+  feedback: MenuFeedback | undefined,
+): BuiltMenuMessage {
+  const e = ctx.repos.guildConfig.getOrCreate(guildId).economy;
+
+  const description = [
+    '点击下方对应按钮打开预填参数的弹窗，直接修改数值并提交保存：',
+    '',
+    `📅 **货币与签到**：名称 **${e.currencyName}**（${e.currencyEmoji}）｜ 基础 **${e.dailyBase}** ｜ 每日连签 +**${e.dailyStreakBonus}** ｜ 连签加成上限 **${e.dailyMaxStreakBonus}**`,
+    `💼 **打工参数**：每次收益 **${e.workMin} ~ ${e.workMax}** ${e.currencyName} ｜ 冷却 **${e.workCooldownSec}** 秒`,
+    `🥷 **偷钱 / 抢钱参数**：成功率 **${formatRatePercent(e.robSuccessRate)}** ｜ 攻击冷却 **${e.robCooldownSec}** 秒 ｜ 被抢护盾 **${e.robTargetShieldSec}** 秒`,
+    `🏦 **银行利息参数**：日利率 **${formatRatePercent(e.bankInterestRate)}** ｜ 每日利息上限 **${e.bankInterestMax}** ｜ 起息门槛 **${e.bankInterestMinDeposit}**`,
+  ].join('\n');
+
+  const embed = new EmbedBuilder()
+    .setColor(resolveColor(COLORS.GOLD, feedback))
+    .setAuthor({ name: `${actor.displayName} · 经济参数调校`, iconURL: actor.avatarUrl })
+    .setTitle('💰 经济 / 抢钱 / 银行参数管理')
+    .setDescription(withFeedback(description, feedback))
+    .setFooter({ text: '🔒 修改后立即对全服生效' })
+    .setTimestamp();
+
+  return {
+    embeds: [embed],
+    components: [
+      buttonRow(
+        makeButton('menu:modal:admin_daily', '📅 签到与货币', ButtonStyle.Primary),
+        makeButton('menu:modal:admin_work', '💼 打工参数', ButtonStyle.Primary),
+        makeButton('menu:modal:admin_rob', '🥷 抢钱参数', ButtonStyle.Primary),
+        makeButton('menu:modal:admin_bank', '🏦 银行利息', ButtonStyle.Primary),
+      ),
+      buttonRow(
+        makeButton('menu:admin:reset_econ', '♻️ 恢复经济默认', ButtonStyle.Danger),
+        makeButton('menu:nav:admin', '⬅️ 管理后台', ButtonStyle.Secondary),
+        makeButton('menu:nav:home', '🏠 主菜单', ButtonStyle.Secondary),
+      ),
+    ],
+  };
+}
+
+function buildAdminLvlView(
+  ctx: AppContext,
+  guildId: string,
+  actor: MenuActor,
+  feedback: MenuFeedback | undefined,
+): BuiltMenuMessage {
+  const l = ctx.repos.guildConfig.getOrCreate(guildId).leveling;
+  const currencyName = ctx.repos.guildConfig.getOrCreate(guildId).economy.currencyName;
+
+  const description = [
+    '点击下方按钮修改聊天经验、冷却、热度连击、语音挂机或升级奖励：',
+    '',
+    `💬 **发言经验与冷却**：每次基础 **${l.baseMinXp} ~ ${l.baseMaxXp}** XP ｜ 发言冷却 **${l.cooldownSec}** 秒 ｜ 每小时经验上限 **${l.hourlyXpCap === 0 ? '不限' : l.hourlyXpCap}** XP`,
+    `🔥 **热度连击与奖励**：连击窗口 **${l.heatWindowSec}** 秒 ｜ 热度倍率上限 **${l.heatMaxMultiplier}x** ｜ 升级币奖 **${l.levelUpCoinReward}** ${currencyName}`,
+    `🎙️ **语音挂机经验**：${l.voiceEnabled ? `✅ 已开启（每分钟 **${l.voiceXpPerMin}** XP）` : `⛔ 已关闭（预设 ${l.voiceXpPerMin} XP/分）`}`,
+    `📢 **升级公告播报**：${l.announceEnabled ? '✅ 已开启' : '⛔ 已关闭'}${l.announceChannelId ? `（固定频道 <#${l.announceChannelId}>）` : '（当前发言频道）'}`,
+  ].join('\n');
+
+  const embed = new EmbedBuilder()
+    .setColor(resolveColor(COLORS.PRIMARY, feedback))
+    .setAuthor({ name: `${actor.displayName} · 等级参数调校`, iconURL: actor.avatarUrl })
+    .setTitle('📈 等级 / 热度 / 语音参数管理')
+    .setDescription(withFeedback(description, feedback))
+    .setFooter({ text: '🔒 忽略频道/频道倍率/等级身份组可通过 /设置 与 /等级管理 精细配置' })
+    .setTimestamp();
+
+  return {
+    embeds: [embed],
+    components: [
+      buttonRow(
+        makeButton('menu:modal:admin_xp', '💬 经验与冷却', ButtonStyle.Primary),
+        makeButton('menu:modal:admin_heat', '🔥 热度与奖励', ButtonStyle.Primary),
+        makeButton(
+          'menu:admin:toggle_voice',
+          `🎙️ 语音经验: ${l.voiceEnabled ? '开' : '关'}`,
+          l.voiceEnabled ? ButtonStyle.Success : ButtonStyle.Secondary,
+        ),
+        makeButton(
+          'menu:admin:toggle_announce',
+          `📢 升级播报: ${l.announceEnabled ? '开' : '关'}`,
+          l.announceEnabled ? ButtonStyle.Success : ButtonStyle.Secondary,
+        ),
+      ),
+      buttonRow(
+        makeButton('menu:admin:reset_lvl', '♻️ 恢复等级默认', ButtonStyle.Danger),
+        makeButton('menu:nav:admin', '⬅️ 管理后台', ButtonStyle.Secondary),
+        makeButton('menu:nav:home', '🏠 主菜单', ButtonStyle.Secondary),
+      ),
+    ],
+  };
+}
+
+function buildAdminModView(
+  ctx: AppContext,
+  guildId: string,
+  actor: MenuActor,
+  feedback: MenuFeedback | undefined,
+): BuiltMenuMessage {
+  const modules = ctx.repos.guildConfig.getOrCreate(guildId).modules;
+  const lines = MODULE_META.map(
+    (m) => `${modules[m.key] ? '✅ 已开启' : '⛔ 已关闭'} — ${m.emoji} **${m.label}** (\`${m.key}\`)`,
+  );
+
+  const embed = new EmbedBuilder()
+    .setColor(resolveColor(COLORS.PRIMARY, feedback))
+    .setAuthor({ name: `${actor.displayName} · 功能模块开关`, iconURL: actor.avatarUrl })
+    .setTitle('🧩 服务器功能模块开关')
+    .setDescription(
+      withFeedback(
+        ['从下方下拉菜单选中任意模块即可立即切换「开启 / 关闭」状态：', '', ...lines].join('\n'),
+        feedback,
+      ),
+    )
+    .setTimestamp();
+
+  const selectRow = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId('menu:admin_toggle_mod')
+      .setPlaceholder('选择要切换开启/关闭的模块...')
+      .addOptions(
+        MODULE_META.map((m) =>
+          new StringSelectMenuOptionBuilder()
+            .setLabel(`${m.emoji} ${m.label}（当前: ${modules[m.key] ? '开启' : '关闭'}）`)
+            .setValue(m.key)
+            .setDescription(`点击切换为 ${modules[m.key] ? '关闭' : '开启'}`),
+        ),
+      ),
+  );
+
+  return {
+    embeds: [embed],
+    components: [
+      selectRow,
+      buttonRow(
+        makeButton('menu:nav:admin', '⬅️ 管理后台', ButtonStyle.Secondary),
+        makeButton('menu:nav:home', '🏠 主菜单', ButtonStyle.Secondary),
+      ),
+    ],
+  };
+}
+
+function buildAdminOpsView(
+  ctx: AppContext,
+  guildId: string,
+  actor: MenuActor,
+  feedback: MenuFeedback | undefined,
+): BuiltMenuMessage {
+  const cfg = ctx.repos.guildConfig.getOrCreate(guildId);
+  const adminUsersText =
+    cfg.adminUserIds.length > 0
+      ? cfg.adminUserIds.map((id) => `<@${id}>`).join('、')
+      : '暂无单独授权用户';
+  const adminRolesText =
+    cfg.adminRoleIds.length > 0
+      ? cfg.adminRoleIds.map((id) => `<@&${id}>`).join('、')
+      : '无';
+
+  const description = [
+    `👑 **当前授权 Bot 管理员用户**：${adminUsersText}`,
+    `🛡️ **当前授权管理员身份组**：${adminRolesText}`,
+    '',
+    '• 第一个选人框：给指定群友**发放或扣除口袋星币**（正数公开喜报，负数私密扣除）',
+    '• 第二个选人框：**添加或移除 Bot 管理员用户**（被授权群友也可打开「⚙️ 管理后台」调参）',
+    '• 点击下方「🎉 全服全员发币」可统一为服务器全部真实成员发放福利！',
+  ].join('\n');
+
+  const embed = new EmbedBuilder()
+    .setColor(resolveColor(COLORS.GOLD, feedback))
+    .setAuthor({ name: `${actor.displayName} · 发币与管理员授权`, iconURL: actor.avatarUrl })
+    .setTitle('👥 发币与管理员管理')
+    .setDescription(withFeedback(description, feedback))
+    .setTimestamp();
+
+  const grantUserRow = new ActionRowBuilder<UserSelectMenuBuilder>().addComponents(
+    new UserSelectMenuBuilder()
+      .setCustomId('menu:user:admin_grant')
+      .setPlaceholder('💸 选择一位群友发放/扣除星币...')
+      .setMinValues(1)
+      .setMaxValues(1),
+  );
+
+  const toggleAdminRow = new ActionRowBuilder<UserSelectMenuBuilder>().addComponents(
+    new UserSelectMenuBuilder()
+      .setCustomId('menu:user:admin_toggle_user')
+      .setPlaceholder('👑 选择一位群友添加或移除 Bot 管理员...')
+      .setMinValues(1)
+      .setMaxValues(1),
+  );
+
+  return {
+    embeds: [embed],
+    components: [
+      grantUserRow,
+      toggleAdminRow,
+      buttonRow(
+        makeButton('menu:modal:admin_grant_all', '🎉 全服全员发币', ButtonStyle.Success),
+        makeButton('menu:nav:admin', '⬅️ 管理后台', ButtonStyle.Secondary),
+        makeButton('menu:nav:home', '🏠 主菜单', ButtonStyle.Secondary),
+      ),
+    ],
+  };
+}
+
 export function buildMenuMessage(
   ctx: AppContext,
   guildId: string,
@@ -1231,6 +1513,16 @@ export function buildMenuMessage(
       return buildRankView(ctx, guildId, actor, feedback, nowMs);
     case 'leaderboard':
       return buildLeaderboardView(ctx, guildId, view.lbType, view.lbPage, feedback);
+    case 'admin':
+      return buildAdminOverviewView(ctx, guildId, actor, feedback);
+    case 'admin_econ':
+      return buildAdminEconView(ctx, guildId, actor, feedback);
+    case 'admin_lvl':
+      return buildAdminLvlView(ctx, guildId, actor, feedback);
+    case 'admin_mod':
+      return buildAdminModView(ctx, guildId, actor, feedback);
+    case 'admin_ops':
+      return buildAdminOpsView(ctx, guildId, actor, feedback);
   }
 }
 

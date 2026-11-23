@@ -68,6 +68,7 @@ export interface GuildConfig {
   guildId: string;
   modules: ModuleToggles;
   adminRoleIds: string[];
+  adminUserIds: string[];
   leveling: LevelingConfig;
   economy: EconomyConfig;
   welcome: WelcomeConfig;
@@ -144,6 +145,7 @@ export function createDefaultGuildConfig(guildId: string, nowMs = Date.now()): G
     guildId,
     modules: { ...DEFAULT_MODULES },
     adminRoleIds: [],
+    adminUserIds: [],
     leveling: {
       ...DEFAULT_LEVELING_CONFIG,
       ignoredChannelIds: [],

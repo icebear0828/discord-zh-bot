@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS guild_configs (
   guild_id TEXT PRIMARY KEY,
   modules_json TEXT NOT NULL,
   admin_role_ids_json TEXT NOT NULL,
+  admin_user_ids_json TEXT NOT NULL DEFAULT '[]',
   leveling_config_json TEXT NOT NULL,
   economy_config_json TEXT NOT NULL,
   welcome_config_json TEXT NOT NULL,
@@ -191,6 +192,12 @@ CREATE INDEX IF NOT EXISTS idx_role_panel_options_panel
 export function initSchema(db: Database.Database): void {
   db.exec(SCHEMA_SQL);
   initRedPacketSchema(db);
+
+  const configCols = db.pragma('table_info(guild_configs)') as Array<{ name: string }>;
+  const configColNames = new Set(configCols.map((col) => col.name));
+  if (!configColNames.has('admin_user_ids_json')) {
+    db.exec("ALTER TABLE guild_configs ADD COLUMN admin_user_ids_json TEXT NOT NULL DEFAULT '[]';");
+  }
 
   const columns = db.pragma('table_info(member_profiles)') as Array<{ name: string }>;
   const columnNames = new Set(columns.map((col) => col.name));

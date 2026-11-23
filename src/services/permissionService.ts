@@ -5,10 +5,15 @@ export interface AdminCheckInput {
   hasManageGuild: boolean;
   memberRoleIds: readonly string[];
   configuredAdminRoleIds: readonly string[];
+  userId?: string;
+  configuredAdminUserIds?: readonly string[];
 }
 
 export function isBotAdmin(input: AdminCheckInput): boolean {
   if (input.isGuildAdmin || input.hasManageGuild) {
+    return true;
+  }
+  if (input.userId && input.configuredAdminUserIds?.includes(input.userId)) {
     return true;
   }
   if (input.configuredAdminRoleIds.length === 0) {

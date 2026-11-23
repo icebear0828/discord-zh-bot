@@ -18,6 +18,7 @@ interface GuildConfigRow {
   guild_id: string;
   modules_json: string;
   admin_role_ids_json: string;
+  admin_user_ids_json?: string;
   leveling_config_json: string;
   economy_config_json: string;
   welcome_config_json: string;
@@ -64,6 +65,7 @@ export class GuildConfigRepo {
         guildId: row.guild_id,
         modules: parseRecord<ModuleToggles>(row.modules_json, { ...DEFAULT_MODULES }),
         adminRoleIds: parseStringArray(row.admin_role_ids_json),
+        adminUserIds: parseStringArray(row.admin_user_ids_json ?? '[]'),
         leveling: {
           ...levelingRaw,
           ignoredChannelIds: Array.isArray(levelingRaw.ignoredChannelIds)
@@ -94,15 +96,16 @@ export class GuildConfigRepo {
     this.db
       .prepare(
         `INSERT INTO guild_configs (
-          guild_id, modules_json, admin_role_ids_json,
+          guild_id, modules_json, admin_role_ids_json, admin_user_ids_json,
           leveling_config_json, economy_config_json,
           welcome_config_json, ticket_config_json, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         created.guildId,
         JSON.stringify(created.modules),
         JSON.stringify(created.adminRoleIds),
+        JSON.stringify(created.adminUserIds),
         JSON.stringify(created.leveling),
         JSON.stringify(created.economy),
         JSON.stringify(created.welcome),
@@ -126,6 +129,15 @@ export class GuildConfigRepo {
         'UPDATE guild_configs SET admin_role_ids_json = ?, updated_at = ? WHERE guild_id = ?',
       )
       .run(JSON.stringify(adminRoleIds), Date.now(), guildId);
+  }
+
+  updateAdminUsers(guildId: string, adminUserIds: string[]): void {
+    this.getOrCreate(guildId);
+    this.db
+      .prepare(
+        'UPDATE guild_configs SET admin_user_ids_json = ?, updated_at = ? WHERE guild_id = ?',
+      )
+      .run(JSON.stringify(adminUserIds), Date.now(), guildId);
   }
 
   updateLeveling(guildId: string, leveling: LevelingConfig): void {

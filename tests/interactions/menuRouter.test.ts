@@ -361,19 +361,35 @@ function createModalMock(opts: {
   fields: Record<string, string>;
   fromMessage?: boolean;
   channel?: MockChannel;
+  membersMap?: Map<string, { id: string; user: ReturnType<typeof makeMockUser> }>;
 }) {
   const reply = vi.fn(async (_payload: MockPayload) => undefined);
   const update = vi.fn(async (_payload: MockPayload) => undefined);
   const followUp = vi.fn(async (_payload: MockPayload) => undefined);
+  const deferUpdate = vi.fn(async () => undefined);
+  const deferReply = vi.fn(async () => undefined);
+  const editReply = vi.fn(async (_payload: MockPayload) => undefined);
   const channel = opts.channel ?? makeMockChannel(true);
   const fromMessage = opts.fromMessage ?? true;
+  const membersMap = opts.membersMap ?? new Map();
 
   const mock = {
     customId: opts.customId,
     guildId: 'g1',
-    guild: { id: 'g1', name: '测试服务器' },
+    guild: {
+      id: 'g1',
+      name: '测试服务器',
+      members: {
+        fetch: vi.fn(async () => membersMap),
+      },
+    },
     channelId: channel.id,
     channel,
+    client: {
+      channels: {
+        fetch: vi.fn(async () => null),
+      },
+    },
     user: makeMockUser({ id: opts.userId }),
     member: makeMockMember(opts.userId),
     replied: false,
@@ -392,12 +408,18 @@ function createModalMock(opts: {
     reply,
     update,
     followUp,
+    deferUpdate,
+    deferReply,
+    editReply,
   };
 
   return {
     interaction: mock as unknown as ModalSubmitInteraction & Interaction,
     reply,
     update,
+    deferUpdate,
+    deferReply,
+    editReply,
     channel,
   };
 }
@@ -1156,6 +1178,176 @@ describe('menu router & multiplayer interaction flows', () => {
     expect(ctx.repos.profile.getOrCreate('g1', 'u2').coins).toBe(10_000);
     expect(ctx.repos.profile.getOrCreate('g1', 'bot1').coins).toBe(0);
     expect(editReply.mock.calls[0]![0].embeds?.[0]?.toJSON().description).toContain('2');
+
+    ctx.db.close();
+  });
+
+  it('enforces admin guard and allows authorized adminUserIds to tune parameters via /menu admin panel', async () => {
+    const ctx = createTestCtx();
+
+    // Regular user denied on admin nav & admin modal
+    const deniedNav = createButtonMock({ customId: 'menu:nav:admin', userId: 'normie' });
+    await routeInteraction(deniedNav.interaction, ctx);
+    expect(deniedNav.update.mock.calls[0]![0].embeds?.[0]?.toJSON().description).toContain('权限不足');
+
+    const deniedModal = createButtonMock({ customId: 'menu:modal:admin_rob', userId: 'normie' });
+    await routeInteraction(deniedModal.interaction, ctx);
+    expect(deniedModal.showModal).not.toHaveBeenCalled();
+    expect(deniedModal.update.mock.calls[0]![0].embeds?.[0]?.toJSON().description).toContain('权限不足');
+
+    // Authorize user via adminUserIds (NO Discord Administrator permission)
+    ctx.repos.guildConfig.updateAdminUsers('g1', ['auth1']);
+    const authMenu = createChatCommandMock({ commandName: 'menu', userId: 'auth1', isAdmin: false });
+    await routeInteraction(authMenu.interaction, ctx);
+    const homeRow2Ids = authMenu.reply.mock.calls[0]![0].components?.[1]
+      ?.toJSON()
+      .components.map((c) => ('custom_id' in c ? c.custom_id : ''));
+    expect(homeRow2Ids).toContain('menu:nav:admin');
+
+    // Authorized user opens admin overview & clicks send lobby
+    const openAdmin = createButtonMock({ customId: 'menu:nav:admin', userId: 'auth1' });
+    await routeInteraction(openAdmin.interaction, ctx);
+    expect(openAdmin.update.mock.calls[0]![0].embeds?.[0]?.toJSON().title).toContain('管理后台总览');
+
+    const sendLobby = createButtonMock({ customId: 'menu:admin:send_lobby', userId: 'auth1' });
+    await routeInteraction(sendLobby.interaction, ctx);
+    expect(sendLobby.channel!.send).toHaveBeenCalledTimes(1);
+
+    // Pre-filled modal for rob & save rob / bank / xp / heat
+    const openRobModal = createButtonMock({ customId: 'menu:modal:admin_rob', userId: 'auth1' });
+    await routeInteraction(openRobModal.interaction, ctx);
+    expect(openRobModal.showModal).toHaveBeenCalledTimes(1);
+    const robModalJson = openRobModal.showModal.mock.calls[0]![0].toJSON() as unknown as {
+      components: Array<{ components: Array<{ value?: string }> }>;
+    };
+    expect(robModalJson.components[0]?.components[0]?.value).toBe('45');
+
+    const subRob = createModalMock({
+      customId: 'menu:modal_sub:admin_rob',
+      userId: 'auth1',
+      fields: { robSuccessPct: '65', robCooldownSec: '120', robTargetShieldSec: '300' },
+    });
+    await routeInteraction(subRob.interaction, ctx);
+    expect(ctx.repos.guildConfig.getOrCreate('g1').economy.robSuccessRate).toBe(0.65);
+    expect(ctx.repos.guildConfig.getOrCreate('g1').economy.robCooldownSec).toBe(120);
+
+    const subBank = createModalMock({
+      customId: 'menu:modal_sub:admin_bank',
+      userId: 'auth1',
+      fields: { bankInterestPct: '5', bankInterestMax: '2000', bankInterestMinDeposit: '50' },
+    });
+    await routeInteraction(subBank.interaction, ctx);
+    expect(ctx.repos.guildConfig.getOrCreate('g1').economy.bankInterestRate).toBe(0.05);
+    expect(ctx.repos.guildConfig.getOrCreate('g1').economy.bankInterestMax).toBe(2000);
+
+    const subXp = createModalMock({
+      customId: 'menu:modal_sub:admin_xp',
+      userId: 'auth1',
+      fields: { baseMinXp: '30', baseMaxXp: '50', cooldownSec: '5', hourlyXpCap: '3000' },
+    });
+    await routeInteraction(subXp.interaction, ctx);
+    expect(ctx.repos.guildConfig.getOrCreate('g1').leveling).toMatchObject({
+      baseMinXp: 30,
+      baseMaxXp: 50,
+      cooldownSec: 5,
+      hourlyXpCap: 3000,
+    });
+
+    const subHeat = createModalMock({
+      customId: 'menu:modal_sub:admin_heat',
+      userId: 'auth1',
+      fields: {
+        heatWindowSec: '240',
+        heatMaxMultiplier: '3',
+        voiceXpPerMin: '20',
+        levelUpCoinReward: '250',
+      },
+    });
+    await routeInteraction(subHeat.interaction, ctx);
+    expect(ctx.repos.guildConfig.getOrCreate('g1').leveling).toMatchObject({
+      heatWindowSec: 240,
+      heatMaxMultiplier: 3,
+      voiceXpPerMin: 20,
+      levelUpCoinReward: 250,
+    });
+
+    // Toggle voice, announce, module, and reset leveling (preserving announceChannelId)
+    const curLvl = ctx.repos.guildConfig.getOrCreate('g1').leveling;
+    ctx.repos.guildConfig.updateLeveling('g1', { ...curLvl, announceChannelId: 'ch-ann' });
+    const toggleVoice = createButtonMock({ customId: 'menu:admin:toggle_voice', userId: 'auth1' });
+    await routeInteraction(toggleVoice.interaction, ctx);
+    expect(ctx.repos.guildConfig.getOrCreate('g1').leveling.voiceEnabled).toBe(false);
+
+    const resetLvl = createButtonMock({ customId: 'menu:admin:reset_lvl', userId: 'auth1' });
+    await routeInteraction(resetLvl.interaction, ctx);
+    expect(ctx.repos.guildConfig.getOrCreate('g1').leveling.baseMinXp).toBe(15);
+    expect(ctx.repos.guildConfig.getOrCreate('g1').leveling.announceChannelId).toBe('ch-ann');
+
+    const resetEcon = createButtonMock({ customId: 'menu:admin:reset_econ', userId: 'auth1' });
+    await routeInteraction(resetEcon.interaction, ctx);
+    expect(ctx.repos.guildConfig.getOrCreate('g1').economy.robSuccessRate).toBe(0.45);
+
+    const modToggle = createStringSelectMock({
+      customId: 'menu:admin_toggle_mod',
+      userId: 'auth1',
+      values: ['fun'],
+    });
+    await routeInteraction(modToggle.interaction, ctx);
+    expect(ctx.repos.guildConfig.getOrCreate('g1').modules.fun).toBe(false);
+
+    // Self-removal blocked for non-Discord-Administrator; toggling another admin user succeeds
+    const selfToggle = createUserSelectMock({
+      customId: 'menu:user:admin_toggle_user',
+      userId: 'auth1',
+      target: { id: 'auth1' },
+    });
+    await routeInteraction(selfToggle.interaction, ctx);
+    expect(ctx.repos.guildConfig.getOrCreate('g1').adminUserIds).toContain('auth1');
+    expect(selfToggle.update.mock.calls[0]![0].embeds?.[0]?.toJSON().description).toContain('防误锁');
+
+    const addSecondAdmin = createUserSelectMock({
+      customId: 'menu:user:admin_toggle_user',
+      userId: 'auth1',
+      target: { id: 'auth2' },
+    });
+    await routeInteraction(addSecondAdmin.interaction, ctx);
+    expect(ctx.repos.guildConfig.getOrCreate('g1').adminUserIds).toEqual(['auth1', 'auth2']);
+
+    // Single coin grant modal & server-wide coin grant modal via admin panel
+    const grantSelect = createUserSelectMock({
+      customId: 'menu:user:admin_grant',
+      userId: 'auth1',
+      target: { id: 'u9' },
+    });
+    await routeInteraction(grantSelect.interaction, ctx);
+    expect(grantSelect.showModal).toHaveBeenCalledTimes(1);
+
+    const grantModal = createModalMock({
+      customId: 'menu:modal_sub:admin_grant:u9',
+      userId: 'auth1',
+      fields: { amount: '1500' },
+    });
+    await routeInteraction(grantModal.interaction, ctx);
+    expect(ctx.repos.profile.getOrCreate('g1', 'u9').coins).toBe(1500);
+    expect(grantModal.channel.send).toHaveBeenCalledTimes(1);
+
+    const membersMap = new Map([
+      ['u9', { id: 'u9', user: makeMockUser({ id: 'u9' }) }],
+      ['u10', { id: 'u10', user: makeMockUser({ id: 'u10' }) }],
+      ['b1', { id: 'b1', user: makeMockUser({ id: 'b1', bot: true }) }],
+    ]);
+    const grantAllModal = createModalMock({
+      customId: 'menu:modal_sub:admin_grant_all',
+      userId: 'auth1',
+      fields: { amount: '2000' },
+      membersMap,
+    });
+    await routeInteraction(grantAllModal.interaction, ctx);
+    expect(grantAllModal.deferUpdate).toHaveBeenCalledTimes(1);
+    expect(ctx.repos.profile.getOrCreate('g1', 'u9').coins).toBe(3500);
+    expect(ctx.repos.profile.getOrCreate('g1', 'u10').coins).toBe(2000);
+    expect(ctx.repos.profile.getOrCreate('g1', 'b1').coins).toBe(0);
+    expect(grantAllModal.editReply).toHaveBeenCalledTimes(1);
 
     ctx.db.close();
   });

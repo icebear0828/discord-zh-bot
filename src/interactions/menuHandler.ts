@@ -4,6 +4,7 @@ import {
   EmbedBuilder,
   MessageFlags,
   ModalBuilder,
+  PermissionFlagsBits,
   TextInputBuilder,
   TextInputStyle,
   type ButtonInteraction,
@@ -13,7 +14,12 @@ import {
   type StringSelectMenuInteraction,
   type UserSelectMenuInteraction,
 } from 'discord.js';
-import type { ModuleKey } from '../config/defaults.js';
+import {
+  DEFAULT_ECONOMY_CONFIG,
+  DEFAULT_LEVELING_CONFIG,
+  type ModuleKey,
+} from '../config/defaults.js';
+import { checkMemberIsBotAdmin } from '../commands/guards.js';
 import type { BlackjackActionResult, BlackjackGame } from '../services/blackjackService.js';
 import type { DiceChoice } from '../services/economyService.js';
 import type { InteractionAction } from '../services/funService.js';
@@ -27,6 +33,7 @@ import {
 } from '../ui/embeds.js';
 import {
   buildDuelMessage,
+  buildLobbyMessage,
   buildMenuMessage,
   buildPublicLeaderboardEmbed,
   buildPublicRankEmbed,
@@ -46,13 +53,36 @@ const VALID_SOCIAL_ACTIONS: ReadonlySet<string> = new Set([
   'snowball',
 ]);
 
-function getActor(interaction: {
-  user: { id: string; displayName: string; displayAvatarURL(): string };
-}): MenuActor {
+const VALID_MODULE_KEYS: ReadonlySet<string> = new Set([
+  'leveling',
+  'economy',
+  'fun',
+  'welcome',
+  'tickets',
+  'giveaways',
+  'invites',
+  'rolePanels',
+]);
+
+const ADMIN_DENIED_FEEDBACK: MenuFeedback = {
+  type: 'error',
+  text: '🔒 权限不足：仅服务器管理员或已授权的 Bot 管理员可进入管理后台。',
+};
+
+function getActor(
+  interaction: MenuSupportedInteraction,
+  ctx: AppContext,
+  guildId: string,
+): MenuActor {
+  const cfg = ctx.repos.guildConfig.getOrCreate(guildId);
+  const isAdmin = interaction.inCachedGuild()
+    ? checkMemberIsBotAdmin(interaction.member, cfg)
+    : cfg.adminUserIds.includes(interaction.user.id);
   return {
     id: interaction.user.id,
     displayName: interaction.user.displayName,
     avatarUrl: interaction.user.displayAvatarURL(),
+    isAdmin,
   };
 }
 
@@ -62,6 +92,40 @@ function parsePositiveInt(raw: string): number | null {
   const num = Number(trimmed);
   if (!Number.isSafeInteger(num) || num <= 0) return null;
   return num;
+}
+
+function parseIntInRange(raw: string, min: number, max: number): number | null {
+  const trimmed = raw.trim();
+  if (!/^-?\d+$/.test(trimmed)) return null;
+  const num = Number(trimmed);
+  if (!Number.isSafeInteger(num) || num < min || num > max) return null;
+  return num;
+}
+
+function parseNumberInRange(raw: string, min: number, max: number): number | null {
+  const trimmed = raw.trim();
+  if (!/^\d+(\.\d+)?$/.test(trimmed)) return null;
+  const num = Number(trimmed);
+  if (!Number.isFinite(num) || num < min || num > max) return null;
+  return num;
+}
+
+function prefilledField(
+  customId: string,
+  label: string,
+  value: string | number,
+  maxLength = 12,
+): ActionRowBuilder<TextInputBuilder> {
+  return new ActionRowBuilder<TextInputBuilder>().addComponents(
+    new TextInputBuilder()
+      .setCustomId(customId)
+      .setLabel(label)
+      .setStyle(TextInputStyle.Short)
+      .setMinLength(1)
+      .setMaxLength(maxLength)
+      .setValue(String(value))
+      .setRequired(true),
+  );
 }
 
 function parseDiceChoice(raw: string | undefined): DiceChoice {
@@ -459,7 +523,7 @@ export async function handleMenuButton(
 ): Promise<void> {
   if (!interaction.guildId) return;
   const guildId = interaction.guildId;
-  const actor = getActor(interaction);
+  const actor = getActor(interaction, ctx, guildId);
   const parts = interaction.customId.split(':');
   const section = parts[1];
 
@@ -473,6 +537,23 @@ export async function handleMenuButton(
 
   if (section === 'nav') {
     const target = parts[2];
+    if (
+      target === 'admin' ||
+      target === 'admin_econ' ||
+      target === 'admin_lvl' ||
+      target === 'admin_mod' ||
+      target === 'admin_ops'
+    ) {
+      if (!actor.isAdmin) {
+        await interaction.update(
+          buildMenuMessage(ctx, guildId, actor, { page: 'home' }, ADMIN_DENIED_FEEDBACK),
+        );
+        return;
+      }
+      await interaction.update(buildMenuMessage(ctx, guildId, actor, { page: target }));
+      return;
+    }
+
     if (target === 'rank') {
       const disabledMsg = checkModuleDisabled(ctx, guildId, 'leveling', '等级与热度');
       if (disabledMsg) {
@@ -833,8 +914,207 @@ export async function handleMenuButton(
     }
   }
 
+  if (section === 'admin') {
+    if (!actor.isAdmin) {
+      await interaction.update(
+        buildMenuMessage(ctx, guildId, actor, { page: 'home' }, ADMIN_DENIED_FEEDBACK),
+      );
+      return;
+    }
+
+    const adminAction = parts[2];
+    const cfg = ctx.repos.guildConfig.getOrCreate(guildId);
+
+    if (adminAction === 'send_lobby') {
+      const sent = await sendPublicBroadcast(
+        interaction,
+        buildLobbyMessage(interaction.guild?.name),
+      );
+      const feedback: MenuFeedback = sent
+        ? { type: 'success', text: '✅ 已在当前频道发送永久「打开我的互动菜单」大厅卡片！' }
+        : { type: 'error', text: '无法在当前频道发送大厅消息，请检查机器人发言与嵌入链接权限。' };
+      await interaction.update(buildMenuMessage(ctx, guildId, actor, { page: 'admin' }, feedback));
+      return;
+    }
+
+    if (adminAction === 'reset_econ') {
+      ctx.repos.guildConfig.updateEconomy(guildId, { ...DEFAULT_ECONOMY_CONFIG });
+      await interaction.update(
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'admin_econ' },
+          { type: 'success', text: '♻️ 已将货币、签到、打工、抢钱与银行利息参数全部恢复为默认值。' },
+        ),
+      );
+      return;
+    }
+
+    if (adminAction === 'reset_lvl') {
+      ctx.repos.guildConfig.updateLeveling(guildId, {
+        ...DEFAULT_LEVELING_CONFIG,
+        announceChannelId: cfg.leveling.announceChannelId,
+        ignoredChannelIds: cfg.leveling.ignoredChannelIds,
+        channelMultipliers: cfg.leveling.channelMultipliers,
+      });
+      await interaction.update(
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'admin_lvl' },
+          { type: 'success', text: '♻️ 已将等级经验、热度连击、语音与升级奖励参数恢复默认值（保留频道配置）。' },
+        ),
+      );
+      return;
+    }
+
+    if (adminAction === 'toggle_voice') {
+      const next = !cfg.leveling.voiceEnabled;
+      ctx.repos.guildConfig.updateLeveling(guildId, { ...cfg.leveling, voiceEnabled: next });
+      await interaction.update(
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'admin_lvl' },
+          { type: 'success', text: `已将语音挂机经验设为：**${next ? '开启' : '关闭'}**。` },
+        ),
+      );
+      return;
+    }
+
+    if (adminAction === 'toggle_announce') {
+      const next = !cfg.leveling.announceEnabled;
+      ctx.repos.guildConfig.updateLeveling(guildId, { ...cfg.leveling, announceEnabled: next });
+      await interaction.update(
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'admin_lvl' },
+          { type: 'success', text: `已将升级公告播报设为：**${next ? '开启' : '关闭'}**。` },
+        ),
+      );
+      return;
+    }
+  }
+
   if (section === 'modal') {
     const modalType = parts[2];
+    if (modalType?.startsWith('admin_')) {
+      if (!actor.isAdmin) {
+        await interaction.update(
+          buildMenuMessage(ctx, guildId, actor, { page: 'home' }, ADMIN_DENIED_FEEDBACK),
+        );
+        return;
+      }
+
+      const cfg = ctx.repos.guildConfig.getOrCreate(guildId);
+      if (modalType === 'admin_daily') {
+        await interaction.showModal(
+          new ModalBuilder()
+            .setCustomId('menu:modal_sub:admin_daily')
+            .setTitle('📅 修改签到与货币参数')
+            .addComponents(
+              prefilledField('currencyName', '货币名称（1~16字）', cfg.economy.currencyName, 16),
+              prefilledField('currencyEmoji', '货币图标 Emoji', cfg.economy.currencyEmoji, 16),
+              prefilledField('dailyBase', '每日签到基础奖励（0 ~ 100000）', cfg.economy.dailyBase),
+              prefilledField('dailyStreakBonus', '连签每日递增奖励（0 ~ 50000）', cfg.economy.dailyStreakBonus),
+              prefilledField('dailyMaxStreakBonus', '连签递增上限（0 ~ 500000）', cfg.economy.dailyMaxStreakBonus),
+            ),
+        );
+        return;
+      }
+
+      if (modalType === 'admin_work') {
+        await interaction.showModal(
+          new ModalBuilder()
+            .setCustomId('menu:modal_sub:admin_work')
+            .setTitle('💼 修改打工参数')
+            .addComponents(
+              prefilledField('workMin', '打工最低收益（1 ~ 100000）', cfg.economy.workMin),
+              prefilledField('workMax', '打工最高收益（1 ~ 100000）', cfg.economy.workMax),
+              prefilledField('workCooldownSec', '打工冷却秒数（0 ~ 86400）', cfg.economy.workCooldownSec),
+            ),
+        );
+        return;
+      }
+
+      if (modalType === 'admin_rob') {
+        const pct = Number((cfg.economy.robSuccessRate * 100).toFixed(2));
+        await interaction.showModal(
+          new ModalBuilder()
+            .setCustomId('menu:modal_sub:admin_rob')
+            .setTitle('🥷 修改抢钱与防盗参数')
+            .addComponents(
+              prefilledField('robSuccessPct', '抢钱成功率 %（5 ~ 95）', pct),
+              prefilledField('robCooldownSec', '抢钱攻击冷却秒数（0 ~ 86400）', cfg.economy.robCooldownSec),
+              prefilledField('robTargetShieldSec', '被抢后护盾秒数（0 ~ 86400）', cfg.economy.robTargetShieldSec),
+            ),
+        );
+        return;
+      }
+
+      if (modalType === 'admin_bank') {
+        const pct = Number((cfg.economy.bankInterestRate * 100).toFixed(2));
+        await interaction.showModal(
+          new ModalBuilder()
+            .setCustomId('menu:modal_sub:admin_bank')
+            .setTitle('🏦 修改银行利息参数')
+            .addComponents(
+              prefilledField('bankInterestPct', '每日利率 %（0.1 ~ 50）', pct),
+              prefilledField('bankInterestMax', '每日利息上限（1 ~ 1000000）', cfg.economy.bankInterestMax),
+              prefilledField('bankInterestMinDeposit', '起息最低存款额（1 ~ 1000000）', cfg.economy.bankInterestMinDeposit),
+            ),
+        );
+        return;
+      }
+
+      if (modalType === 'admin_xp') {
+        await interaction.showModal(
+          new ModalBuilder()
+            .setCustomId('menu:modal_sub:admin_xp')
+            .setTitle('💬 修改发言经验与冷却')
+            .addComponents(
+              prefilledField('baseMinXp', '单次发言最小 XP（1 ~ 1000）', cfg.leveling.baseMinXp),
+              prefilledField('baseMaxXp', '单次发言最大 XP（1 ~ 1000）', cfg.leveling.baseMaxXp),
+              prefilledField('cooldownSec', '发言经验冷却秒数（0 ~ 3600）', cfg.leveling.cooldownSec),
+              prefilledField('hourlyXpCap', '每小时经验上限（0 = 不限）', cfg.leveling.hourlyXpCap),
+            ),
+        );
+        return;
+      }
+
+      if (modalType === 'admin_heat') {
+        await interaction.showModal(
+          new ModalBuilder()
+            .setCustomId('menu:modal_sub:admin_heat')
+            .setTitle('🔥 修改热度连击与奖励')
+            .addComponents(
+              prefilledField('heatWindowSec', '热度连击窗口秒数（10 ~ 3600）', cfg.leveling.heatWindowSec),
+              prefilledField('heatMaxMultiplier', '热度倍率上限（1.0 ~ 5.0）', cfg.leveling.heatMaxMultiplier),
+              prefilledField('voiceXpPerMin', '语音每分钟经验（0 ~ 1000）', cfg.leveling.voiceXpPerMin),
+              prefilledField('levelUpCoinReward', '每次升级奖励星币（0 ~ 100000）', cfg.leveling.levelUpCoinReward),
+            ),
+        );
+        return;
+      }
+
+      if (modalType === 'admin_grant_all') {
+        await interaction.showModal(
+          buildAmountModal(
+            'menu:modal_sub:admin_grant_all',
+            '🎉 全服全员发放星币',
+            '每位真实群友发放数量（1 ~ 1000000）',
+            '例如：10000',
+          ),
+        );
+        return;
+      }
+    }
+
     const disabledMsg = checkModuleDisabled(ctx, guildId, 'economy', '经济系统');
     if (disabledMsg) {
       const fallbackView: MenuView =
@@ -913,10 +1193,45 @@ export async function handleMenuStringSelect(
 ): Promise<void> {
   if (!interaction.guildId) return;
   const guildId = interaction.guildId;
-  const actor = getActor(interaction);
+  const actor = getActor(interaction, ctx, guildId);
   const parts = interaction.customId.split(':');
   const section = parts[1];
   const selected = interaction.values[0];
+
+  if (section === 'admin_toggle_mod') {
+    if (!actor.isAdmin) {
+      await interaction.update(
+        buildMenuMessage(ctx, guildId, actor, { page: 'home' }, ADMIN_DENIED_FEEDBACK),
+      );
+      return;
+    }
+    if (!selected || !VALID_MODULE_KEYS.has(selected)) {
+      await interaction.update(
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'admin_mod' },
+          { type: 'error', text: '无效的功能模块标识。' },
+        ),
+      );
+      return;
+    }
+    const modKey = selected as ModuleKey;
+    const cfg = ctx.repos.guildConfig.getOrCreate(guildId);
+    const next = !cfg.modules[modKey];
+    ctx.repos.guildConfig.updateModules(guildId, { ...cfg.modules, [modKey]: next });
+    await interaction.update(
+      buildMenuMessage(
+        ctx,
+        guildId,
+        actor,
+        { page: 'admin_mod' },
+        { type: 'success', text: `已将模块 **${modKey}** 切换为：**${next ? '开启' : '关闭'}**。` },
+      ),
+    );
+    return;
+  }
 
   if (section === 'social_act') {
     const action = parseSocialAction(selected);
@@ -1069,7 +1384,7 @@ export async function handleMenuUserSelect(
 ): Promise<void> {
   if (!interaction.guildId) return;
   const guildId = interaction.guildId;
-  const actor = getActor(interaction);
+  const actor = getActor(interaction, ctx, guildId);
   const parts = interaction.customId.split(':');
   const actionType = parts[2];
 
@@ -1078,6 +1393,97 @@ export async function handleMenuUserSelect(
     return;
   }
   const targetUser = interaction.users.get(targetId) ?? interaction.users.first();
+
+  if (actionType === 'admin_grant') {
+    if (!actor.isAdmin) {
+      await interaction.update(
+        buildMenuMessage(ctx, guildId, actor, { page: 'home' }, ADMIN_DENIED_FEEDBACK),
+      );
+      return;
+    }
+    if (targetUser?.bot) {
+      await interaction.update(
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'admin_ops' },
+          { type: 'error', text: '不能给机器人发放或扣除星币。' },
+        ),
+      );
+      return;
+    }
+    await interaction.showModal(
+      buildAmountModal(
+        `menu:modal_sub:admin_grant:${targetId}`,
+        '💸 发放或扣除群友星币',
+        '增减星币（正数加币，负数扣币）',
+        '例如：10000 或 -500',
+      ),
+    );
+    return;
+  }
+
+  if (actionType === 'admin_toggle_user') {
+    if (!actor.isAdmin) {
+      await interaction.update(
+        buildMenuMessage(ctx, guildId, actor, { page: 'home' }, ADMIN_DENIED_FEEDBACK),
+      );
+      return;
+    }
+    if (targetUser?.bot) {
+      await interaction.update(
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'admin_ops' },
+          { type: 'error', text: '不能将机器人设为 Bot 管理员。' },
+        ),
+      );
+      return;
+    }
+    const cfg = ctx.repos.guildConfig.getOrCreate(guildId);
+    const exists = cfg.adminUserIds.includes(targetId);
+    const isDiscordServerAdmin =
+      interaction.inCachedGuild() &&
+      (interaction.member.permissions.has(PermissionFlagsBits.Administrator) ||
+        interaction.member.permissions.has(PermissionFlagsBits.ManageGuild) ||
+        cfg.adminRoleIds.some((r) => interaction.member.roles.cache.has(r)));
+
+    if (exists && targetId === actor.id && !isDiscordServerAdmin) {
+      await interaction.update(
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'admin_ops' },
+          { type: 'error', text: '⚠️ 为防误锁权限，不能在此移除自己的授权管理员身份。' },
+        ),
+      );
+      return;
+    }
+
+    const next = exists
+      ? cfg.adminUserIds.filter((id) => id !== targetId)
+      : [...cfg.adminUserIds, targetId];
+    ctx.repos.guildConfig.updateAdminUsers(guildId, next);
+    await interaction.update(
+      buildMenuMessage(
+        ctx,
+        guildId,
+        actor,
+        { page: 'admin_ops' },
+        {
+          type: 'success',
+          text: exists
+            ? `已移除 <@${targetId}> 的指定 Bot 管理员权限。`
+            : `✅ 已授权 <@${targetId}> 成为 Bot 管理员（TA 打开 \`/菜单\` 即可看到「⚙️ 管理后台」）。`,
+        },
+      ),
+    );
+    return;
+  }
 
   if (actionType === 'rob') {
     if (targetUser?.bot) {
@@ -1325,9 +1731,384 @@ export async function handleMenuModal(
 ): Promise<void> {
   if (!interaction.guildId) return;
   const guildId = interaction.guildId;
-  const actor = getActor(interaction);
+  const actor = getActor(interaction, ctx, guildId);
   const parts = interaction.customId.split(':');
   const modalType = parts[2];
+
+  if (modalType?.startsWith('admin_')) {
+    if (!actor.isAdmin) {
+      await respondFromModal(
+        interaction,
+        buildMenuMessage(ctx, guildId, actor, { page: 'home' }, ADMIN_DENIED_FEEDBACK),
+      );
+      return;
+    }
+
+    const cfg = ctx.repos.guildConfig.getOrCreate(guildId);
+
+    if (modalType === 'admin_daily') {
+      const currencyName = interaction.fields.getTextInputValue('currencyName').trim();
+      const currencyEmoji = interaction.fields.getTextInputValue('currencyEmoji').trim();
+      const dailyBase = parseIntInRange(interaction.fields.getTextInputValue('dailyBase'), 0, 100_000);
+      const dailyStreakBonus = parseIntInRange(interaction.fields.getTextInputValue('dailyStreakBonus'), 0, 50_000);
+      const dailyMaxStreakBonus = parseIntInRange(interaction.fields.getTextInputValue('dailyMaxStreakBonus'), 0, 500_000);
+
+      if (
+        currencyName.length < 1 ||
+        currencyName.length > 16 ||
+        currencyEmoji.length < 1 ||
+        currencyEmoji.length > 16 ||
+        dailyBase === null ||
+        dailyStreakBonus === null ||
+        dailyMaxStreakBonus === null
+      ) {
+        await respondFromModal(
+          interaction,
+          buildMenuMessage(
+            ctx,
+            guildId,
+            actor,
+            { page: 'admin_econ' },
+            { type: 'error', text: '输入格式无效，请检查货币名称长度及各项整数范围。' },
+          ),
+        );
+        return;
+      }
+
+      ctx.repos.guildConfig.updateEconomy(guildId, {
+        ...cfg.economy,
+        currencyName,
+        currencyEmoji,
+        dailyBase,
+        dailyStreakBonus,
+        dailyMaxStreakBonus,
+      });
+      await respondFromModal(
+        interaction,
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'admin_econ' },
+          { type: 'success', text: `已更新货币与签到参数：**${currencyName}**（${currencyEmoji}），基础 **${dailyBase}**。` },
+        ),
+      );
+      return;
+    }
+
+    if (modalType === 'admin_work') {
+      const workMin = parseIntInRange(interaction.fields.getTextInputValue('workMin'), 1, 100_000);
+      const workMax = parseIntInRange(interaction.fields.getTextInputValue('workMax'), 1, 100_000);
+      const workCooldownSec = parseIntInRange(interaction.fields.getTextInputValue('workCooldownSec'), 0, 86_400);
+
+      if (workMin === null || workMax === null || workCooldownSec === null || workMin > workMax) {
+        await respondFromModal(
+          interaction,
+          buildMenuMessage(
+            ctx,
+            guildId,
+            actor,
+            { page: 'admin_econ' },
+            { type: 'error', text: '打工参数无效：最低收益不能高于最高收益，冷却需在 0~86400 秒。' },
+          ),
+        );
+        return;
+      }
+
+      ctx.repos.guildConfig.updateEconomy(guildId, {
+        ...cfg.economy,
+        workMin,
+        workMax,
+        workCooldownSec,
+      });
+      await respondFromModal(
+        interaction,
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'admin_econ' },
+          { type: 'success', text: `已更新打工参数：收益 **${workMin} ~ ${workMax}**，冷却 **${workCooldownSec}** 秒。` },
+        ),
+      );
+      return;
+    }
+
+    if (modalType === 'admin_rob') {
+      const pct = parseNumberInRange(interaction.fields.getTextInputValue('robSuccessPct'), 5, 95);
+      const robCooldownSec = parseIntInRange(interaction.fields.getTextInputValue('robCooldownSec'), 0, 86_400);
+      const robTargetShieldSec = parseIntInRange(interaction.fields.getTextInputValue('robTargetShieldSec'), 0, 86_400);
+
+      if (pct === null || robCooldownSec === null || robTargetShieldSec === null) {
+        await respondFromModal(
+          interaction,
+          buildMenuMessage(
+            ctx,
+            guildId,
+            actor,
+            { page: 'admin_econ' },
+            { type: 'error', text: '抢钱参数无效：成功率需为 5~95%，冷却/护盾需为 0~86400 秒。' },
+          ),
+        );
+        return;
+      }
+
+      const robSuccessRate = Number((pct / 100).toFixed(4));
+      ctx.repos.guildConfig.updateEconomy(guildId, {
+        ...cfg.economy,
+        robSuccessRate,
+        robCooldownSec,
+        robTargetShieldSec,
+      });
+      await respondFromModal(
+        interaction,
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'admin_econ' },
+          { type: 'success', text: `已更新抢钱参数：成功率 **${pct}%**，冷却 **${robCooldownSec}s**，护盾 **${robTargetShieldSec}s**。` },
+        ),
+      );
+      return;
+    }
+
+    if (modalType === 'admin_bank') {
+      const pct = parseNumberInRange(interaction.fields.getTextInputValue('bankInterestPct'), 0.1, 50);
+      const bankInterestMax = parseIntInRange(interaction.fields.getTextInputValue('bankInterestMax'), 1, 1_000_000);
+      const bankInterestMinDeposit = parseIntInRange(interaction.fields.getTextInputValue('bankInterestMinDeposit'), 1, 1_000_000);
+
+      if (pct === null || bankInterestMax === null || bankInterestMinDeposit === null) {
+        await respondFromModal(
+          interaction,
+          buildMenuMessage(
+            ctx,
+            guildId,
+            actor,
+            { page: 'admin_econ' },
+            { type: 'error', text: '银行参数无效：日利率需为 0.1~50%，上限/起息额为正整数。' },
+          ),
+        );
+        return;
+      }
+
+      const bankInterestRate = Number((pct / 100).toFixed(4));
+      ctx.repos.guildConfig.updateEconomy(guildId, {
+        ...cfg.economy,
+        bankInterestRate,
+        bankInterestMax,
+        bankInterestMinDeposit,
+      });
+      await respondFromModal(
+        interaction,
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'admin_econ' },
+          { type: 'success', text: `已更新银行参数：日利率 **${pct}%**，每日上限 **${bankInterestMax}**，起息门槛 **${bankInterestMinDeposit}**。` },
+        ),
+      );
+      return;
+    }
+
+    if (modalType === 'admin_xp') {
+      const baseMinXp = parseIntInRange(interaction.fields.getTextInputValue('baseMinXp'), 1, 1000);
+      const baseMaxXp = parseIntInRange(interaction.fields.getTextInputValue('baseMaxXp'), 1, 1000);
+      const cooldownSec = parseIntInRange(interaction.fields.getTextInputValue('cooldownSec'), 0, 3600);
+      const hourlyXpCap = parseIntInRange(interaction.fields.getTextInputValue('hourlyXpCap'), 0, 1_000_000);
+
+      if (
+        baseMinXp === null ||
+        baseMaxXp === null ||
+        cooldownSec === null ||
+        hourlyXpCap === null ||
+        baseMinXp > baseMaxXp
+      ) {
+        await respondFromModal(
+          interaction,
+          buildMenuMessage(
+            ctx,
+            guildId,
+            actor,
+            { page: 'admin_lvl' },
+            { type: 'error', text: '经验参数无效：最小 XP 不能大于最大 XP，冷却需为 0~3600 秒。' },
+          ),
+        );
+        return;
+      }
+
+      ctx.repos.guildConfig.updateLeveling(guildId, {
+        ...cfg.leveling,
+        baseMinXp,
+        baseMaxXp,
+        cooldownSec,
+        hourlyXpCap,
+      });
+      await respondFromModal(
+        interaction,
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'admin_lvl' },
+          { type: 'success', text: `已更新发言经验：**${baseMinXp} ~ ${baseMaxXp}** XP，冷却 **${cooldownSec}s**，时限上限 **${hourlyXpCap}**。` },
+        ),
+      );
+      return;
+    }
+
+    if (modalType === 'admin_heat') {
+      const heatWindowSec = parseIntInRange(interaction.fields.getTextInputValue('heatWindowSec'), 10, 3600);
+      const rawHeatMax = parseNumberInRange(interaction.fields.getTextInputValue('heatMaxMultiplier'), 1, 5);
+      const voiceXpPerMin = parseIntInRange(interaction.fields.getTextInputValue('voiceXpPerMin'), 0, 1000);
+      const levelUpCoinReward = parseIntInRange(interaction.fields.getTextInputValue('levelUpCoinReward'), 0, 100_000);
+
+      if (
+        heatWindowSec === null ||
+        rawHeatMax === null ||
+        voiceXpPerMin === null ||
+        levelUpCoinReward === null
+      ) {
+        await respondFromModal(
+          interaction,
+          buildMenuMessage(
+            ctx,
+            guildId,
+            actor,
+            { page: 'admin_lvl' },
+            { type: 'error', text: '热度/奖励参数无效，请检查倍率(1.0~5.0)和数值范围。' },
+          ),
+        );
+        return;
+      }
+
+      const heatMaxMultiplier = Number(rawHeatMax.toFixed(2));
+      ctx.repos.guildConfig.updateLeveling(guildId, {
+        ...cfg.leveling,
+        heatWindowSec,
+        heatMaxMultiplier,
+        voiceXpPerMin,
+        levelUpCoinReward,
+      });
+      await respondFromModal(
+        interaction,
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'admin_lvl' },
+          { type: 'success', text: `已更新热度参数：窗口 **${heatWindowSec}s**，上限 **${heatMaxMultiplier}x**，语音 **${voiceXpPerMin}/分**，升级奖 **+${levelUpCoinReward}**。` },
+        ),
+      );
+      return;
+    }
+
+    if (modalType === 'admin_grant') {
+      const targetId = parts[3];
+      if (!targetId) return;
+      const amount = parseIntInRange(
+        interaction.fields.getTextInputValue('amount'),
+        -1_000_000,
+        1_000_000,
+      );
+      if (amount === null || amount === 0) {
+        await respondFromModal(
+          interaction,
+          buildMenuMessage(
+            ctx,
+            guildId,
+            actor,
+            { page: 'admin_ops' },
+            { type: 'error', text: '请输入 -1000000 ~ 1000000 之间的非零整数。' },
+          ),
+        );
+        return;
+      }
+
+      const updated = ctx.repos.profile.addCoins(guildId, targetId, amount);
+      if (amount > 0) {
+        await sendPublicBroadcast(interaction, {
+          content: `🎁 <@${targetId}> 收到管理员发放的星币福利！`,
+          embeds: [
+            createSuccessEmbed(
+              '🎁 管理员发放星币',
+              `管理员 <@${actor.id}> 向 <@${targetId}> 发放了 ${cfg.economy.currencyEmoji} **+${amount}** ${cfg.economy.currencyName}！\n当前口袋现金：**${updated.coins}** ${cfg.economy.currencyName}`,
+            ),
+          ],
+        });
+      }
+      await respondFromModal(
+        interaction,
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'admin_ops' },
+          {
+            type: 'success',
+            text:
+              amount > 0
+                ? `已向 <@${targetId}> 发放 **+${amount}** ${cfg.economy.currencyName}（当前现金 **${updated.coins}**）。`
+                : `已从 <@${targetId}> 扣除 **${Math.abs(amount)}** ${cfg.economy.currencyName}（剩余现金 **${updated.coins}**）。`,
+          },
+        ),
+      );
+      return;
+    }
+
+    if (modalType === 'admin_grant_all') {
+      const amount = parseIntInRange(interaction.fields.getTextInputValue('amount'), 1, 1_000_000);
+      if (amount === null) {
+        await respondFromModal(
+          interaction,
+          buildMenuMessage(
+            ctx,
+            guildId,
+            actor,
+            { page: 'admin_ops' },
+            { type: 'error', text: '请输入 1 ~ 1,000,000 之间的正整数。' },
+          ),
+        );
+        return;
+      }
+
+      if (!interaction.guild) return;
+      if (interaction.isFromMessage()) {
+        await interaction.deferUpdate();
+      } else {
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      }
+
+      const members = await interaction.guild.members.fetch();
+      const humanIds = [...members.values()].filter((m) => !m.user.bot).map((m) => m.id);
+      ctx.db.transaction(() => {
+        for (const uid of humanIds) {
+          ctx.repos.profile.addCoins(guildId, uid, amount);
+        }
+      })();
+
+      await sendPublicBroadcast(interaction, {
+        embeds: [
+          createSuccessEmbed(
+            '🎉 全服福利发放！',
+            `管理员 <@${actor.id}> 向全服 **${humanIds.length}** 位真实群友每人发放了 ${cfg.economy.currencyEmoji} **+${amount}** ${cfg.economy.currencyName}！`,
+          ),
+        ],
+      });
+
+      await interaction.editReply(
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'admin_ops' },
+          { type: 'success', text: `🎉 已向全服 **${humanIds.length}** 位群友每人发放 **+${amount}** ${cfg.economy.currencyName}！` },
+        ),
+      );
+      return;
+    }
+  }
 
   if (modalType === 'slots') {
     const amount = parsePositiveInt(interaction.fields.getTextInputValue('amount'));

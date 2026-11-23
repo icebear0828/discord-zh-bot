@@ -212,6 +212,30 @@ export const configCommand: CommandDefinition = {
           '全员发币',
           '向服务器所有真实成员统一发放口袋星币',
         ),
+      )
+      .addSubcommand((sub) =>
+        applyZh(
+          sub
+            .setName('add-admin-user')
+            .setDescription('添加可管理本 Bot 的指定管理员用户')
+            .addUserOption((opt) =>
+              applyZh(opt.setName('user').setDescription('成员').setRequired(true), '用户', '要授予 Bot 管理权限的群友'),
+            ),
+          '添加管理员用户',
+          '添加可管理本 Bot 的指定管理员用户',
+        ),
+      )
+      .addSubcommand((sub) =>
+        applyZh(
+          sub
+            .setName('remove-admin-user')
+            .setDescription('移除一个指定 Bot 管理员用户')
+            .addUserOption((opt) =>
+              applyZh(opt.setName('user').setDescription('成员').setRequired(true), '用户', '要移除 Bot 管理权限的群友'),
+            ),
+          '移除管理员用户',
+          '移除一个指定 Bot 管理员用户',
+        ),
       ),
     '设置',
     '查看或修改服务器 Bot 总配置',
@@ -232,6 +256,11 @@ export const configCommand: CommandDefinition = {
       const adminRolesText =
         cfg.adminRoleIds.length > 0
           ? cfg.adminRoleIds.map((id) => `<@&${id}>`).join('、')
+          : '未额外配置';
+
+      const adminUsersText =
+        cfg.adminUserIds.length > 0
+          ? cfg.adminUserIds.map((id) => `<@${id}>`).join('、')
           : '未额外配置（仅限服务器管理员）';
 
       const ignoredText =
@@ -251,6 +280,11 @@ export const configCommand: CommandDefinition = {
           {
             name: '🛡️ Bot 管理员身份组',
             value: adminRolesText,
+            inline: true,
+          },
+          {
+            name: '👑 Bot 管理员用户',
+            value: adminUsersText,
             inline: true,
           },
           {
@@ -429,6 +463,44 @@ export const configCommand: CommandDefinition = {
             `管理员 <@${adminCtx.member.id}> 向全服 **${humanIds.length}** 位真实群友每人发放了 ${cfg.economy.currencyEmoji} **+${amount}** ${cfg.economy.currencyName}！`,
           ),
         ],
+      });
+      return;
+    }
+
+    if (sub === 'add-admin-user') {
+      const target = interaction.options.getUser('user', true);
+      if (target.bot) {
+        await interaction.reply({
+          embeds: [createErrorEmbed('❌ 操作无效', '不能将机器人添加为 Bot 管理员。')],
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+      const next = cfg.adminUserIds.includes(target.id)
+        ? cfg.adminUserIds
+        : [...cfg.adminUserIds, target.id];
+      ctx.repos.guildConfig.updateAdminUsers(guildId, next);
+      await interaction.reply({
+        embeds: [
+          createSuccessEmbed(
+            '✅ 已添加 Bot 管理员用户',
+            `已授予 <@${target.id}> 管理本 Bot 与调参权限（可通过 \`/菜单\` 中的「⚙️ 管理后台」调整参数）。`,
+          ),
+        ],
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    if (sub === 'remove-admin-user') {
+      const target = interaction.options.getUser('user', true);
+      const next = cfg.adminUserIds.filter((id) => id !== target.id);
+      ctx.repos.guildConfig.updateAdminUsers(guildId, next);
+      await interaction.reply({
+        embeds: [
+          createSuccessEmbed('✅ 已移除 Bot 管理员用户', `已移除 <@${target.id}> 的指定 Bot 管理员权限。`),
+        ],
+        flags: MessageFlags.Ephemeral,
       });
     }
   },

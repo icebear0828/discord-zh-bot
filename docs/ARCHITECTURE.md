@@ -120,10 +120,10 @@ flowchart TD
 
 | 前缀 | 交互类型 | 处理器函数 | 完整 `customId` 格式与用途 |
 | --- | --- | --- | --- |
-| `menu` | Button | `handleMenuButton` | `menu:open`（大厅开菜单）<br/>`menu:nav:<page>`（切换页面，`social` 可带 `:<action>`）<br/>`menu:act:<daily\|work\|fortune>`（快捷动作，自动识别原页为 `home` 或 `solo`；`fortune` 首抽【大吉】触发全群播报）<br/>`menu:slots:<50\|100\|500>`（老虎机定额下注；`>=4x` 触发全群播报）<br/>`menu:dice_pick:<big\|small\|triple>`（切换猜大小投注边）<br/>`menu:dice_bet:<choice>:<50\|100\|500>`（猜大小定额下注；豹子中奖触发全群播报）<br/>`menu:bj_start:<50\|100\|500>`（二十一点定额开局）<br/>`menu:bj:<hit\|stand\|double>`（二十一点牌局操作；天胡 Blackjack 或净赢 `>=500` 触发全群播报）<br/>`menu:bank:<dep\|wd>:<25\|50\|all>`（银行比例存取）<br/>`menu:bank:interest`（领取每日银行利息）<br/>`menu:bag:clear_title`（卸下当前佩戴称号）<br/>`menu:rank:<xp\|coins\|invites>:<page>[:prev\|:next]`（排行榜切换与翻页）<br/>`menu:share:<rank\|lb:<type>:<page>>`（将个人等级名片或排行榜晒出到当前频道）<br/>`menu:modal:<slots\|dice:<choice>\|bj\|bank_dep\|bank_wd\|redpacket>`（弹窗入口） |
-| `menu` | StringSelect | `handleMenuStringSelect` | `menu:social_act`（切换趣味互动动作并保留原视图）<br/>`menu:shop_buy`（选择商品 ID 购买；身份组发放失败自动退款退库存）<br/>`menu:bag_use`（使用经验加成卡或切换佩戴称号） |
-| `menu` | UserSelect | `handleMenuUserSelect` | `menu:user:rob`（选中即打劫，更新个人面板并向当前频道发快报）<br/>`menu:user:pay`（校验非 Bot/非本人后直接弹出转账金额 Modal）<br/>`menu:user:duel`（校验后直接弹出决斗赌注 Modal）<br/>`menu:user:social:<action>`（执行互动并在当前频道公开播报） |
-| `menu` | ModalSubmit | `handleMenuModal` | `menu:modal_sub:slots` / `menu:modal_sub:dice:<choice>` / `menu:modal_sub:bj`<br/>`menu:modal_sub:bank_dep` / `menu:modal_sub:bank_wd`<br/>`menu:modal_sub:pay:<targetId>`<br/>`menu:modal_sub:duel:<opponentId>`<br/>`menu:modal_sub:redpacket` |
+| `menu` | Button | `handleMenuButton` | `menu:open`（大厅开菜单）<br/>`menu:nav:<page>`（切换页面，`social` 可带 `:<action>`；`admin*` 仅管理员）<br/>`menu:act:<daily\|work\|fortune>`（快捷动作，自动识别原页为 `home` 或 `solo`；`fortune` 首抽【大吉】触发全群播报）<br/>`menu:slots:<50\|100\|500>`（老虎机定额下注；`>=4x` 触发全群播报）<br/>`menu:dice_pick:<big\|small\|triple>`（切换猜大小投注边）<br/>`menu:dice_bet:<choice>:<50\|100\|500>`（猜大小定额下注；豹子中奖触发全群播报）<br/>`menu:bj_start:<50\|100\|500>`（二十一点定额开局）<br/>`menu:bj:<hit\|stand\|double>`（二十一点牌局操作；天胡 Blackjack 或净赢 `>=500` 触发全群播报）<br/>`menu:bank:<dep\|wd>:<25\|50\|all>`（银行比例存取）<br/>`menu:bank:interest`（领取每日银行利息）<br/>`menu:bag:clear_title`（卸下当前佩戴称号）<br/>`menu:rank:<xp\|coins\|invites>:<page>[:prev\|:next]`（排行榜切换与翻页）<br/>`menu:share:<rank\|lb:<type>:<page>>`（将个人等级名片或排行榜晒出到当前频道）<br/>`menu:admin:<send_lobby\|reset_econ\|reset_lvl\|toggle_voice\|toggle_announce>`（后台快捷管理与恢复默认）<br/>`menu:modal:<slots\|dice:<choice>\|bj\|bank_dep\|bank_wd\|redpacket\|admin_daily\|admin_work\|admin_rob\|admin_bank\|admin_xp\|admin_heat\|admin_grant_all>`（弹窗入口） |
+| `menu` | StringSelect | `handleMenuStringSelect` | `menu:social_act`（切换趣味互动动作并保留原视图）<br/>`menu:shop_buy`（选择商品 ID 购买；身份组发放失败自动退款退库存）<br/>`menu:bag_use`（使用经验加成卡或切换佩戴称号）<br/>`menu:admin_toggle_mod`（管理后台切换 8 大功能模块开关） |
+| `menu` | UserSelect | `handleMenuUserSelect` | `menu:user:rob`（选中即打劫，更新个人面板并向当前频道发快报）<br/>`menu:user:pay`（校验非 Bot/非本人后直接弹出转账金额 Modal）<br/>`menu:user:duel`（校验后直接弹出决斗赌注 Modal）<br/>`menu:user:social:<action>`（执行互动并在当前频道公开播报）<br/>`menu:user:admin_grant`（后台选人弹出星币增减 Modal）<br/>`menu:user:admin_toggle_user`（后台选人添加/移除 Bot 管理员用户，防非服务器管理员误删自己） |
+| `menu` | ModalSubmit | `handleMenuModal` | `menu:modal_sub:slots` / `menu:modal_sub:dice:<choice>` / `menu:modal_sub:bj`<br/>`menu:modal_sub:bank_dep` / `menu:modal_sub:bank_wd`<br/>`menu:modal_sub:pay:<targetId>`<br/>`menu:modal_sub:duel:<opponentId>`<br/>`menu:modal_sub:redpacket`<br/>`menu:modal_sub:admin_daily` / `admin_work` / `admin_rob` / `admin_bank` / `admin_xp` / `admin_heat` / `admin_grant:<targetId>` / `admin_grant_all` |
 | `mp` | Button | `handleMultiplayerButton` | `mp:duel:accept:<duelId>`（应战并原子结算公开决斗卡片）<br/>`mp:duel:decline:<duelId>`（挑战双方取消或拒绝决斗）<br/>`mp:rp:claim:<packetId>`（抢红包；实时刷新公开卡片并私信 `followUp` 金额） |
 | `lb` | Button | `handleLeaderboardButton` | `lb:<xp\|coins\|invites>:<page>`（`/排行榜` 独立消息的切榜与翻页） |
 | `bj` | Button | `handleBlackjackButton` | `bj:<hit\|stand\|double>:<ownerId>`（`/二十一点` 独立牌局按钮，校验仅开局本人可点） |
@@ -166,7 +166,7 @@ flowchart TD
 | --- | --- | --- | --- | --- | --- | --- |
 | 1 | `/help` | `/帮助` | `/帮助` | 通用 | 所有成员 | 查看全部功能说明与交互式模块分类下拉菜单 |
 | 2 | `/menu` | `/菜单` | `/選單` | 通用 / 全功能 | 成员 / 管理员(`lobby`) | 打开个人 Ephemeral 互动主面板，或由管理员在频道发送永久大厅入口按钮 |
-| 3 | `/config` | `/设置` | `/设置` | 通用配置 | 管理员 | 查看配置、开关模块、增删管理员身份组、忽略/倍率频道、发放星币 (`grant-coins`) 及全员发币 (`grant-all-coins`) |
+| 3 | `/config` | `/设置` | `/设置` | 通用配置 | 管理员 | 查看配置、开关模块、增删管理员身份组/用户、忽略/倍率频道、发放星币 (`grant-coins`) 及全员发币 (`grant-all-coins`) |
 | 4 | `/rank` | `/等级` | `/等级` | 等级与热度 | 所有成员 | 查看自己或指定成员的等级、经验进度条、全服排名、聊天热度倍率、经验卡与活跃统计 |
 | 5 | `/leaderboard` | `/排行榜` | `/排行榜` | 等级与综合 | 所有成员 | 查看经验榜、星币富豪榜（含银行资产）或邀请贡献榜（带按钮翻页与切榜） |
 | 6 | `/level-admin` | `/等级管理` | `/等级管理` | 等级与热度 | 管理员 | 配置升级奖励身份组、升级播报频道、语音挂机经验、热度/冷却/小时上限参数及设置用户经验 |
@@ -190,7 +190,7 @@ flowchart TD
 | 24 | `/invites` | `/邀请` | `/邀请` | 邀请追踪 | 所有成员 | 查看自己或指定成员的累计成功邀请数与近期邀请记录 |
 | 25 | `/role-panel` | `/身份组面板` | `/身份组面板` | 自助身份组 | 管理员 | 创建与发布支持按钮/下拉菜单、单选互斥/多选的自助身份组面板 |
 
-> 注：**Bot 管理员权限 (`requireBotAdmin`)** 满足以下任一条件即可通过：服务器 `Administrator` 权限、`ManageGuild` 权限，或成员持有通过 `/设置 添加管理员身份组` 配置的 `adminRoleIds`。
+> 注：**Bot 管理员权限 (`requireBotAdmin` / `checkMemberIsBotAdmin`)** 满足以下任一条件即可通过：服务器 `Administrator` 权限、`ManageGuild` 权限、持有 `/设置 添加管理员身份组` 配置的 `adminRoleIds`，或用户 ID 位于 `/设置 添加管理员用户`（或后台 `admin_ops`）配置的 `adminUserIds` 白名单中。授权成员在 `/菜单` 首页可见「⚙️ 管理后台」（含 `admin` / `admin_econ` / `admin_lvl` / `admin_mod` / `admin_ops` 5 个可视化调参视图）。
 
 ---
 
@@ -290,7 +290,7 @@ flowchart TD
 
 | # | 表名 | 主键 / 唯一约束 | 关键索引 / 外键 | 核心用途 |
 | --- | --- | --- | --- | --- |
-| 1 | `guild_configs` | `PK(guild_id)` | — | 服务器模块开关、管理员身份组、各模块 JSON 配置及工单自增计数 |
+| 1 | `guild_configs` | `PK(guild_id)` | — | 服务器模块开关、管理员身份组与管理员用户白名单 (`admin_user_ids_json`)、各模块 JSON 配置及工单自增计数 |
 | 2 | `member_profiles` | `PK(guild_id, user_id)` | `idx_member_profiles_xp(guild_id, xp DESC)`<br/>`idx_member_profiles_coins(guild_id, coins DESC)` | 成员等级、XP、发言/语音统计、口袋 `coins`、银行 `bank_coins`、连签、护盾、称号、经验卡与热度状态 |
 | 3 | `level_role_rewards` | `PK(guild_id, level)` | — | 等级阈值与自动发放身份组 ID 映射 |
 | 4 | `shop_items` | `PK(id AUTOINCREMENT)` | `idx_shop_items_guild(guild_id, id)` | 商店商品（`role` / `title` / `xp_boost`）、价格与库存 |
@@ -319,6 +319,11 @@ if (!columnNames.has('bank_coins')) {
 }
 if (!columnNames.has('last_bank_interest_date')) {
   db.exec('ALTER TABLE member_profiles ADD COLUMN last_bank_interest_date TEXT;');
+}
+
+const configCols = db.pragma('table_info(guild_configs)') as Array<{ name: string }>;
+if (!new Set(configCols.map((col) => col.name)).has('admin_user_ids_json')) {
+  db.exec("ALTER TABLE guild_configs ADD COLUMN admin_user_ids_json TEXT NOT NULL DEFAULT '[]';");
 }
 ```
 

@@ -39,6 +39,28 @@ describe('permissionService', () => {
         configuredAdminRoleIds: ['role-mod'],
       }),
     ).toBe(false);
+
+    expect(
+      isBotAdmin({
+        isGuildAdmin: false,
+        hasManageGuild: false,
+        memberRoleIds: [],
+        configuredAdminRoleIds: [],
+        userId: 'user-admin',
+        configuredAdminUserIds: ['user-admin', 'user-2'],
+      }),
+    ).toBe(true);
+
+    expect(
+      isBotAdmin({
+        isGuildAdmin: false,
+        hasManageGuild: false,
+        memberRoleIds: [],
+        configuredAdminRoleIds: [],
+        userId: 'regular-user',
+        configuredAdminUserIds: ['user-admin'],
+      }),
+    ).toBe(false);
   });
 
   it('checks whether a module is enabled', () => {

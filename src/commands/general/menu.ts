@@ -2,7 +2,7 @@ import { MessageFlags, SlashCommandBuilder, type ChatInputCommandInteraction } f
 import { createErrorEmbed, createSuccessEmbed, type AppContext, type CommandDefinition } from '../../ui/embeds.js';
 import { applyZh } from '../../ui/localization.js';
 import { buildLobbyMessage, buildMenuMessage } from '../../ui/menuBuilder.js';
-import { requireBotAdmin, requireGuildMember } from '../guards.js';
+import { checkMemberIsBotAdmin, requireBotAdmin, requireGuildMember } from '../guards.js';
 
 export const menuCommand: CommandDefinition = {
   name: 'menu',
@@ -74,6 +74,9 @@ export const menuCommand: CommandDefinition = {
       return;
     }
 
+    const cfg = ctx.repos.guildConfig.getOrCreate(guildCtx.guildId);
+    const isAdmin = checkMemberIsBotAdmin(guildCtx.member, cfg);
+
     const msg = buildMenuMessage(
       ctx,
       guildCtx.guildId,
@@ -81,6 +84,7 @@ export const menuCommand: CommandDefinition = {
         id: interaction.user.id,
         displayName: interaction.user.displayName,
         avatarUrl: interaction.user.displayAvatarURL(),
+        isAdmin,
       },
       { page: 'home' },
     );
