@@ -1,0 +1,446 @@
+import type { GuildConfigRepo } from '../db/repositories/guildConfigRepo.js';
+import type { InviteRepo } from '../db/repositories/inviteRepo.js';
+import type { MemberProfile, ProfileRepo } from '../db/repositories/profileRepo.js';
+
+export type XpSkipReason =
+  | 'module_disabled'
+  | 'ignored_channel'
+  | 'cooldown'
+  | 'voice_disabled'
+  | 'hourly_cap';
+
+export interface AwardXpResult {
+  awarded: boolean;
+  reason?: XpSkipReason;
+  xpGained: number;
+  totalXp: number;
+  heatStreak: number;
+  heatMultiplier: number;
+  boostMultiplier: number;
+  leveledUp: boolean;
+  oldLevel: number;
+  newLevel: number;
+  coinsAwarded: number;
+  rolesToAdd: string[];
+  rolesToRemove: string[];
+}
+
+export interface LevelProgress {
+  level: number;
+  currentLevelXp: number;
+  nextLevelXp: number;
+  progressRatio: number;
+}
+
+export interface RankCardData {
+  profile: MemberProfile;
+  progress: LevelProgress;
+  rank: number;
+  totalMembers: number;
+  heatMultiplier: number;
+  activeBoostMultiplier: number;
+  boostExpiresAt: number;
+}
+
+export type LeaderboardType = 'xp' | 'coins' | 'invites';
+
+export interface LeaderboardEntry {
+  userId: string;
+  primaryValue: number;
+  secondaryValue: number;
+  equippedTitle: string | null;
+}
+
+export interface LeaderboardPage {
+  type: LeaderboardType;
+  page: number;
+  totalPages: number;
+  totalItems: number;
+  items: LeaderboardEntry[];
+}
+
+export function xpRequiredForLevel(level: number): number {
+  return 100 + level * 75 + level * level * 15;
+}
+
+export function calculateLevelProgress(totalXp: number): LevelProgress {
+  let remaining = Math.max(0, Math.floor(totalXp));
+  let level = 0;
+
+  while (remaining >= xpRequiredForLevel(level)) {
+    remaining -= xpRequiredForLevel(level);
+    level += 1;
+  }
+
+  const nextLevelXp = xpRequiredForLevel(level);
+  const progressRatio = nextLevelXp > 0 ? Math.min(1, remaining / nextLevelXp) : 0;
+
+  return {
+    level,
+    currentLevelXp: remaining,
+    nextLevelXp,
+    progressRatio,
+  };
+}
+
+export function getHeatMultiplier(heatStreak: number, maxMultiplier: number): number {
+  let raw = 1.0;
+  if (heatStreak >= 8) {
+    raw = 2.0;
+  } else if (heatStreak >= 6) {
+    raw = 1.75;
+  } else if (heatStreak >= 4) {
+    raw = 1.5;
+  } else if (heatStreak >= 2) {
+    raw = 1.25;
+  }
+  return Math.min(raw, Math.max(1.0, maxMultiplier));
+}
+
+const HOUR_MS = 3_600_000;
+
+export class LevelingService {
+  constructor(
+    private readonly configRepo: GuildConfigRepo,
+    private readonly profileRepo: ProfileRepo,
+    private readonly inviteRepo: InviteRepo,
+  ) {}
+
+  awardMessageXp(
+    guildId: string,
+    userId: string,
+    channelId: string,
+    nowMs = Date.now(),
+    rng: () => number = Math.random,
+  ): AwardXpResult {
+    const cfg = this.configRepo.getOrCreate(guildId);
+    const profile = this.profileRepo.getOrCreate(guildId, userId);
+
+    if (!cfg.modules.leveling) {
+      return this.skippedResult(profile, 'module_disabled', nowMs, cfg.leveling.heatMaxMultiplier);
+    }
+    if (cfg.leveling.ignoredChannelIds.includes(channelId)) {
+      return this.skippedResult(profile, 'ignored_channel', nowMs, cfg.leveling.heatMaxMultiplier);
+    }
+
+    const cooldownMs = cfg.leveling.cooldownSec * 1000;
+    if (profile.lastXpAt > 0 && nowMs - profile.lastXpAt < cooldownMs) {
+      return this.skippedResult(profile, 'cooldown', nowMs, cfg.leveling.heatMaxMultiplier);
+    }
+
+    const heatWindowMs = cfg.leveling.heatWindowSec * 1000;
+    const withinHeatWindow = profile.lastXpAt > 0 && nowMs - profile.lastXpAt <= heatWindowMs;
+    const nextHeatStreak = withinHeatWindow ? profile.heatStreak + 1 : 1;
+    const heatMultiplier = getHeatMultiplier(nextHeatStreak, cfg.leveling.heatMaxMultiplier);
+
+    const minXp = Math.min(cfg.leveling.baseMinXp, cfg.leveling.baseMaxXp);
+    const maxXp = Math.max(cfg.leveling.baseMinXp, cfg.leveling.baseMaxXp);
+    const baseXp = minXp + Math.floor(rng() * (maxXp - minXp + 1));
+
+    const channelMult = cfg.leveling.channelMultipliers[channelId] ?? 1.0;
+    const boostMult = this.getActiveBoost(profile, nowMs);
+    const rawXp = Math.max(1, Math.round(baseXp * heatMultiplier * channelMult * boostMult));
+
+    const hourState = this.computeHourlyGrant(profile, rawXp, cfg.leveling.hourlyXpCap, nowMs);
+    if (hourState.granted <= 0) {
+      return this.skippedResult(profile, 'hourly_cap', nowMs, cfg.leveling.heatMaxMultiplier);
+    }
+
+    return this.applyXpGrant(
+      guildId,
+      profile,
+      hourState.granted,
+      {
+        messageIncrement: 1,
+        voiceMinutesIncrement: 0,
+        nextHeatStreak,
+        lastXpAt: nowMs,
+        hourWindowStart: hourState.windowStart,
+        hourXpEarned: hourState.hourXpEarned,
+        heatMultiplier,
+        boostMultiplier: boostMult,
+      },
+      cfg.leveling.levelUpCoinReward,
+      cfg.leveling.stackRoles,
+    );
+  }
+
+  awardVoiceXp(guildId: string, userId: string, nowMs = Date.now()): AwardXpResult {
+    const cfg = this.configRepo.getOrCreate(guildId);
+    const profile = this.profileRepo.getOrCreate(guildId, userId);
+
+    if (!cfg.modules.leveling) {
+      return this.skippedResult(profile, 'module_disabled', nowMs, cfg.leveling.heatMaxMultiplier);
+    }
+    if (!cfg.leveling.voiceEnabled || cfg.leveling.voiceXpPerMin <= 0) {
+      return this.skippedResult(profile, 'voice_disabled', nowMs, cfg.leveling.heatMaxMultiplier);
+    }
+
+    const boostMult = this.getActiveBoost(profile, nowMs);
+    const rawXp = Math.max(1, Math.round(cfg.leveling.voiceXpPerMin * boostMult));
+    const hourState = this.computeHourlyGrant(profile, rawXp, cfg.leveling.hourlyXpCap, nowMs);
+    if (hourState.granted <= 0) {
+      return this.skippedResult(profile, 'hourly_cap', nowMs, cfg.leveling.heatMaxMultiplier);
+    }
+
+    return this.applyXpGrant(
+      guildId,
+      profile,
+      hourState.granted,
+      {
+        messageIncrement: 0,
+        voiceMinutesIncrement: 1,
+        nextHeatStreak: profile.heatStreak,
+        lastXpAt: profile.lastXpAt,
+        hourWindowStart: hourState.windowStart,
+        hourXpEarned: hourState.hourXpEarned,
+        heatMultiplier: 1.0,
+        boostMultiplier: boostMult,
+      },
+      cfg.leveling.levelUpCoinReward,
+      cfg.leveling.stackRoles,
+    );
+  }
+
+  setUserXp(guildId: string, userId: string, targetXp: number): AwardXpResult {
+    const cfg = this.configRepo.getOrCreate(guildId);
+    const profile = this.profileRepo.getOrCreate(guildId, userId);
+    const clampedXp = Math.max(0, Math.floor(targetXp));
+    const oldLevel = profile.level;
+    const progress = calculateLevelProgress(clampedXp);
+    const newLevel = progress.level;
+
+    this.profileRepo.save({
+      ...profile,
+      xp: clampedXp,
+      level: newLevel,
+    });
+
+    const roleChanges = this.computeRoleRewards(guildId, oldLevel, newLevel, cfg.leveling.stackRoles);
+    return {
+      awarded: true,
+      xpGained: clampedXp - profile.xp,
+      totalXp: clampedXp,
+      heatStreak: profile.heatStreak,
+      heatMultiplier: 1.0,
+      boostMultiplier: 1.0,
+      leveledUp: newLevel > oldLevel,
+      oldLevel,
+      newLevel,
+      coinsAwarded: 0,
+      rolesToAdd: roleChanges.rolesToAdd,
+      rolesToRemove: roleChanges.rolesToRemove,
+    };
+  }
+
+  getRankCardData(guildId: string, userId: string, nowMs = Date.now()): RankCardData {
+    const cfg = this.configRepo.getOrCreate(guildId);
+    const profile = this.profileRepo.getOrCreate(guildId, userId);
+    const progress = calculateLevelProgress(profile.xp);
+    const { rank, total } = this.profileRepo.getXpRank(guildId, userId);
+    const heatWindowMs = cfg.leveling.heatWindowSec * 1000;
+    const heatActive = profile.lastXpAt > 0 && nowMs - profile.lastXpAt <= heatWindowMs;
+    const heatMultiplier = heatActive
+      ? getHeatMultiplier(profile.heatStreak, cfg.leveling.heatMaxMultiplier)
+      : 1.0;
+
+    return {
+      profile,
+      progress,
+      rank,
+      totalMembers: total,
+      heatMultiplier,
+      activeBoostMultiplier: this.getActiveBoost(profile, nowMs),
+      boostExpiresAt: profile.xpBoostExpiresAt > nowMs ? profile.xpBoostExpiresAt : 0,
+    };
+  }
+
+  getLeaderboard(
+    guildId: string,
+    type: LeaderboardType,
+    page = 1,
+    pageSize = 10,
+  ): LeaderboardPage {
+    const safePage = Math.max(1, page);
+    const offset = (safePage - 1) * pageSize;
+
+    if (type === 'invites') {
+      const res = this.inviteRepo.listLeaderboard(guildId, pageSize, offset);
+      const totalPages = Math.max(1, Math.ceil(res.total / pageSize));
+      return {
+        type,
+        page: Math.min(safePage, totalPages),
+        totalPages,
+        totalItems: res.total,
+        items: res.items.map((row) => ({
+          userId: row.inviterId,
+          primaryValue: row.inviteCount,
+          secondaryValue: 0,
+          equippedTitle: null,
+        })),
+      };
+    }
+
+    const res =
+      type === 'coins'
+        ? this.profileRepo.listLeaderboardByCoins(guildId, pageSize, offset)
+        : this.profileRepo.listLeaderboardByXp(guildId, pageSize, offset);
+
+    const totalPages = Math.max(1, Math.ceil(res.total / pageSize));
+    return {
+      type,
+      page: Math.min(safePage, totalPages),
+      totalPages,
+      totalItems: res.total,
+      items: res.items.map((p) => ({
+        userId: p.userId,
+        primaryValue: type === 'coins' ? p.coins : p.xp,
+        secondaryValue: p.level,
+        equippedTitle: p.equippedTitle,
+      })),
+    };
+  }
+
+  private getActiveBoost(profile: MemberProfile, nowMs: number): number {
+    if (profile.xpBoostExpiresAt > nowMs && profile.xpBoostMultiplier > 1) {
+      return profile.xpBoostMultiplier;
+    }
+    return 1.0;
+  }
+
+  private computeHourlyGrant(
+    profile: MemberProfile,
+    requestedXp: number,
+    hourlyCap: number,
+    nowMs: number,
+  ): { granted: number; windowStart: number; hourXpEarned: number } {
+    if (hourlyCap <= 0) {
+      return { granted: requestedXp, windowStart: nowMs, hourXpEarned: requestedXp };
+    }
+    const sameWindow = profile.hourWindowStart > 0 && nowMs - profile.hourWindowStart < HOUR_MS;
+    const windowStart = sameWindow ? profile.hourWindowStart : nowMs;
+    const earnedSoFar = sameWindow ? profile.hourXpEarned : 0;
+    const remaining = Math.max(0, hourlyCap - earnedSoFar);
+    const granted = Math.min(requestedXp, remaining);
+    return {
+      granted,
+      windowStart,
+      hourXpEarned: earnedSoFar + granted,
+    };
+  }
+
+  private applyXpGrant(
+    guildId: string,
+    profile: MemberProfile,
+    grantedXp: number,
+    meta: {
+      messageIncrement: number;
+      voiceMinutesIncrement: number;
+      nextHeatStreak: number;
+      lastXpAt: number;
+      hourWindowStart: number;
+      hourXpEarned: number;
+      heatMultiplier: number;
+      boostMultiplier: number;
+    },
+    levelUpCoinReward: number,
+    stackRoles: boolean,
+  ): AwardXpResult {
+    const oldLevel = profile.level;
+    const totalXp = profile.xp + grantedXp;
+    const progress = calculateLevelProgress(totalXp);
+    const newLevel = progress.level;
+    const levelsGained = Math.max(0, newLevel - oldLevel);
+    const coinsAwarded = levelsGained * Math.max(0, levelUpCoinReward);
+
+    const updated: MemberProfile = {
+      ...profile,
+      xp: totalXp,
+      level: newLevel,
+      messageCount: profile.messageCount + meta.messageIncrement,
+      voiceMinutes: profile.voiceMinutes + meta.voiceMinutesIncrement,
+      coins: profile.coins + coinsAwarded,
+      heatStreak: meta.nextHeatStreak,
+      lastXpAt: meta.lastXpAt,
+      hourWindowStart: meta.hourWindowStart,
+      hourXpEarned: meta.hourXpEarned,
+    };
+    this.profileRepo.save(updated);
+
+    const roleChanges =
+      newLevel > oldLevel
+        ? this.computeRoleRewards(guildId, oldLevel, newLevel, stackRoles)
+        : { rolesToAdd: [], rolesToRemove: [] };
+
+    return {
+      awarded: true,
+      xpGained: grantedXp,
+      totalXp,
+      heatStreak: meta.nextHeatStreak,
+      heatMultiplier: meta.heatMultiplier,
+      boostMultiplier: meta.boostMultiplier,
+      leveledUp: newLevel > oldLevel,
+      oldLevel,
+      newLevel,
+      coinsAwarded,
+      rolesToAdd: roleChanges.rolesToAdd,
+      rolesToRemove: roleChanges.rolesToRemove,
+    };
+  }
+
+  private computeRoleRewards(
+    guildId: string,
+    oldLevel: number,
+    newLevel: number,
+    stackRoles: boolean,
+  ): { rolesToAdd: string[]; rolesToRemove: string[] } {
+    const rewards = this.profileRepo.listLevelRewards(guildId);
+    if (rewards.length === 0) {
+      return { rolesToAdd: [], rolesToRemove: [] };
+    }
+
+    const eligible = rewards.filter((r) => r.level <= newLevel);
+    if (eligible.length === 0) {
+      return { rolesToAdd: [], rolesToRemove: [] };
+    }
+
+    if (stackRoles) {
+      return {
+        rolesToAdd: eligible.filter((r) => r.level > oldLevel).map((r) => r.roleId),
+        rolesToRemove: [],
+      };
+    }
+
+    const highest = eligible[eligible.length - 1]!;
+    const rolesToRemove = eligible
+      .filter((r) => r.roleId !== highest.roleId)
+      .map((r) => r.roleId);
+    return {
+      rolesToAdd: [highest.roleId],
+      rolesToRemove,
+    };
+  }
+
+  private skippedResult(
+    profile: MemberProfile,
+    reason: XpSkipReason,
+    nowMs: number,
+    maxHeatMult: number,
+  ): AwardXpResult {
+    return {
+      awarded: false,
+      reason,
+      xpGained: 0,
+      totalXp: profile.xp,
+      heatStreak: profile.heatStreak,
+      heatMultiplier: getHeatMultiplier(profile.heatStreak, maxHeatMult),
+      boostMultiplier: this.getActiveBoost(profile, nowMs),
+      leveledUp: false,
+      oldLevel: profile.level,
+      newLevel: profile.level,
+      coinsAwarded: 0,
+      rolesToAdd: [],
+      rolesToRemove: [],
+    };
+  }
+}
