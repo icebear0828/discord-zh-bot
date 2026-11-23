@@ -8,6 +8,7 @@ import {
   TextInputStyle,
   type ButtonInteraction,
   type GuildMember,
+  type MessageCreateOptions,
   type ModalSubmitInteraction,
   type StringSelectMenuInteraction,
   type UserSelectMenuInteraction,
@@ -27,6 +28,8 @@ import {
 import {
   buildDuelMessage,
   buildMenuMessage,
+  buildPublicLeaderboardEmbed,
+  buildPublicRankEmbed,
   buildRedPacketMessage,
   type BuiltMenuMessage,
   type MenuActor,
@@ -172,6 +175,43 @@ async function respondFromModal(
   }
 }
 
+type MenuSupportedInteraction =
+  | ButtonInteraction
+  | StringSelectMenuInteraction
+  | UserSelectMenuInteraction
+  | ModalSubmitInteraction;
+
+interface ActionWithHighlight {
+  msg: BuiltMenuMessage;
+  highlight?: MessageCreateOptions;
+}
+
+async function sendPublicBroadcast(
+  interaction: MenuSupportedInteraction,
+  payload: MessageCreateOptions,
+): Promise<boolean> {
+  try {
+    const direct = interaction.channel;
+    if (direct && direct.isSendable()) {
+      await direct.send(payload);
+      return true;
+    }
+    if (interaction.channelId) {
+      const fetched = await interaction.client.channels
+        .fetch(interaction.channelId)
+        .catch(() => null);
+      if (fetched && fetched.isSendable()) {
+        await fetched.send(payload);
+        return true;
+      }
+    }
+    return false;
+  } catch (err) {
+    console.error('[menu] 发送频道公开播报失败:', err);
+    return false;
+  }
+}
+
 function buildBlackjackOutcomeFeedback(
   game: BlackjackGame,
   balance: number,
@@ -218,10 +258,12 @@ function runSlotsAction(
   guildId: string,
   actor: MenuActor,
   bet: number,
-): BuiltMenuMessage {
+): ActionWithHighlight {
   const disabledMsg = checkModuleDisabled(ctx, guildId, 'economy', '经济系统');
   if (disabledMsg) {
-    return buildMenuMessage(ctx, guildId, actor, { page: 'slots' }, { type: 'error', text: disabledMsg });
+    return {
+      msg: buildMenuMessage(ctx, guildId, actor, { page: 'slots' }, { type: 'error', text: disabledMsg }),
+    };
   }
 
   const cfg = ctx.repos.guildConfig.getOrCreate(guildId).economy;
@@ -231,7 +273,9 @@ function runSlotsAction(
       res.reason === 'insufficient_funds'
         ? `口袋现金不足，无法下注 **${bet}** ${cfg.currencyName}。`
         : '下注金额无效，请输入大于 0 的整数。';
-    return buildMenuMessage(ctx, guildId, actor, { page: 'slots' }, { type: 'error', text });
+    return {
+      msg: buildMenuMessage(ctx, guildId, actor, { page: 'slots' }, { type: 'error', text }),
+    };
   }
 
   const reelDisplay = `【 ${res.reels.join('  |  ')} 】`;
@@ -240,7 +284,23 @@ function runSlotsAction(
     type: res.netChange > 0 ? 'success' : res.netChange === 0 ? 'info' : 'error',
     text: `${reelDisplay}\n倍率：**${res.multiplier}x** ｜ 返还：**${res.payout}** ${cfg.currencyName} ｜ 净变动：**${netStr}** ｜ 现金：**${res.balance}**`,
   };
-  return buildMenuMessage(ctx, guildId, actor, { page: 'slots' }, feedback);
+  const highlight: MessageCreateOptions | undefined =
+    res.multiplier >= 4
+      ? {
+          content: `🎰 欧皇降临！<@${actor.id}> 在老虎机转出 ${reelDisplay}（${res.multiplier}x），狂赚 **+${res.netChange}** ${cfg.currencyName}！`,
+          embeds: [
+            createSuccessEmbed(
+              '🎰 频道喜报：老虎机爆大奖！',
+              `<@${actor.id}> 拉出 ${reelDisplay}（**${res.multiplier}x**），返还 ${cfg.currencyEmoji} **${res.payout}** ${cfg.currencyName}（净赚 **+${res.netChange}**）！`,
+            ),
+          ],
+        }
+      : undefined;
+
+  return {
+    msg: buildMenuMessage(ctx, guildId, actor, { page: 'slots' }, feedback),
+    highlight,
+  };
 }
 
 function runDiceAction(
@@ -249,10 +309,12 @@ function runDiceAction(
   actor: MenuActor,
   choice: DiceChoice,
   bet: number,
-): BuiltMenuMessage {
+): ActionWithHighlight {
   const disabledMsg = checkModuleDisabled(ctx, guildId, 'economy', '经济系统');
   if (disabledMsg) {
-    return buildMenuMessage(ctx, guildId, actor, { page: 'dice', choice }, { type: 'error', text: disabledMsg });
+    return {
+      msg: buildMenuMessage(ctx, guildId, actor, { page: 'dice', choice }, { type: 'error', text: disabledMsg }),
+    };
   }
 
   const cfg = ctx.repos.guildConfig.getOrCreate(guildId).economy;
@@ -262,7 +324,9 @@ function runDiceAction(
       res.reason === 'insufficient_funds'
         ? `口袋现金不足，无法下注 **${bet}** ${cfg.currencyName}。`
         : '下注金额无效，请输入大于 0 的整数。';
-    return buildMenuMessage(ctx, guildId, actor, { page: 'dice', choice }, { type: 'error', text });
+    return {
+      msg: buildMenuMessage(ctx, guildId, actor, { page: 'dice', choice }, { type: 'error', text }),
+    };
   }
 
   const diceText = res.dice.map((d) => `🎲 **${d}**`).join(' ');
@@ -274,7 +338,23 @@ function runDiceAction(
     type: res.won ? 'success' : 'error',
     text: `开骰：${diceText} → **${outcome}**\n${res.won ? '中奖！' : '未中奖，'}净变动：**${netStr}** ${cfg.currencyName} ｜ 现金：**${res.balance}**`,
   };
-  return buildMenuMessage(ctx, guildId, actor, { page: 'dice', choice }, feedback);
+  const highlight: MessageCreateOptions | undefined =
+    res.won && res.isTriple
+      ? {
+          content: `🎲 欧皇降临！<@${actor.id}> 在猜大小押中豹子（10x），狂赚 **+${res.netChange}** ${cfg.currencyName}！`,
+          embeds: [
+            createSuccessEmbed(
+              '🎲 频道喜报：豹子通杀！',
+              `<@${actor.id}> 掷出 ${diceText}（**${outcome}**），一举赢走 ${cfg.currencyEmoji} **+${res.netChange}** ${cfg.currencyName}！`,
+            ),
+          ],
+        }
+      : undefined;
+
+  return {
+    msg: buildMenuMessage(ctx, guildId, actor, { page: 'dice', choice }, feedback),
+    highlight,
+  };
 }
 
 function buildBlackjackResponse(
@@ -282,7 +362,7 @@ function buildBlackjackResponse(
   guildId: string,
   actor: MenuActor,
   res: BlackjackActionResult,
-): BuiltMenuMessage {
+): ActionWithHighlight {
   const cfg = ctx.repos.guildConfig.getOrCreate(guildId).economy;
   if (!res.ok) {
     const msgMap: Record<typeof res.reason, string> = {
@@ -292,13 +372,15 @@ function buildBlackjackResponse(
       no_active_game: '当前没有进行中的牌局，请先下注开局。',
       cannot_double: '只能在首轮两张牌时双倍下注。',
     };
-    return buildMenuMessage(
-      ctx,
-      guildId,
-      actor,
-      { page: 'bj' },
-      { type: 'error', text: msgMap[res.reason] },
-    );
+    return {
+      msg: buildMenuMessage(
+        ctx,
+        guildId,
+        actor,
+        { page: 'bj' },
+        { type: 'error', text: msgMap[res.reason] },
+      ),
+    };
   }
 
   const feedback = buildBlackjackOutcomeFeedback(res.game, res.balance, cfg.currencyName);
@@ -307,7 +389,27 @@ function buildBlackjackResponse(
       ? { page: 'bj' }
       : { page: 'bj', finishedGame: res.game, balanceAfterFinish: res.balance };
 
-  return buildMenuMessage(ctx, guildId, actor, view, feedback);
+  const netWin = res.game.payout - res.game.bet;
+  const isBigWin =
+    res.game.status !== 'playing' &&
+    (res.game.status === 'player_blackjack' || netWin >= 500);
+  const headline = res.game.status === 'player_blackjack' ? '打出天胡 Blackjack' : '大获全胜';
+  const highlight: MessageCreateOptions | undefined = isBigWin
+    ? {
+        content: `🃏 牌神降临！<@${actor.id}> 在二十一点${headline}，赢得 **${res.game.payout}** ${cfg.currencyName}！`,
+        embeds: [
+          createSuccessEmbed(
+            `🃏 频道喜报：二十一点${headline}！`,
+            `<@${actor.id}> 本局下注 **${res.game.bet}**，赢得 ${cfg.currencyEmoji} **${res.game.payout}** ${cfg.currencyName}（净赚 **+${netWin}**）！`,
+          ),
+        ],
+      }
+    : undefined;
+
+  return {
+    msg: buildMenuMessage(ctx, guildId, actor, view, feedback),
+    highlight,
+  };
 }
 
 function runBankTransferAction(
@@ -468,6 +570,17 @@ export async function handleMenuButton(
       }
       const cfg = ctx.repos.guildConfig.getOrCreate(guildId).economy;
       const res = ctx.services.fun.drawDailyFortune(guildId, actor.id);
+      if (!res.alreadyDrawn && res.record.luckTier === '大吉') {
+        await sendPublicBroadcast(interaction, {
+          content: `🎋 欧皇抽签！<@${actor.id}> 今日抽到【大吉】，获赠 **+${res.record.bonusCoins}** ${cfg.currencyName}！`,
+          embeds: [
+            createSuccessEmbed(
+              '🎋 频道喜报：今日运势【大吉】！',
+              `<@${actor.id}> 抽中上上签【大吉】，获得 ${cfg.currencyEmoji} **+${res.record.bonusCoins}** ${cfg.currencyName}，幸运数字 **${res.record.luckyNumber}**！`,
+            ),
+          ],
+        });
+      }
       const feedback: MenuFeedback = {
         type: res.alreadyDrawn ? 'info' : 'success',
         text: [
@@ -482,7 +595,11 @@ export async function handleMenuButton(
 
   if (section === 'slots') {
     const bet = parsePositiveInt(parts[2] ?? '') ?? 0;
-    await interaction.update(runSlotsAction(ctx, guildId, actor, bet));
+    const out = runSlotsAction(ctx, guildId, actor, bet);
+    if (out.highlight) {
+      await sendPublicBroadcast(interaction, out.highlight);
+    }
+    await interaction.update(out.msg);
     return;
   }
 
@@ -495,7 +612,11 @@ export async function handleMenuButton(
   if (section === 'dice_bet') {
     const choice = parseDiceChoice(parts[2]);
     const bet = parsePositiveInt(parts[3] ?? '') ?? 0;
-    await interaction.update(runDiceAction(ctx, guildId, actor, choice, bet));
+    const out = runDiceAction(ctx, guildId, actor, choice, bet);
+    if (out.highlight) {
+      await sendPublicBroadcast(interaction, out.highlight);
+    }
+    await interaction.update(out.msg);
     return;
   }
 
@@ -509,7 +630,11 @@ export async function handleMenuButton(
     }
     const bet = parsePositiveInt(parts[2] ?? '') ?? 0;
     const res = ctx.services.blackjack.startGame(guildId, actor.id, bet);
-    await interaction.update(buildBlackjackResponse(ctx, guildId, actor, res));
+    const out = buildBlackjackResponse(ctx, guildId, actor, res);
+    if (out.highlight) {
+      await sendPublicBroadcast(interaction, out.highlight);
+    }
+    await interaction.update(out.msg);
     return;
   }
 
@@ -528,7 +653,11 @@ export async function handleMenuButton(
         : action === 'double'
           ? ctx.services.blackjack.doubleDown(guildId, actor.id)
           : ctx.services.blackjack.stand(guildId, actor.id);
-    await interaction.update(buildBlackjackResponse(ctx, guildId, actor, res));
+    const out = buildBlackjackResponse(ctx, guildId, actor, res);
+    if (out.highlight) {
+      await sendPublicBroadcast(interaction, out.highlight);
+    }
+    await interaction.update(out.msg);
     return;
   }
 
@@ -637,6 +766,71 @@ export async function handleMenuButton(
       buildMenuMessage(ctx, guildId, actor, { page: 'leaderboard', lbType, lbPage }),
     );
     return;
+  }
+
+  if (section === 'share') {
+    const shareTarget = parts[2];
+    if (shareTarget === 'rank') {
+      const disabledMsg = checkModuleDisabled(ctx, guildId, 'leveling', '等级与热度');
+      if (disabledMsg) {
+        await interaction.update(
+          buildMenuMessage(ctx, guildId, actor, { page: 'rank' }, { type: 'error', text: disabledMsg }),
+        );
+        return;
+      }
+      const publicEmbed = buildPublicRankEmbed(ctx, guildId, actor);
+      const sent = await sendPublicBroadcast(interaction, {
+        content: `📢 <@${actor.id}> 晒出了个人等级名片：`,
+        embeds: [publicEmbed],
+      });
+      const feedback: MenuFeedback = sent
+        ? { type: 'success', text: '已将你的等级名片晒出到当前频道！' }
+        : { type: 'error', text: '无法在当前频道发送公开消息，请检查机器人发言权限。' };
+      await interaction.update(buildMenuMessage(ctx, guildId, actor, { page: 'rank' }, feedback));
+      return;
+    }
+
+    if (shareTarget === 'lb') {
+      const lbType = parseLeaderboardType(parts[3]);
+      const lbPage = parsePositiveInt(parts[4] ?? '') ?? 1;
+      const moduleMap: Record<LeaderboardType, { key: ModuleKey; name: string }> = {
+        xp: { key: 'leveling', name: '等级与热度' },
+        coins: { key: 'economy', name: '经济系统' },
+        invites: { key: 'invites', name: '邀请追踪' },
+      };
+      const mod = moduleMap[lbType];
+      const disabledMsg = checkModuleDisabled(ctx, guildId, mod.key, mod.name);
+      if (disabledMsg) {
+        await interaction.update(
+          buildMenuMessage(
+            ctx,
+            guildId,
+            actor,
+            { page: 'leaderboard', lbType, lbPage },
+            { type: 'error', text: disabledMsg },
+          ),
+        );
+        return;
+      }
+      const cfg = ctx.repos.guildConfig.getOrCreate(guildId).economy;
+      const lbNameMap: Record<LeaderboardType, string> = {
+        xp: '等级经验排行榜',
+        coins: `${cfg.currencyName}富豪榜`,
+        invites: '邀请贡献排行榜',
+      };
+      const publicEmbed = buildPublicLeaderboardEmbed(ctx, guildId, lbType, lbPage);
+      const sent = await sendPublicBroadcast(interaction, {
+        content: `📢 <@${actor.id}> 晒出了服务器「${lbNameMap[lbType]}」：`,
+        embeds: [publicEmbed],
+      });
+      const feedback: MenuFeedback = sent
+        ? { type: 'success', text: `已将${lbNameMap[lbType]}晒出到当前频道！` }
+        : { type: 'error', text: '无法在当前频道发送公开消息，请检查机器人发言权限。' };
+      await interaction.update(
+        buildMenuMessage(ctx, guildId, actor, { page: 'leaderboard', lbType, lbPage }, feedback),
+      );
+      return;
+    }
   }
 
   if (section === 'modal') {
@@ -928,30 +1122,51 @@ export async function handleMenuUserSelect(
       return;
     }
 
+    const broadcastSent = await sendPublicBroadcast(
+      interaction,
+      res.success
+        ? {
+            content: `🥷 <@${actor.id}> 抢了 <@${targetId}> **${res.amount}** ${cfg.currencyName}！`,
+            embeds: [
+              createSuccessEmbed(
+                '🥷 频道快报：抢钱得手！',
+                [
+                  `<@${actor.id}> 从 <@${targetId}> 的口袋里抢走了 ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}！`,
+                  `受害者剩余现金：**${res.targetBalance}** ｜ 抢劫者当前现金：**${res.attackerBalance}**`,
+                  `🛡️ <@${targetId}> 已自动触发防盗护盾（快把现金存进银行防偷吧！）`,
+                ].join('\n'),
+              ),
+            ],
+          }
+        : {
+            content: `🚨 <@${actor.id}> 抢 <@${targetId}> 翻车被抓，反赔了 **${res.amount}** ${cfg.currencyName}！`,
+            embeds: [
+              createErrorEmbed(
+                '🚨 频道快报：抢钱翻车现场！',
+                [
+                  `<@${actor.id}> 企图打劫 <@${targetId}> 时翻车被抓，现场赔偿了 ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}！`,
+                  `抢劫者当前现金：**${res.attackerBalance}** ｜ 受害者当前现金：**${res.targetBalance}**`,
+                ].join('\n'),
+              ),
+            ],
+          },
+    );
+
+    const warnSuffix = broadcastSent
+      ? ''
+      : '\n⚠️ 当前频道未能发出公开快报，请检查机器人发言权限。';
+
     const feedback: MenuFeedback = res.success
       ? {
           type: 'success',
-          text: `🥷 打劫得手！从 <@${targetId}> 口袋顺走了 ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}，你的现金：**${res.attackerBalance}**。`,
+          text: `🥷 打劫得手！从 <@${targetId}> 口袋顺走了 ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}，你的现金：**${res.attackerBalance}**。${warnSuffix}`,
         }
       : {
           type: 'error',
-          text: `🚨 打劫翻车被抓现行！向 <@${targetId}> 赔偿了 ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}，你的现金：**${res.attackerBalance}**。`,
+          text: `🚨 打劫翻车被抓现行！向 <@${targetId}> 赔偿了 ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}，你的现金：**${res.attackerBalance}**。${warnSuffix}`,
         };
 
     await interaction.update(buildMenuMessage(ctx, guildId, actor, { page: 'rob' }, feedback));
-
-    if (interaction.channel?.isSendable()) {
-      const publicEmbed = res.success
-        ? createSuccessEmbed(
-            '🥷 频道快报：有人得手啦！',
-            `<@${actor.id}> 偷偷从 <@${targetId}> 的口袋里顺走了 ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}！\n*（<@${targetId}> 已自动触发防盗护盾）*`,
-          )
-        : createErrorEmbed(
-            '🚨 频道快报：抓到小偷啦！',
-            `<@${actor.id}> 企图打劫 <@${targetId}> 时翻车被抓，现场赔偿了 ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}！`,
-          );
-      await interaction.channel.send({ embeds: [publicEmbed] }).catch(() => undefined);
-    }
     return;
   }
 
@@ -1078,15 +1293,16 @@ export async function handleMenuUserSelect(
     }
 
     const res = ctx.services.fun.performInteraction(guildId, actor.id, targetId, action);
-    if (interaction.channel?.isSendable()) {
-      const publicEmbed = new EmbedBuilder()
-        .setColor(COLORS.FUN)
-        .setDescription(
-          `${res.emoji} <@${actor.id}> ${res.verbPhrase} <@${targetId}>！\n*（你们之间的「${res.label}」累计已达 **${res.count}** 次）*`,
-        )
-        .setTimestamp();
-      await interaction.channel.send({ embeds: [publicEmbed] }).catch(() => undefined);
-    }
+    const publicEmbed = new EmbedBuilder()
+      .setColor(COLORS.FUN)
+      .setDescription(
+        `${res.emoji} <@${actor.id}> ${res.verbPhrase} <@${targetId}>！\n*（你们之间的「${res.label}」累计已达 **${res.count}** 次）*`,
+      )
+      .setTimestamp();
+    await sendPublicBroadcast(interaction, {
+      content: `${res.emoji} <@${actor.id}> ${res.verbPhrase} <@${targetId}>！`,
+      embeds: [publicEmbed],
+    });
 
     await interaction.update(
       buildMenuMessage(
@@ -1122,7 +1338,11 @@ export async function handleMenuModal(
       );
       return;
     }
-    await respondFromModal(interaction, runSlotsAction(ctx, guildId, actor, amount));
+    const out = runSlotsAction(ctx, guildId, actor, amount);
+    if (out.highlight) {
+      await sendPublicBroadcast(interaction, out.highlight);
+    }
+    await respondFromModal(interaction, out.msg);
     return;
   }
 
@@ -1142,7 +1362,11 @@ export async function handleMenuModal(
       );
       return;
     }
-    await respondFromModal(interaction, runDiceAction(ctx, guildId, actor, choice, amount));
+    const out = runDiceAction(ctx, guildId, actor, choice, amount);
+    if (out.highlight) {
+      await sendPublicBroadcast(interaction, out.highlight);
+    }
+    await respondFromModal(interaction, out.msg);
     return;
   }
 
@@ -1164,7 +1388,11 @@ export async function handleMenuModal(
       return;
     }
     const res = ctx.services.blackjack.startGame(guildId, actor.id, amount);
-    await respondFromModal(interaction, buildBlackjackResponse(ctx, guildId, actor, res));
+    const out = buildBlackjackResponse(ctx, guildId, actor, res);
+    if (out.highlight) {
+      await sendPublicBroadcast(interaction, out.highlight);
+    }
+    await respondFromModal(interaction, out.msg);
     return;
   }
 
@@ -1221,18 +1449,15 @@ export async function handleMenuModal(
       return;
     }
 
-    if (interaction.channel?.isSendable()) {
-      await interaction.channel
-        .send({
-          embeds: [
-            createSuccessEmbed(
-              '💸 群友转账通知',
-              `<@${actor.id}> 向 <@${targetId}> 转出了 ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}！`,
-            ),
-          ],
-        })
-        .catch(() => undefined);
-    }
+    await sendPublicBroadcast(interaction, {
+      content: `💸 <@${actor.id}> 给 <@${targetId}> 转账了 **${res.amount}** ${cfg.currencyName}！`,
+      embeds: [
+        createSuccessEmbed(
+          '💸 群友转账通知',
+          `<@${actor.id}> 向 <@${targetId}> 转出了 ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}！`,
+        ),
+      ],
+    });
 
     await respondFromModal(
       interaction,
@@ -1410,9 +1635,10 @@ export async function handleMenuModal(
     }
 
     try {
-      const sentMsg = await interaction.channel.send(
-        buildRedPacketMessage(res.packet, [], null, cfg),
-      );
+      const sentMsg = await interaction.channel.send({
+        content: `🧧 <@${actor.id}> 发了一个 **${res.packet.totalAmount}** ${cfg.currencyName} 的拼手气红包（${res.packet.totalCount} 份），快来抢！`,
+        ...buildRedPacketMessage(res.packet, [], null, cfg),
+      });
       ctx.services.multiplayer.bindRedPacketMessage(res.packet.id, sentMsg.id);
     } catch {
       ctx.db.transaction(() => {

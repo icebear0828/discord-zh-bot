@@ -14,6 +14,7 @@ import {
 } from 'discord.js';
 import { describe, expect, it, vi } from 'vitest';
 import { menuCommand } from '../../src/commands/general/menu.js';
+import { configCommand } from '../../src/commands/general/config.js';
 import { createDatabase } from '../../src/db/database.js';
 import { FunRepo } from '../../src/db/repositories/funRepo.js';
 import { GiveawayRepo } from '../../src/db/repositories/giveawayRepo.js';
@@ -182,7 +183,8 @@ function createChatCommandMock(opts: {
 function createButtonMock(opts: {
   customId: string;
   userId: string;
-  channel?: MockChannel;
+  channel?: MockChannel | null;
+  fetchedChannel?: MockChannel | null;
   messageCustomIds?: string[];
 }) {
   const reply = vi.fn(async (_payload: MockPayload) => undefined);
@@ -191,7 +193,8 @@ function createButtonMock(opts: {
   const deferUpdate = vi.fn(async () => undefined);
   const showModal = vi.fn(async (_modal: { toJSON(): { custom_id: string } }) => undefined);
   const msgEdit = vi.fn(async (_payload: MockPayload) => undefined);
-  const channel = opts.channel ?? makeMockChannel(true);
+  const channel = opts.channel === undefined ? makeMockChannel(true) : opts.channel;
+  const fetchChannel = vi.fn(async () => opts.fetchedChannel ?? null);
 
   const messageComponents = opts.messageCustomIds
     ? [
@@ -206,8 +209,13 @@ function createButtonMock(opts: {
     customId: opts.customId,
     guildId: 'g1',
     guild: { id: 'g1', name: '测试服务器' },
-    channelId: channel.id,
+    channelId: channel?.id ?? 'c1',
     channel,
+    client: {
+      channels: {
+        fetch: fetchChannel,
+      },
+    },
     user: makeMockUser({ id: opts.userId }),
     member: makeMockMember(opts.userId),
     replied: false,
@@ -240,6 +248,7 @@ function createButtonMock(opts: {
     showModal,
     msgEdit,
     channel,
+    fetchChannel,
   };
 }
 
@@ -288,13 +297,15 @@ function createUserSelectMock(opts: {
   customId: string;
   userId: string;
   target: MockUserInput;
-  channel?: MockChannel;
+  channel?: MockChannel | null;
+  fetchedChannel?: MockChannel | null;
 }) {
   const reply = vi.fn(async (_payload: MockPayload) => undefined);
   const update = vi.fn(async (_payload: MockPayload) => undefined);
   const deferUpdate = vi.fn(async () => undefined);
   const showModal = vi.fn(async (_modal: { toJSON(): { custom_id: string } }) => undefined);
-  const channel = opts.channel ?? makeMockChannel(true);
+  const channel = opts.channel === undefined ? makeMockChannel(true) : opts.channel;
+  const fetchChannel = vi.fn(async () => opts.fetchedChannel ?? null);
   const targetUser = makeMockUser(opts.target);
   const usersMap = new Map([[targetUser.id, targetUser]]);
 
@@ -307,8 +318,13 @@ function createUserSelectMock(opts: {
     customId: opts.customId,
     guildId: 'g1',
     guild: { id: 'g1', name: '测试服务器' },
-    channelId: channel.id,
+    channelId: channel?.id ?? 'c1',
     channel,
+    client: {
+      channels: {
+        fetch: fetchChannel,
+      },
+    },
     values: [targetUser.id],
     users,
     user: makeMockUser({ id: opts.userId }),
@@ -335,6 +351,7 @@ function createUserSelectMock(opts: {
     deferUpdate,
     showModal,
     channel,
+    fetchChannel,
   };
 }
 
@@ -539,7 +556,7 @@ describe('menu router & multiplayer interaction flows', () => {
     await routeInteraction(robSelf.interaction, ctx);
     expect(robSelf.update.mock.calls[0]![0].embeds?.[0]?.toJSON().description).toContain('不能打劫自己');
 
-    // Valid rob executes & sends public notice
+    // Valid rob executes & sends public content with mentions + amount + embed
     const robTarget = createUserSelectMock({
       customId: 'menu:user:rob',
       userId: 'attacker',
@@ -547,7 +564,25 @@ describe('menu router & multiplayer interaction flows', () => {
     });
     await routeInteraction(robTarget.interaction, ctx);
     expect(robTarget.update).toHaveBeenCalledTimes(1);
-    expect(robTarget.channel.send).toHaveBeenCalledTimes(1);
+    expect(robTarget.channel!.send).toHaveBeenCalledTimes(1);
+    const robBroadcast = robTarget.channel!.send.mock.calls[0]![0];
+    expect(robBroadcast.content).toContain('<@attacker>');
+    expect(robBroadcast.content).toContain('<@victim>');
+    expect(robBroadcast.embeds?.[0]?.toJSON().title).toMatch(/抢钱/);
+
+    // Fallback channel fetch works when interaction.channel is null
+    ctx.repos.profile.addCoins('g1', 'victim2', 1000);
+    const fetchedFallback = makeMockChannel(true, 'fallback-1');
+    const robFallback = createUserSelectMock({
+      customId: 'menu:user:rob',
+      userId: 'attacker2',
+      target: { id: 'victim2' },
+      channel: null,
+      fetchedChannel: fetchedFallback,
+    });
+    await routeInteraction(robFallback.interaction, ctx);
+    expect(robFallback.fetchChannel).toHaveBeenCalledTimes(1);
+    expect(fetchedFallback.send).toHaveBeenCalledTimes(1);
 
     ctx.db.close();
   });
@@ -575,6 +610,9 @@ describe('menu router & multiplayer interaction flows', () => {
     expect(ctx.repos.profile.getOrCreate('g1', 'sender').coins).toBe(550);
     expect(ctx.repos.profile.getOrCreate('g1', 'receiver').coins).toBe(250);
     expect(payModal.channel.send).toHaveBeenCalledTimes(1);
+    expect(payModal.channel.send.mock.calls[0]![0].content).toContain('<@sender>');
+    expect(payModal.channel.send.mock.calls[0]![0].content).toContain('<@receiver>');
+    expect(payModal.channel.send.mock.calls[0]![0].content).toContain('250');
     expect(payModal.update).toHaveBeenCalledTimes(1);
 
     ctx.db.close();
@@ -913,6 +951,211 @@ describe('menu router & multiplayer interaction flows', () => {
       expect(claimExpired.reply.mock.calls[0]![0].flags).toBe(MessageFlags.Ephemeral);
       expect(ctx.repos.profile.getOrCreate('g1', 'p1').coins).toBe(1000);
     }
+
+    ctx.db.close();
+  });
+
+  it('broadcasts solo big wins & explicit rank/leaderboard shares while keeping ordinary solo silent', async () => {
+    const ctx = createTestCtx();
+    ctx.repos.profile.addCoins('g1', 'u1', 10_000);
+
+    // Ordinary slots loss/small win does NOT broadcast
+    const playSlotsSpy = vi.spyOn(ctx.services.economy, 'playSlots');
+    playSlotsSpy.mockReturnValueOnce({
+      ok: true,
+      reels: ['🍒', '🍋', '🍇'],
+      multiplier: 0,
+      payout: 0,
+      netChange: -100,
+      balance: 9900,
+    });
+    const ordinarySlots = createButtonMock({ customId: 'menu:slots:100', userId: 'u1' });
+    await routeInteraction(ordinarySlots.interaction, ctx);
+    expect(ordinarySlots.channel!.send).not.toHaveBeenCalled();
+
+    // Slots >= 4x broadcasts public highlight
+    playSlotsSpy.mockReturnValueOnce({
+      ok: true,
+      reels: ['7️⃣', '7️⃣', '7️⃣'],
+      multiplier: 15,
+      payout: 1500,
+      netChange: 1400,
+      balance: 11_300,
+    });
+    const jackpotSlots = createButtonMock({ customId: 'menu:slots:100', userId: 'u1' });
+    await routeInteraction(jackpotSlots.interaction, ctx);
+    expect(jackpotSlots.channel!.send).toHaveBeenCalledTimes(1);
+    expect(jackpotSlots.channel!.send.mock.calls[0]![0].content).toContain('<@u1>');
+
+    // Dice triple win broadcasts public highlight; normal dice win does not
+    const playDiceSpy = vi.spyOn(ctx.services.economy, 'playDice');
+    playDiceSpy.mockReturnValueOnce({
+      ok: true,
+      dice: [4, 5, 6],
+      sum: 15,
+      isTriple: false,
+      won: true,
+      netChange: 100,
+      balance: 11_400,
+    });
+    const normalDice = createButtonMock({ customId: 'menu:dice_bet:big:100', userId: 'u1' });
+    await routeInteraction(normalDice.interaction, ctx);
+    expect(normalDice.channel!.send).not.toHaveBeenCalled();
+
+    playDiceSpy.mockReturnValueOnce({
+      ok: true,
+      dice: [6, 6, 6],
+      sum: 18,
+      isTriple: true,
+      won: true,
+      netChange: 1000,
+      balance: 12_400,
+    });
+    const tripleDice = createButtonMock({ customId: 'menu:dice_bet:triple:100', userId: 'u1' });
+    await routeInteraction(tripleDice.interaction, ctx);
+    expect(tripleDice.channel!.send).toHaveBeenCalledTimes(1);
+    expect(tripleDice.channel!.send.mock.calls[0]![0].content).toContain('<@u1>');
+
+    // Fortune: first draw 大吉 broadcasts; non-大吉 or repeat draw does not
+    const fortuneSpy = vi.spyOn(ctx.services.fun, 'drawDailyFortune');
+    fortuneSpy.mockReturnValueOnce({
+      alreadyDrawn: false,
+      balance: 12_480,
+      record: {
+        guildId: 'g1',
+        userId: 'u1',
+        dateKey: '2026-11-23',
+        luckTier: '大吉',
+        goodFor: '水群',
+        avoid: '梭哈',
+        luckyNumber: 8,
+        bonusCoins: 80,
+        createdAt: Date.now(),
+      },
+    });
+    const luckyFortune = createButtonMock({ customId: 'menu:act:fortune', userId: 'u1' });
+    await routeInteraction(luckyFortune.interaction, ctx);
+    expect(luckyFortune.channel!.send).toHaveBeenCalledTimes(1);
+    expect(luckyFortune.channel!.send.mock.calls[0]![0].content).toContain('<@u1>');
+
+    fortuneSpy.mockReturnValueOnce({
+      alreadyDrawn: true,
+      balance: 12_480,
+      record: {
+        guildId: 'g1',
+        userId: 'u1',
+        dateKey: '2026-11-23',
+        luckTier: '大吉',
+        goodFor: '水群',
+        avoid: '梭哈',
+        luckyNumber: 8,
+        bonusCoins: 80,
+        createdAt: Date.now(),
+      },
+    });
+    const repeatFortune = createButtonMock({ customId: 'menu:act:fortune', userId: 'u1' });
+    await routeInteraction(repeatFortune.interaction, ctx);
+    expect(repeatFortune.channel!.send).not.toHaveBeenCalled();
+
+    // Blackjack big win (>= 500 net) broadcasts public highlight
+    const bjSpy = vi.spyOn(ctx.services.blackjack, 'startGame');
+    bjSpy.mockReturnValueOnce({
+      ok: true,
+      balance: 13_980,
+      game: {
+        guildId: 'g1',
+        userId: 'u1',
+        bet: 500,
+        deck: [],
+        playerHand: [
+          { rank: 'A', suit: '♠' },
+          { rank: 'K', suit: '♥' },
+        ],
+        dealerHand: [
+          { rank: '9', suit: '♣' },
+          { rank: '8', suit: '♦' },
+        ],
+        status: 'player_blackjack',
+        payout: 1250,
+        canDouble: false,
+      },
+    });
+    const bjWin = createButtonMock({ customId: 'menu:bj_start:500', userId: 'u1' });
+    await routeInteraction(bjWin.interaction, ctx);
+    expect(bjWin.channel!.send).toHaveBeenCalledTimes(1);
+    expect(bjWin.channel!.send.mock.calls[0]![0].content).toContain('<@u1>');
+
+    // Share rank & leaderboard to channel
+    const shareRank = createButtonMock({ customId: 'menu:share:rank', userId: 'u1' });
+    await routeInteraction(shareRank.interaction, ctx);
+    expect(shareRank.channel!.send).toHaveBeenCalledTimes(1);
+    expect(shareRank.channel!.send.mock.calls[0]![0].embeds).toHaveLength(1);
+    expect(shareRank.update.mock.calls[0]![0].embeds?.[0]?.toJSON().description).toContain('晒出');
+
+    const shareLb = createButtonMock({ customId: 'menu:share:lb:coins:1', userId: 'u1' });
+    await routeInteraction(shareLb.interaction, ctx);
+    expect(shareLb.channel!.send).toHaveBeenCalledTimes(1);
+    expect(shareLb.channel!.send.mock.calls[0]![0].embeds?.[0]?.toJSON().title).toContain('富豪榜');
+
+    ctx.db.close();
+  });
+
+  it('supports /config grant-coins and grant-all-coins for admins', async () => {
+    const ctx = createTestCtx();
+
+    // grant-coins to one human
+    const grantOneReply = vi.fn(async (_payload: MockPayload) => undefined);
+    const grantOneCmd = {
+      commandName: 'config',
+      guildId: 'g1',
+      guild: { id: 'g1', name: '测试服务器' },
+      user: makeMockUser({ id: 'admin1' }),
+      member: makeMockMember('admin1', true),
+      options: {
+        getSubcommand: () => 'grant-coins',
+        getUser: () => makeMockUser({ id: 'u1' }),
+        getInteger: () => 5000,
+      },
+      inCachedGuild: () => true,
+      reply: grantOneReply,
+    } as unknown as ChatInputCommandInteraction;
+    await configCommand.execute(grantOneCmd, ctx);
+    expect(ctx.repos.profile.getOrCreate('g1', 'u1').coins).toBe(5000);
+    expect(grantOneReply.mock.calls[0]![0].flags).toBeUndefined();
+
+    // grant-all-coins to all human members, excluding bots
+    const membersMap = new Map([
+      ['u1', { id: 'u1', user: makeMockUser({ id: 'u1' }) }],
+      ['u2', { id: 'u2', user: makeMockUser({ id: 'u2' }) }],
+      ['bot1', { id: 'bot1', user: makeMockUser({ id: 'bot1', bot: true }) }],
+    ]);
+    const deferReply = vi.fn(async () => undefined);
+    const editReply = vi.fn(async (_payload: MockPayload) => undefined);
+    const grantAllCmd = {
+      commandName: 'config',
+      guildId: 'g1',
+      guild: {
+        id: 'g1',
+        name: '测试服务器',
+        members: { fetch: vi.fn(async () => membersMap) },
+      },
+      user: makeMockUser({ id: 'admin1' }),
+      member: makeMockMember('admin1', true),
+      options: {
+        getSubcommand: () => 'grant-all-coins',
+        getInteger: () => 10_000,
+      },
+      inCachedGuild: () => true,
+      deferReply,
+      editReply,
+      reply: vi.fn(async () => undefined),
+    } as unknown as ChatInputCommandInteraction;
+    await configCommand.execute(grantAllCmd, ctx);
+    expect(deferReply).toHaveBeenCalledTimes(1);
+    expect(ctx.repos.profile.getOrCreate('g1', 'u1').coins).toBe(15_000);
+    expect(ctx.repos.profile.getOrCreate('g1', 'u2').coins).toBe(10_000);
+    expect(ctx.repos.profile.getOrCreate('g1', 'bot1').coins).toBe(0);
+    expect(editReply.mock.calls[0]![0].embeds?.[0]?.toJSON().description).toContain('2');
 
     ctx.db.close();
   });

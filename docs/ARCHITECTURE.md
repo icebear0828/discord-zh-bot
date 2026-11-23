@@ -120,7 +120,7 @@ flowchart TD
 
 | 前缀 | 交互类型 | 处理器函数 | 完整 `customId` 格式与用途 |
 | --- | --- | --- | --- |
-| `menu` | Button | `handleMenuButton` | `menu:open`（大厅开菜单）<br/>`menu:nav:<page>`（切换页面，`social` 可带 `:<action>`）<br/>`menu:act:<daily\|work\|fortune>`（快捷动作，自动识别原页为 `home` 或 `solo`）<br/>`menu:slots:<50\|100\|500>`（老虎机定额下注）<br/>`menu:dice_pick:<big\|small\|triple>`（切换猜大小投注边）<br/>`menu:dice_bet:<choice>:<50\|100\|500>`（猜大小定额下注）<br/>`menu:bj_start:<50\|100\|500>`（二十一点定额开局）<br/>`menu:bj:<hit\|stand\|double>`（二十一点牌局操作）<br/>`menu:bank:<dep\|wd>:<25\|50\|all>`（银行比例存取）<br/>`menu:bank:interest`（领取每日银行利息）<br/>`menu:bag:clear_title`（卸下当前佩戴称号）<br/>`menu:rank:<xp\|coins\|invites>:<page>[:prev\|:next]`（排行榜切换与翻页）<br/>`menu:modal:<slots\|dice:<choice>\|bj\|bank_dep\|bank_wd\|redpacket>`（弹窗入口） |
+| `menu` | Button | `handleMenuButton` | `menu:open`（大厅开菜单）<br/>`menu:nav:<page>`（切换页面，`social` 可带 `:<action>`）<br/>`menu:act:<daily\|work\|fortune>`（快捷动作，自动识别原页为 `home` 或 `solo`；`fortune` 首抽【大吉】触发全群播报）<br/>`menu:slots:<50\|100\|500>`（老虎机定额下注；`>=4x` 触发全群播报）<br/>`menu:dice_pick:<big\|small\|triple>`（切换猜大小投注边）<br/>`menu:dice_bet:<choice>:<50\|100\|500>`（猜大小定额下注；豹子中奖触发全群播报）<br/>`menu:bj_start:<50\|100\|500>`（二十一点定额开局）<br/>`menu:bj:<hit\|stand\|double>`（二十一点牌局操作；天胡 Blackjack 或净赢 `>=500` 触发全群播报）<br/>`menu:bank:<dep\|wd>:<25\|50\|all>`（银行比例存取）<br/>`menu:bank:interest`（领取每日银行利息）<br/>`menu:bag:clear_title`（卸下当前佩戴称号）<br/>`menu:rank:<xp\|coins\|invites>:<page>[:prev\|:next]`（排行榜切换与翻页）<br/>`menu:share:<rank\|lb:<type>:<page>>`（将个人等级名片或排行榜晒出到当前频道）<br/>`menu:modal:<slots\|dice:<choice>\|bj\|bank_dep\|bank_wd\|redpacket>`（弹窗入口） |
 | `menu` | StringSelect | `handleMenuStringSelect` | `menu:social_act`（切换趣味互动动作并保留原视图）<br/>`menu:shop_buy`（选择商品 ID 购买；身份组发放失败自动退款退库存）<br/>`menu:bag_use`（使用经验加成卡或切换佩戴称号） |
 | `menu` | UserSelect | `handleMenuUserSelect` | `menu:user:rob`（选中即打劫，更新个人面板并向当前频道发快报）<br/>`menu:user:pay`（校验非 Bot/非本人后直接弹出转账金额 Modal）<br/>`menu:user:duel`（校验后直接弹出决斗赌注 Modal）<br/>`menu:user:social:<action>`（执行互动并在当前频道公开播报） |
 | `menu` | ModalSubmit | `handleMenuModal` | `menu:modal_sub:slots` / `menu:modal_sub:dice:<choice>` / `menu:modal_sub:bj`<br/>`menu:modal_sub:bank_dep` / `menu:modal_sub:bank_wd`<br/>`menu:modal_sub:pay:<targetId>`<br/>`menu:modal_sub:duel:<opponentId>`<br/>`menu:modal_sub:redpacket` |
@@ -132,14 +132,18 @@ flowchart TD
 | `giveaway` | Button | `handleGiveawayButton` | `giveaway:join:<giveawayId>`（报名/退出抽奖，校验最低等级与身份组门槛） |
 | `rolepanel` | Button / StringSelect | `handleRolePanelButton` / `handleRolePanelSelect` | `rolepanel:btn:<panelId>:<roleId>`（按钮切换身份组）<br/>`rolepanel:select:<panelId>`（下拉菜单批量同步单选/多选身份组） |
 
-### 2.3 Ephemeral 隔离与公开广播策略
+### 2.3 Ephemeral 隐私隔离与公开广播策略
 
-- **个人私密操作（全 Ephemeral 就地更新）**：`/菜单`（`personal`）、点击大厅按钮 `menu:open`、面板内所有页面跳转、签到、打工、运势、老虎机、猜大小、二十一点、银行存取与领息、商店购买、背包使用、个人名片与排行榜翻页，均在原 Ephemeral 消息上通过 `interaction.update()` 原地刷新，绝不在公共频道刷屏。
-- **社交触发型公开广播（菜单就地更新 + 频道公开广播）**：
-  - **偷钱（`menu:user:rob`）**：原 Ephemeral 面板更新结果反馈，同时通过 `channel.send()` 在频道发布得手/被抓快报。
-  - **转账（`menu:modal_sub:pay:*`）**：原 Ephemeral 面板更新余额反馈，同时在频道发送转账成功 Embed。
-  - **趣味互动（`menu:user:social:*`）**：在频道发送带累计互动次数的 Embed，并更新 Ephemeral 面板提示。
-  - **骰子决斗与拼手气红包**：在当前频道发出带 `mp:*` 公开按钮的公共卡片；他人点击时，原公共卡片原地 `interaction.update()` 刷新进度/结算状态，抢红包结果与异常校验则通过 `followUp` / `reply` + `MessageFlags.Ephemeral` 仅通知点击者本人。
+- **🔒 纯私密操作（仅自己可见，Ephemeral 原地刷新）**：`/菜单`（`personal`）、点击大厅按钮 `menu:open`、面板页面跳转、每日签到、打工、普通运势抽签、普通老虎机/猜大小/二十一点胜负、银行存/取款与领息、商店购买、背包使用，均通过 `interaction.update()` 原地刷新，不在公共频道刷屏。
+- **📢 多人互动公开播报（大家都能看到，带 `content` 提及与 Embed）**：
+  - **偷钱 / 抢钱（`menu:user:rob`）**：原 Ephemeral 面板更新提示，同时在频道公开发出带 `<@attacker>` / `<@target>` 与具体金额的得手/翻车快报（若无发送权限则私密提示警告）。
+  - **群友转账（`menu:modal_sub:pay:*`）**：更新双方余额，同时在频道公开发出转账 `content` + Embed 通知。
+  - **趣味互动（`menu:user:social:*`）**：在频道公开发出互动动作与累计互动次数。
+  - **PVP 骰子决斗 & 拼手气红包（`mp:duel:*` / `mp:rp:claim:*`）**：在频道发出公开交互卡片；他人点击时原地刷新公开卡片，抢包具体金额与校验失败提示以 Ephemeral `followUp` / `reply` 发给操作人。
+- **🌟 独立游玩高光喜报 & 主动晒出**：
+  - 老虎机转出 `>= 4x` 三连、猜大小押中 `10x` 豹子、二十一点打出天胡 Blackjack 或单局净赢 `>= 500`、每日运势首抽抽中【大吉】时，自动在频道发布欧皇喜报。
+  - 名片与排行榜页面均提供 `📢 晒出我的名片` / `📢 晒出排行榜`（`menu:share:*`），按需分享到当前频道。
+  - `sendPublicBroadcast()` 会先检查 `interaction.channel?.isSendable()`，若 `interaction.channel` 为空则通过 `client.channels.fetch(channelId)` 兜底获取可发消息频道。
 
 ### 2.4 Discord 组件硬限制与工程护栏
 
@@ -162,7 +166,7 @@ flowchart TD
 | --- | --- | --- | --- | --- | --- | --- |
 | 1 | `/help` | `/帮助` | `/帮助` | 通用 | 所有成员 | 查看全部功能说明与交互式模块分类下拉菜单 |
 | 2 | `/menu` | `/菜单` | `/選單` | 通用 / 全功能 | 成员 / 管理员(`lobby`) | 打开个人 Ephemeral 互动主面板，或由管理员在频道发送永久大厅入口按钮 |
-| 3 | `/config` | `/设置` | `/设置` | 通用配置 | 管理员 | 查看配置、开关 8 大功能模块、增删 Bot 管理员身份组、设置忽略经验频道与频道经验倍率 |
+| 3 | `/config` | `/设置` | `/设置` | 通用配置 | 管理员 | 查看配置、开关模块、增删管理员身份组、忽略/倍率频道、发放星币 (`grant-coins`) 及全员发币 (`grant-all-coins`) |
 | 4 | `/rank` | `/等级` | `/等级` | 等级与热度 | 所有成员 | 查看自己或指定成员的等级、经验进度条、全服排名、聊天热度倍率、经验卡与活跃统计 |
 | 5 | `/leaderboard` | `/排行榜` | `/排行榜` | 等级与综合 | 所有成员 | 查看经验榜、星币富豪榜（含银行资产）或邀请贡献榜（带按钮翻页与切榜） |
 | 6 | `/level-admin` | `/等级管理` | `/等级管理` | 等级与热度 | 管理员 | 配置升级奖励身份组、升级播报频道、语音挂机经验、热度/冷却/小时上限参数及设置用户经验 |

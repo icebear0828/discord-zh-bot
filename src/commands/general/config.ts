@@ -6,6 +6,7 @@ import {
 } from 'discord.js';
 import type { ModuleKey } from '../../config/defaults.js';
 import {
+  createErrorEmbed,
   createInfoEmbed,
   createSuccessEmbed,
   type AppContext,
@@ -166,6 +167,51 @@ export const configCommand: CommandDefinition = {
           '频道经验倍率',
           '为指定频道设置聊天经验倍率',
         ),
+      )
+      .addSubcommand((sub) =>
+        applyZh(
+          sub
+            .setName('grant-coins')
+            .setDescription('【管理】为指定成员发放或扣除口袋星币')
+            .addUserOption((opt) =>
+              applyZh(opt.setName('user').setDescription('目标成员').setRequired(true), '用户', '目标群友'),
+            )
+            .addIntegerOption((opt) =>
+              applyZh(
+                opt
+                  .setName('amount')
+                  .setDescription('增减星币数量（正数发放，负数扣除）')
+                  .setMinValue(-1_000_000)
+                  .setMaxValue(1_000_000)
+                  .setRequired(true),
+                '金额',
+                '正数为发放，负数为扣除',
+              ),
+            ),
+          '发放星币',
+          '为指定成员发放或扣除口袋星币',
+        ),
+      )
+      .addSubcommand((sub) =>
+        applyZh(
+          sub
+            .setName('grant-all-coins')
+            .setDescription('【管理】向服务器所有真实成员统一发放口袋星币')
+            .addIntegerOption((opt) =>
+              applyZh(
+                opt
+                  .setName('amount')
+                  .setDescription('每位成员发放的星币数量（1 ~ 1,000,000）')
+                  .setMinValue(1)
+                  .setMaxValue(1_000_000)
+                  .setRequired(true),
+                '金额',
+                '每人发放的星币数量',
+              ),
+            ),
+          '全员发币',
+          '向服务器所有真实成员统一发放口袋星币',
+        ),
       ),
     '设置',
     '查看或修改服务器 Bot 总配置',
@@ -315,6 +361,74 @@ export const configCommand: CommandDefinition = {
           ),
         ],
         flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    if (sub === 'grant-coins') {
+      const target = interaction.options.getUser('user', true);
+      const amount = interaction.options.getInteger('amount', true);
+      if (target.bot) {
+        await interaction.reply({
+          embeds: [createErrorEmbed('❌ 操作无效', '不能给机器人发放或扣除星币。')],
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+      if (amount === 0) {
+        await interaction.reply({
+          embeds: [createErrorEmbed('❌ 金额无效', '发放或扣除金额不能为 0。')],
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
+      const updated = ctx.repos.profile.addCoins(guildId, target.id, amount);
+      if (amount > 0) {
+        await interaction.reply({
+          content: `🎁 <@${target.id}> 收到管理员发放的星币福利！`,
+          embeds: [
+            createSuccessEmbed(
+              '🎁 管理员发放星币',
+              `管理员 <@${adminCtx.member.id}> 向 <@${target.id}> 发放了 ${cfg.economy.currencyEmoji} **+${amount}** ${cfg.economy.currencyName}！\n当前口袋现金：**${updated.coins}** ${cfg.economy.currencyName}`,
+            ),
+          ],
+        });
+      } else {
+        await interaction.reply({
+          embeds: [
+            createSuccessEmbed(
+              '💸 管理员扣除星币',
+              `已从 <@${target.id}> 的口袋扣除 ${cfg.economy.currencyEmoji} **${Math.abs(amount)}** ${cfg.economy.currencyName}，当前剩余：**${updated.coins}** ${cfg.economy.currencyName}。`,
+            ),
+          ],
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+      return;
+    }
+
+    if (sub === 'grant-all-coins') {
+      const amount = interaction.options.getInteger('amount', true);
+      if (!interaction.guild) return;
+
+      await interaction.deferReply();
+      const members = await interaction.guild.members.fetch();
+      const humanIds = [...members.values()].filter((m) => !m.user.bot).map((m) => m.id);
+
+      ctx.db.transaction(() => {
+        for (const uid of humanIds) {
+          ctx.repos.profile.addCoins(guildId, uid, amount);
+        }
+      })();
+
+      await interaction.editReply({
+        embeds: [
+          createSuccessEmbed(
+            '🎉 全服福利发放！',
+            `管理员 <@${adminCtx.member.id}> 向全服 **${humanIds.length}** 位真实群友每人发放了 ${cfg.economy.currencyEmoji} **+${amount}** ${cfg.economy.currencyName}！`,
+          ),
+        ],
       });
     }
   },

@@ -226,6 +226,33 @@ describe('menuBuilder Discord component constraints & schema integration', () =>
       expect(msgWithFeedback.embeds[0]!.toJSON().description).toContain('测试状态提示框渲染');
     }
 
+    // Visibility cues & share buttons
+    const homeJson = buildMenuMessage(ctx, 'g1', ACTOR, { page: 'home' }).embeds[0]!.toJSON();
+    expect(homeJson.description).toContain('仅自己可见');
+    expect(homeJson.description).toContain('全群公开');
+
+    const bankJson = buildMenuMessage(ctx, 'g1', ACTOR, { page: 'bank' }).embeds[0]!.toJSON();
+    expect(bankJson.footer?.text).toContain('私密');
+
+    const multiJson = buildMenuMessage(ctx, 'g1', ACTOR, { page: 'multi' }).embeds[0]!.toJSON();
+    expect(multiJson.description).toContain('公开');
+
+    const rankMsg = buildMenuMessage(ctx, 'g1', ACTOR, { page: 'rank' });
+    const rankShareIds = rankMsg.components[1]!.toJSON().components.map((c) =>
+      'custom_id' in c ? c.custom_id : '',
+    );
+    expect(rankShareIds).toContain('menu:share:rank');
+
+    const lbMsg = buildMenuMessage(ctx, 'g1', ACTOR, {
+      page: 'leaderboard',
+      lbType: 'coins',
+      lbPage: 1,
+    });
+    const lbPagerIds = lbMsg.components[1]!.toJSON().components.map((c) =>
+      'custom_id' in c ? c.custom_id : '',
+    );
+    expect(lbPagerIds).toContain('menu:share:lb:coins:1');
+
     // Active Blackjack (playing)
     const riggedDeck = (): Card[] => [
       { rank: '2', suit: '♠' },

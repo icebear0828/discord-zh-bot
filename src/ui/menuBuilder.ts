@@ -187,6 +187,9 @@ function buildHomeView(
     `💼 打工状态：${workRemainMs > 0 ? `⏳ 冷却剩余 ${formatDurationZh(workRemainMs)}` : '✅ 当前可打工'}`,
     `🎴 今日运势：${fortuneToday ? `🎋 【${fortuneToday.luckTier}】幸运数 ${fortuneToday.luckyNumber}` : '✨ 今日未抽签'}`,
     `🛡️ 防盗护盾：${shieldRemainMs > 0 ? `剩余 ${formatDurationZh(shieldRemainMs)}` : '未开启（现金可能被偷）'}`,
+    '',
+    '🔒 **仅自己可见**：银行存/取、领利息、日常签到/打工、单人小游戏（高倍大奖自动全群播报）、商店背包',
+    '📢 **全群公开**：偷钱打劫、群友转账、骰子决斗、抢红包、趣味互动、名片/排行榜晒出',
   ].join('\n');
 
   const embed = new EmbedBuilder()
@@ -214,7 +217,7 @@ function buildHomeView(
         inline: true,
       },
     )
-    .setFooter({ text: '提示：银行存款不会被偷，还能每日领取存款利息！' })
+    .setFooter({ text: '提示：私密面板仅自己可见；银行存款不会被偷且每日可领利息！' })
     .setTimestamp();
 
   const navRow = buttonRow(
@@ -266,6 +269,7 @@ function buildSoloView(
     .setAuthor({ name: `${actor.displayName} · 独立游玩`, iconURL: actor.avatarUrl })
     .setTitle('🎮 独立游玩中心')
     .setDescription(withFeedback(description, feedback))
+    .setFooter({ text: '🔒 私密面板（普通操作仅自己可见；开出高倍大奖/豹子/Blackjack/大吉将自动全群播报）' })
     .setTimestamp();
 
   return {
@@ -312,6 +316,7 @@ function buildSlotsView(
     .setAuthor({ name: `${actor.displayName} · 幸运老虎机`, iconURL: actor.avatarUrl })
     .setTitle('🎰 幸运老虎机')
     .setDescription(withFeedback(description, feedback))
+    .setFooter({ text: '🔒 私密小游戏（三连 4x 以上大奖将自动全群播报！）' })
     .setTimestamp();
 
   return {
@@ -354,6 +359,7 @@ function buildDiceView(
     .setAuthor({ name: `${actor.displayName} · 猜大小`, iconURL: actor.avatarUrl })
     .setTitle('🎲 骰子猜大小')
     .setDescription(withFeedback(description, feedback))
+    .setFooter({ text: '🔒 私密小游戏（押中 10x 豹子将自动全群播报！）' })
     .setTimestamp();
 
   return {
@@ -411,6 +417,7 @@ function buildBlackjackView(
     .setColor(resolveColor(COLORS.PRIMARY, feedback))
     .setAuthor({ name: `${actor.displayName} · 二十一点`, iconURL: actor.avatarUrl })
     .setTitle('🃏 二十一点 (Blackjack)')
+    .setFooter({ text: '🔒 私密牌局（天胡 Blackjack 或净赢 ≥500 将自动全群播报！）' })
     .setTimestamp();
 
   if (game) {
@@ -541,6 +548,7 @@ function buildBankView(
         inline: true,
       },
     )
+    .setFooter({ text: '🔒 银行私密操作（仅你自己可见，存取款与领息不会在频道刷屏）' })
     .setTimestamp();
 
   return {
@@ -586,6 +594,8 @@ function buildMultiView(
     `${cfg.currencyEmoji} 口袋现金：**${profile.coins}** ${cfg.currencyName} ｜ 🏦 银行存款：**${profile.bankCoins}** ${cfg.currencyName}`,
     `🥷 打劫冷却：${robRemainMs > 0 ? `还需 ${formatDurationZh(robRemainMs)}` : '✅ 可出手'} ｜ 🛡️ 个人护盾：${shieldRemainMs > 0 ? `剩余 ${formatDurationZh(shieldRemainMs)}` : '未开启'}`,
     '',
+    '📢 **本页操作均为全群公开互动，结果将在当前频道播报，大家都能看到！**',
+    '',
     '• **🥷 偷钱**：查看肥羊榜并选择群友偷取口袋现金（银行存款安全不可偷）',
     '• **💸 群友转账**：选中群友输入金额直接转账',
     '• **⚔️ 骰子决斗**：在当前频道发起公开 3 骰押注对战',
@@ -598,6 +608,7 @@ function buildMultiView(
     .setAuthor({ name: `${actor.displayName} · 多人互动`, iconURL: actor.avatarUrl })
     .setTitle('👥 多人互动大厅')
     .setDescription(withFeedback(description, feedback))
+    .setFooter({ text: '📢 公开互动区：偷钱、转账、决斗、红包、趣味互动全群都看得到！' })
     .setTimestamp();
 
   return {
@@ -647,6 +658,7 @@ function buildRobView(
   const description = [
     `${cfg.currencyEmoji} 你的口袋现金：**${profile.coins}** ${cfg.currencyName} ｜ 冷却状态：${robRemainMs > 0 ? `⏳ ${formatDurationZh(robRemainMs)}` : '✅ 可下手'}`,
     '💡 *仅可偷取对方「口袋现金」，存在银行保险柜中的存款绝对安全！*',
+    '📢 *选中群友出手后，将在当前频道公开播报「谁抢了谁多少钱 / 翻车赔款」！*',
     '',
     '**🎯 肥羊榜（口袋现金前 8 名）：**',
     ...targetLines,
@@ -657,6 +669,7 @@ function buildRobView(
     .setAuthor({ name: `${actor.displayName} · 偷钱打劫`, iconURL: actor.avatarUrl })
     .setTitle('🥷 偷钱与肥羊榜')
     .setDescription(withFeedback(description, feedback))
+    .setFooter({ text: '📢 公开互动：抢钱得手或翻车被抓都会在当前频道全群播报！' })
     .setTimestamp();
 
   const userSelectRow = new ActionRowBuilder<UserSelectMenuBuilder>().addComponents(
@@ -701,6 +714,7 @@ function buildPayView(
     .setAuthor({ name: `${actor.displayName} · 群友转账`, iconURL: actor.avatarUrl })
     .setTitle('💸 群友转账')
     .setDescription(withFeedback(description, feedback))
+    .setFooter({ text: '📢 公开互动：转账完成后将在当前频道公开播报并 @双方' })
     .setTimestamp();
 
   const userSelectRow = new ActionRowBuilder<UserSelectMenuBuilder>().addComponents(
@@ -746,6 +760,7 @@ function buildDuelView(
     .setAuthor({ name: `${actor.displayName} · 骰子决斗`, iconURL: actor.avatarUrl })
     .setTitle('⚔️ 发起骰子决斗')
     .setDescription(withFeedback(description, feedback))
+    .setFooter({ text: '📢 公开互动：决斗邀请卡片与胜负结算均在当前频道公开展示' })
     .setTimestamp();
 
   const userSelectRow = new ActionRowBuilder<UserSelectMenuBuilder>().addComponents(
@@ -787,6 +802,7 @@ function buildSocialView(
     .setAuthor({ name: `${actor.displayName} · 趣味互动`, iconURL: actor.avatarUrl })
     .setTitle('💕 群友趣味互动')
     .setDescription(withFeedback(description, feedback))
+    .setFooter({ text: '📢 公开互动：选中对象后会在当前频道公开播报互动瞬间' })
     .setTimestamp();
 
   const actionRow = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
@@ -982,13 +998,13 @@ function buildBagView(
   return { embeds: [embed], components: [selectRow, tabRow] };
 }
 
-function buildRankView(
+function createRankEmbed(
   ctx: AppContext,
   guildId: string,
   actor: MenuActor,
   feedback: MenuFeedback | undefined,
   nowMs: number,
-): BuiltMenuMessage {
+): EmbedBuilder {
   const cfg = ctx.repos.guildConfig.getOrCreate(guildId).economy;
   const data = ctx.services.leveling.getRankCardData(guildId, actor.id, nowMs);
   const titleBadge = data.profile.equippedTitle ? `「${data.profile.equippedTitle}」` : '';
@@ -999,7 +1015,7 @@ function buildRankView(
       ? `⚡ **${data.activeBoostMultiplier}x**（剩余 ${formatDurationZh(data.boostExpiresAt - nowMs)}）`
       : '未启用';
 
-  const embed = new EmbedBuilder()
+  return new EmbedBuilder()
     .setColor(resolveColor(COLORS.PRIMARY, feedback))
     .setAuthor({
       name: `${titleBadge}${actor.displayName} 的等级名片`,
@@ -1029,6 +1045,27 @@ function buildRankView(
       },
     )
     .setTimestamp();
+}
+
+export function buildPublicRankEmbed(
+  ctx: AppContext,
+  guildId: string,
+  actor: MenuActor,
+  nowMs = Date.now(),
+): EmbedBuilder {
+  return createRankEmbed(ctx, guildId, actor, undefined, nowMs);
+}
+
+function buildRankView(
+  ctx: AppContext,
+  guildId: string,
+  actor: MenuActor,
+  feedback: MenuFeedback | undefined,
+  nowMs: number,
+): BuiltMenuMessage {
+  const embed = createRankEmbed(ctx, guildId, actor, feedback, nowMs).setFooter({
+    text: '🔒 当前仅自己可见；点击「📢 晒出我的名片」可发送到当前频道展示',
+  });
 
   const row = buttonRow(
     makeButton('menu:nav:rank', '🪪 我的名片', ButtonStyle.Primary),
@@ -1038,16 +1075,20 @@ function buildRankView(
     makeButton('menu:nav:home', '🏠 主菜单', ButtonStyle.Secondary),
   );
 
-  return { embeds: [embed], components: [row] };
+  const shareRow = buttonRow(
+    makeButton('menu:share:rank', '📢 晒出我的名片', ButtonStyle.Success),
+  );
+
+  return { embeds: [embed], components: [row, shareRow] };
 }
 
-function buildLeaderboardView(
+function createLeaderboardEmbedAndMeta(
   ctx: AppContext,
   guildId: string,
   lbType: LeaderboardType,
   lbPage: number,
   feedback: MenuFeedback | undefined,
-): BuiltMenuMessage {
+): { embed: EmbedBuilder; page: number; totalPages: number } {
   const cfg = ctx.repos.guildConfig.getOrCreate(guildId).economy;
   const res = ctx.services.leveling.getLeaderboard(guildId, lbType, lbPage, 10);
 
@@ -1083,6 +1124,33 @@ function buildLeaderboardView(
     .setFooter({ text: `第 ${res.page} / ${res.totalPages} 页 · 共 ${res.totalItems} 名成员` })
     .setTimestamp();
 
+  return { embed, page: res.page, totalPages: res.totalPages };
+}
+
+export function buildPublicLeaderboardEmbed(
+  ctx: AppContext,
+  guildId: string,
+  lbType: LeaderboardType,
+  lbPage: number,
+): EmbedBuilder {
+  return createLeaderboardEmbedAndMeta(ctx, guildId, lbType, lbPage, undefined).embed;
+}
+
+function buildLeaderboardView(
+  ctx: AppContext,
+  guildId: string,
+  lbType: LeaderboardType,
+  lbPage: number,
+  feedback: MenuFeedback | undefined,
+): BuiltMenuMessage {
+  const { embed, page, totalPages } = createLeaderboardEmbedAndMeta(
+    ctx,
+    guildId,
+    lbType,
+    lbPage,
+    feedback,
+  );
+
   const tabRow = buttonRow(
     makeButton('menu:nav:rank', '🪪 我的名片', ButtonStyle.Secondary),
     makeButton(
@@ -1103,21 +1171,22 @@ function buildLeaderboardView(
     makeButton('menu:nav:home', '🏠 主菜单', ButtonStyle.Secondary),
   );
 
-  const prevPage = Math.max(1, res.page - 1);
-  const nextPage = Math.min(res.totalPages, res.page + 1);
+  const prevPage = Math.max(1, page - 1);
+  const nextPage = Math.min(totalPages, page + 1);
   const pagerRow = buttonRow(
     makeButton(
       `menu:rank:${lbType}:${prevPage}:prev`,
       '⬅️ 上一页',
       ButtonStyle.Secondary,
-      res.page <= 1,
+      page <= 1,
     ),
     makeButton(
       `menu:rank:${lbType}:${nextPage}:next`,
       '➡️ 下一页',
       ButtonStyle.Secondary,
-      res.page >= res.totalPages,
+      page >= totalPages,
     ),
+    makeButton(`menu:share:lb:${lbType}:${page}`, '📢 晒出排行榜', ButtonStyle.Success),
   );
 
   return { embeds: [embed], components: [tabRow, pagerRow] };
