@@ -9,7 +9,7 @@
 ## 核心功能亮点
 
 - **🎛️ 一站式可视化 `/菜单`（`/menu`）控制面板**：
-  - **个人面板（默认）**：Ephemeral 仅自己可见、就地刷新不刷屏，直达独立游玩、多人博弈、吃瓜事件、关系宠物、银行保险柜、商店背包、名片排行及管理员 `⚙️ 管理后台`。
+  - **个人面板（默认）**：Ephemeral 仅自己可见、就地刷新不刷屏，直达独立游玩、多人博弈、吃瓜事件、关系宠物、银行保险柜、商店背包、名片排行及管理员 `⚙️ 管理后台`（含经济/等级/新玩法与事件/11 模块开关/发币与管理员授权等 6 个可视化调参界面）。
   - **永久大厅入口（`/菜单 模式:lobby`）**：管理员可在频道发送永久大厅卡片，群友点击「🎛️ 打开我的互动菜单」即可唤醒个人面板。
 - **💣 多人整蛊与博弈（`/菜单` → 多人博弈）**：
   - **黑市道具**：`🪤 捕兽夹`（反抓小偷双倍赔款）、`🗝️ 万能撬锁`（偷钱率 `+25%`）、`🛡️ 防盗保险`（立即开 4h 盾）、`🧿 衰神符`（目标下次打工减半）、`🎭 改昵称卡`（强改昵称，权限不足不扣卡）。
@@ -29,7 +29,7 @@
 - **👋 欢迎与离开**：支持 `{user}` `{username}` `{server}` `{memberCount}` `{inviter}` 模板、离开通知、入群自动身份组与预览。
 - **🎫 工单与 🎁 抽奖**：弹窗提交创建私密工单频道、拉人/踢人、关闭归档日志；支持 `10m`/`2h`/`3d`/`30分钟` 定时抽奖、等级与身份组门槛、重抽。
 - **📨 邀请追踪 & 🎭 自助身份组面板**：实时追踪邀请码与欢迎联动；支持按钮/下拉菜单、单选互斥/自由多选（最多 25 项）。
-- **🛡️ 权限隔离**：支持通过 `/设置 添加管理员身份组` 配置 Bot 专属管理身份组，并支持按模块独立开关。
+- **🛡️ 权限隔离与模块化控制**：支持通过 `/设置 添加管理员身份组`、`/设置 添加管理员用户` 或 `/菜单` 管理后台可视化授权 Bot 管理员，并支持全部 11 大功能模块独立开关与 `GamesConfig` 21 项玩法数值实时调参。
 
 ---
 
@@ -89,9 +89,14 @@ pnpm run e2e
 
 ### 方式 A：systemd 服务（推荐）
 
-将项目部署到 `<YOUR_VPS_HOST>` 的 `/opt/zh-discord-bot` 后：
+将项目部署到 `<YOUR_VPS_HOST>` 的 `/opt/zh-discord-bot` 后（若在 VPS 上裁剪 dev 依赖，请务必在 `npm prune --omit=dev` **之前**执行 `npm run deploy-commands` 与 `npm run e2e`，因为二者依赖 `devDependencies` 中的 `tsx`）：
 
 ```bash
+npm install
+npm run build
+npm run deploy-commands
+npm run e2e
+npm prune --omit=dev
 sudo cp deploy/discord-bot.service /etc/systemd/system/zh-discord-bot.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now zh-discord-bot

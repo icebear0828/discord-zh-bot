@@ -39,20 +39,20 @@ flowchart LR
 
 - **`src/config/`**
   - `env.ts`：`parseEnv()` / `loadEnv()` 解析 `DISCORD_TOKEN`、`DISCORD_CLIENT_ID`、`DISCORD_GUILD_ID`、`DB_PATH`（默认 `./data/bot.db`）、`TIMEZONE`（默认 `Asia/Shanghai`）。
-  - `defaults.ts`：定义 `ModuleToggles`（11 大模块）、`LevelingConfig`、`EconomyConfig`、`GamesConfig`、`WelcomeConfig`、`TicketConfig`、`GuildConfig` 接口及所有默认值常量。
+  - `defaults.ts`：定义 `ModuleToggles`（11 大模块开关）、`LevelingConfig`、`EconomyConfig`、`GamesConfig`（21 个新玩法/事件配置字段）、`WelcomeConfig`、`TicketConfig`、`GuildConfig` 接口及所有默认值常量。
 - **`src/db/`**
   - `database.ts`：`createDatabase(dbPath)` 负责建目录、打开连接、设置 `journal_mode = WAL`（非内存库）与 `foreign_keys = ON`，并调用 `initSchema(db)`。
   - `schema.ts`：声明核心 13 张表并分别调用 `initRedPacketSchema(db)`、`initChaosSchema(db)`、`initWorldEventSchema(db)`、`initSocialPetSchema(db)`（合计 28 张表），随后执行幂等列迁移。
   - `repositories/`：12 个 Repository 类（`GuildConfigRepo`、`ProfileRepo`、`ShopRepo`、`FunRepo`、`TicketRepo`、`GiveawayRepo`、`InviteRepo`、`RolePanelRepo`、`RedPacketRepo`、`ChaosRepo`、`WorldEventRepo`、`SocialPetRepo`），封装全部 SQL 读写与行映射。
 - **`src/services/`**
-  - 纯业务与事务编排层（`LevelingService`、`EconomyService`、`BlackjackManager`、`ShopService`、`FunService`、`TicketService`、`GiveawayService`、`InviteService`、`RolePanelService`、`MultiplayerService`、`ChaosService`、`WorldEventService`、`SocialPetService`、`permissionService.ts`、`welcomeService.ts`）。涉及跨表/双人资金变动的接口全部使用 `this.db.transaction(...)()` 保证原子性。
+  - 纯业务与事务编排层：`AppContext.services` 注入 13 个领域服务实例（`LevelingService`、`EconomyService`、`BlackjackManager`、`ShopService`、`FunService`、`TicketService`、`GiveawayService`、`InviteService`、`RolePanelService`、`MultiplayerService`、`ChaosService`、`WorldEventService`、`SocialPetService`），另有 `permissionService.ts` 与 `welcomeService.ts` 两个无状态工具模块（`src/services/` 共 15 个文件）。涉及跨表/双人资金变动的接口全部使用 `this.db.transaction(...)()` 保证原子性。
 - **`src/ui/`**
   - `embeds.ts`：定义全局 `AppContext`、`CommandDefinition`、`COLORS`、进度条 `renderProgressBar()`、中文时长格式化 `formatDurationZh()` 以及 Embed 工厂方法。
   - `localization.ts`：封装 `applyZh()` / `applyZhName()` 为指令、子指令与选项注入 `zh-CN` / `zh-TW` 本地化名称和描述。
-  - `menuShared.ts` / `menuBuilder.ts` / `chaosMenuBuilder.ts` / `worldEventMenuBuilder.ts` / `socialPetMenuBuilder.ts`：模块化渲染器，构建大厅卡片 `buildLobbyMessage()`、个人互动面板 34 个子视图、以及公开决斗、红包、轮盘、数字炸弹、吃瓜盘口、天降宝箱、世界 Boss、CP 求婚/结拜仪式与宠物斗兽场卡片。
+  - `menuShared.ts` / `menuBuilder.ts` / `chaosMenuBuilder.ts` / `worldEventMenuBuilder.ts` / `socialPetMenuBuilder.ts`：模块化渲染器，构建大厅卡片 `buildLobbyMessage()`、个人互动面板 34 个子视图（28 个用户视图 + 6 个管理后台视图）、以及公开决斗、红包、轮盘、数字炸弹、吃瓜盘口、天降宝箱、世界 Boss、CP 求婚/结拜仪式与宠物斗兽场卡片。
 - **`src/interactions/`**
   - `router.ts`：统一接收所有 `Interaction` 并按类型与 `customId` 前缀分发；全局捕获异常并向用户返回友好错误提示（含 `50013` 权限不足识别）。
-  - `*Handler.ts` & `menuHelpers.ts`：将交互解析为领域调用并响应（`menuHandler.ts`、`gamesMenuHandler.ts`、`multiplayerHandler.ts`、`chaosHandler.ts`、`worldEventHandler.ts`、`socialPetHandler.ts`、`blackjackHandler.ts`、`leaderboardHandler.ts`、`helpHandler.ts`、`ticketHandler.ts`、`giveawayHandler.ts`、`rolePanelHandler.ts`）。
+  - `*Handler.ts` & `menuHelpers.ts`：12 个专题交互处理器 + 1 个公共工具模块（`menuHandler.ts`、`gamesMenuHandler.ts`、`multiplayerHandler.ts`、`chaosHandler.ts`、`worldEventHandler.ts`、`socialPetHandler.ts`、`blackjackHandler.ts`、`leaderboardHandler.ts`、`helpHandler.ts`、`ticketHandler.ts`、`giveawayHandler.ts`、`rolePanelHandler.ts`、`menuHelpers.ts`）。
 - **`src/commands/`**
   - `registry.ts`：汇总 25 个 `CommandDefinition` 并生成 `commandMap`（全部新玩法均直接收纳进 `/菜单`，不增加冗余斜杠指令）。
   - `guards.ts`：提供 `requireGuildMember`、`requireModuleEnabled`、`requireBotAdmin` 统一鉴权守卫。
@@ -72,7 +72,12 @@ flowchart LR
    - **语音经验结算（`voiceTimer`，每 `60_000` ms / 60 秒）**：遍历语音频道中的非 Bot 成员；排除未进频道、位于服务器 `afkChannelId`、同时开启自闭麦与自闭听（`selfMute && selfDeaf`）及无真人在麦的情况；调用 `awardVoiceXp()` 并在升级时同步身份组与发送播报。
    - **抽奖自动开奖（`giveawayTimer`，每 `10_000` ms / 10 秒，带 `giveawayRunning` 防重入锁）**：拉取到期抽奖，执行 `finalizeGiveaway()` 更新原抽奖消息 Embed 并移除按钮，随后在原频道公开公告中奖者或流拍结果。
    - **红包过期退回（`redPacketTimer`，每 `15_000` ms / 15 秒，带 `redPacketRunning` 防重入锁）**：执行 `expireDueRedPackets()`，将过期未领完金额原子退回发包人口袋，编辑原红包卡片为过期状态并移除按钮，若 `refundedAmount > 0` 则在原频道发送退回提示 Embed。
-   - **玩法与事件调度（`gamesTimer`，每 `5_000` ms / 5 秒，带 `gamesRunning` 防重入锁）**：处理轮盘 30s 超时代扣与 10m 招募解散退款、数字炸弹到期拆弹、吃瓜盘口自动封盘、宝箱/Boss 过期结算（含 Boss 逃跑安慰奖）、CP 仪式与宠物对战过期退款，并自动编辑原频道消息卡片。
+   - **玩法与事件调度（`gamesTimer`，每 `5_000` ms / 5 秒，带 `gamesRunning` 防重入锁）**：
+     - 俄罗斯轮盘：招募超过 10 分钟自动解散并全额退还入场费；游戏中超过 30 秒未扣扳机自动代扣（若触发吃鸡结局则发送全群胜出公告）。
+     - 数字炸弹：超过 15 分钟未引爆自动拆弹关闭（`cancelled`）。
+     - 吃瓜盘口：到达 `closesAt` 后自动封盘（`locked`）。
+     - 世界事件：天降宝箱（5 分钟）与世界 Boss（10 分钟）过期结算；若 Boss 逃跑且存在有效输出玩家，自动发放 `30~150` 参与安慰奖并在频道发送逃跑公告 Embed。
+     - CP 与宠物对战：CP 求婚/结拜仪式超 15 分钟自动过期并全额退还手续费；宠物斗兽场挑战超 10 分钟自动过期关闭（赌注仅在应战时扣划，无需退币）。所有状态变更均自动编辑原频道交互卡片。
 5. **优雅退出**：监听 `SIGINT` / `SIGTERM`，依次执行 `schedulers.stop()`、`client.destroy()`、`db.close()`、`process.exit(0)`。
 
 ---
@@ -105,17 +110,28 @@ flowchart TD
   SOC --> SOC_P["🐾 pets 盲盒与宠物屋 → 🏟️ pet_arena 斗兽场 PVP"]
 ```
 
+全部 **34 个 `MenuView` 视图**（`src/ui/menuShared.ts`）：
+
+| 类别 | 数量 | `page` 枚举清单与说明 |
+| --- | --- | --- |
+| **入口与个人玩法** | 6 | `home`（主菜单）、`solo`（独立游玩）、`slots`（老虎机）、`dice`（猜大小）、`bj`（二十一点）、`bank`（银行保险柜） |
+| **多人博弈与整蛊** | 9 | `multi`（多人大厅）、`rob`（偷钱/肥羊榜）、`pay`（群友转账）、`duel`（骰子决斗）、`social`（趣味互动）、`props`（黑市道具）、`bounty`（悬赏通缉）、`roulette`（俄罗斯轮盘）、`bomb`（数字炸弹） |
+| **吃瓜与世界事件** | 4 | `events`（事件中心）、`predictions`（盘口大厅）、`pred_detail`（盘口详情/押注/结算）、`world_status`（宝箱与世界 Boss） |
+| **CP 社交与宠物** | 5 | `social_hub`（关系宠物中心）、`cp`（结婚/结拜管理）、`cp_lb`（全服亲密榜）、`pets`（盲盒与宠物屋）、`pet_arena`（斗兽场 PVP） |
+| **商店与排行名片** | 4 | `shop`（服务器商店）、`bag`（背包与称号）、`rank`（个人名片）、`leaderboard`（经验/富豪/邀请榜） |
+| **管理后台（仅管理员）** | 6 | `admin`（后台总览）、`admin_econ`（经济/抢钱/银行调参）、`admin_lvl`（等级/热度/语音调参）、`admin_games`（新玩法/事件/宠物/CP调参）、`admin_mod`（11 模块开关）、`admin_ops`（发币与管理员授权） |
+
 ### 2.2 全量 `customId` 前缀路由规范
 
 `src/interactions/router.ts` 通过 `interaction.customId.split(':')[0]` 提取前缀分发到对应处理器（`ticket:create` 模态框使用精确匹配）：
 
 | 前缀 | 交互类型 | 处理器函数 | 完整 `customId` 格式与用途 |
 | --- | --- | --- | --- |
-| `menu` | Button / Select / Modal | `handleMenu*` + `tryHandleGamesMenu*` | 主导航 (`menu:nav:*`)、独立玩法 (`menu:act:*` / `slots` / `dice_*` / `bj*`)、银行 (`menu:bank:*`)、黑市道具 (`menu:prop_buy` / `menu:prop_use:*` / `menu:user:prop_*`)、悬赏 (`menu:user:bounty` / `menu:bounty:clear`)、轮盘/炸弹建房 (`menu:roulette:*` / `menu:bomb:*` / `menu:roulette_join` / `menu:bomb_pick`)、吃瓜开盘 (`menu:modal:pred_create` / `menu:pred_*`)、世界事件 (`menu:world:*`)、CP/宠物 (`menu:user:cp_*` / `menu:cp_*` / `menu:pet:*` / `menu:user:pet_battle`)、管理后台 (`menu:admin:*` / `menu:modal:admin_*`) |
+| `menu` | Button / StringSelect / UserSelect / Modal | `handleMenu*` + `tryHandleGamesMenu*` | 主导航 (`menu:nav:*`)、独立玩法 (`menu:act:*` / `slots` / `dice_*` / `bj*`)、银行 (`menu:bank:*`)、黑市道具 (`menu:prop_buy` / `menu:prop_use:*` / `menu:user:prop_*`)、悬赏 (`menu:user:bounty` / `menu:bounty:clear`)、轮盘/炸弹建房 (`menu:roulette:*` / `menu:bomb:*` / `menu:roulette_join` / `menu:bomb_pick`)、吃瓜开盘 (`menu:modal:pred_create` / `menu:pred_*`)、世界事件 (`menu:world:*`)、CP/宠物 (`menu:user:cp_*` / `menu:cp_*` / `menu:pet:*` / `menu:user:pet_battle`)、管理后台 (`menu:admin:*` / `menu:admin_toggle_mod` / `menu:user:admin_*` / `menu:modal:admin_*`) |
 | `mp` | Button | `handleMultiplayerButton` | `mp:duel:accept:<id>` / `decline`（公开骰子决斗）；`mp:rp:claim:<id>`（拼手气红包） |
-| `ch` | Button / Modal | `handleChaosButton` / `handleChaosModal` | `ch:rl:join/leave/start/cancel/fire:<gameId>`（公开轮盘）；`ch:bomb:guess:<gameId>` → Modal `ch:bomb_sub:<gameId>`（公开数字炸弹） |
-| `ev` | Button / Select / Modal | `handleWorldEvent*` | `ev:pred:bet:<predId>:<opt>` → Modal `ev:pred_bet_sub:...`、`ev:pred:lock/cancel/refresh/settle:<predId>`；`ev:chest:claim:<eventId>`；`ev:boss:hit:<eventId>:<normal\|heavy>` |
-| `sp` | Button | `handleSocialPetButton` | `sp:prop:accept/decline:<id>`（求婚/结拜仪式）；`sp:petbattle:accept/decline:<id>`（宠物斗兽场 PVP） |
+| `ch` | Button / Modal | `handleChaosButton` / `handleChaosModal` | Button：`ch:rl:join/leave/start/cancel/fire:<gameId>`（公开轮盘）、`ch:bomb:guess:<gameId>`（弹出猜数 Modal）；Modal：`ch:bomb_sub:<gameId>`（提交数字炸弹猜测） |
+| `ev` | Button / StringSelect / Modal | `handleWorldEventButton` / `handleWorldEventStringSelect` / `handleWorldEventModal` | Button：`ev:pred:bet:<predId>:<opt>`（弹下注 Modal）、`ev:pred:lock/cancel/refresh:<predId>`、`ev:chest:claim:<eventId>`、`ev:boss:hit:<eventId>:<normal\|heavy>`；StringSelect：`ev:pred:settle:<predId>`；Modal：`ev:pred_bet_sub:<predId>:<opt>` |
+| `sp` | Button | `handleSocialPetButton` | `sp:prop:accept/decline:<proposalId>`（求婚/结拜仪式）；`sp:petbattle:accept/decline:<battleId>`（宠物斗兽场 PVP） |
 | `lb` | Button | `handleLeaderboardButton` | `lb:<xp\|coins\|invites>:<page>`（`/排行榜` 独立消息翻页与切榜） |
 | `bj` | Button | `handleBlackjackButton` | `bj:<hit\|stand\|double>:<ownerId>`（`/二十一点` 独立牌局按钮） |
 | `help` | StringSelect | `handleHelpSelect` | `help:category`（`/帮助` 模块分类下拉切换） |
@@ -131,9 +147,10 @@ flowchart TD
   - **群友转账（`menu:modal_sub:pay:*`）**：更新双方余额，同时在频道公开发出转账 `content` + Embed 通知。
   - **趣味互动（`menu:user:social:*`）**：在频道公开发出互动动作与累计互动次数。
   - **PVP 骰子决斗 & 拼手气红包（`mp:duel:*` / `mp:rp:claim:*`）**：在频道发出公开交互卡片；他人点击时原地刷新公开卡片，抢包具体金额与校验失败提示以 Ephemeral `followUp` / `reply` 发给操作人。
+  - **整蛊、盘口、世界事件、CP 与宠物（`ch:` / `ev:` / `sp:`）**：黑市 `衰神符` / `改昵称卡`、悬赏发布与自清撤单、轮盘赌桌与吃鸡结算、数字炸弹抢猜与引爆分红、吃瓜盘口卡片与结算、天降宝箱/世界 Boss 刷出及击杀/逃跑播报、CP 求婚/结拜仪式与亲密里程碑称号解锁、宠物斗兽场战报均在当前频道（或指定 `eventChannelId`）公开展示；抽中 `SR`/`SSR` 稀有宠物也会自动在频道发布欧皇喜报。
 - **🌟 独立游玩高光喜报 & 主动晒出**：
   - 老虎机转出 `>= 4x` 三连、猜大小押中 `10x` 豹子、二十一点打出天胡 Blackjack 或单局净赢 `>= 500`、每日运势首抽抽中【大吉】时，自动在频道发布欧皇喜报。
-  - 名片与排行榜页面均提供 `📢 晒出我的名片` / `📢 晒出排行榜`（`menu:share:*`），按需分享到当前频道。
+  - 名片、排行榜与 CP 亲密榜均提供 `📢 晒出我的名片` / `📢 晒出排行榜` / `📢 晒出亲密榜`（`menu:share:*`），按需分享到当前频道。
   - `sendPublicBroadcast()` 会先检查 `interaction.channel?.isSendable()`，若 `interaction.channel` 为空则通过 `client.channels.fetch(channelId)` 兜底获取可发消息频道。
 
 ### 2.4 Discord 组件硬限制与工程护栏
@@ -181,7 +198,66 @@ flowchart TD
 | 24 | `/invites` | `/邀请` | `/邀请` | 邀请追踪 | 所有成员 | 查看自己或指定成员的累计成功邀请数与近期邀请记录 |
 | 25 | `/role-panel` | `/身份组面板` | `/身份组面板` | 自助身份组 | 管理员 | 创建与发布支持按钮/下拉菜单、单选互斥/多选的自助身份组面板 |
 
-> 注：**Bot 管理员权限 (`requireBotAdmin` / `checkMemberIsBotAdmin`)** 满足以下任一条件即可通过：服务器 `Administrator` 权限、`ManageGuild` 权限、持有 `/设置 添加管理员身份组` 配置的 `adminRoleIds`，或用户 ID 位于 `/设置 添加管理员用户`（或后台 `admin_ops`）配置的 `adminUserIds` 白名单中。授权成员在 `/菜单` 首页可见「⚙️ 管理后台」（含 `admin` / `admin_econ` / `admin_lvl` / `admin_mod` / `admin_ops` 5 个可视化调参视图）。
+> 注：**Bot 管理员权限 (`requireBotAdmin` / `checkMemberIsBotAdmin`)** 满足以下任一条件即可通过：服务器 `Administrator` 权限、`ManageGuild` 权限、持有 `/设置 添加管理员身份组` 配置的 `adminRoleIds`，或用户 ID 位于 `/设置 添加管理员用户`（或后台 `admin_ops`）配置的 `adminUserIds` 白名单中。授权成员在 `/菜单` 首页可见「⚙️ 管理后台」（含 `admin` / `admin_econ` / `admin_lvl` / `admin_games` / `admin_mod` / `admin_ops` **6 个**可视化调参视图）。
+
+### 3.1 11 大功能模块开关（`ModuleToggles`）
+
+所有模块开关定义于 `src/config/defaults.ts`（默认全部为 `true`），可通过 `/设置 开关模块`（`MODULE_CHOICES`）或 `/菜单` → `⚙️ 管理后台` → `🧩 模块开关`（`admin_mod`）实时切换：
+
+| 模块键 (`ModuleKey`) | 中文显示名 | 默认值 | 管控功能范围 |
+| --- | --- | --- | --- |
+| `leveling` | 等级与热度 | `true` | 聊天/语音经验、热度连击、`/等级`、经验榜、名片晒出 |
+| `economy` | 经济系统 | `true` | 签到、打工、打劫、钱包/银行/利息、转账、老虎机/猜大小/二十一点、决斗、红包、商店背包及消耗现金的玩法扣费校验 |
+| `fun` | 娱乐互动 | `true` | `/运势`、`/互动`（趣味动作）、`/称号` |
+| `welcome` | 欢迎与离开 | `true` | 入群欢迎 Embed、退群提示、入群自动身份组 |
+| `tickets` | 工单系统 | `true` | 工单创建面板与私密客服工单频道管理 |
+| `giveaways` | 抽奖系统 | `true` | 定时抽奖发起、参与、自动/提前开奖与重抽 |
+| `invites` | 邀请追踪 | `true` | 邀请码缓存归因、`/邀请`、邀请榜 |
+| `rolePanels` | 自助身份组 | `true` | 按钮/下拉菜单自助身份组面板（单选/多选） |
+| `socialGames` | 整蛊与博弈 | `true` | 黑市攻防道具、悬赏通缉令、俄罗斯轮盘、数字炸弹 |
+| `worldEvents` | 吃瓜与世界事件 | `true` | 自由吃瓜开盘、天降宝箱、世界 Boss（含活跃自动触发） |
+| `petsAndCp` | 关系与宠物 | `true` | 结婚/结拜 CP 打卡称号、亲密度榜、盲盒抽宠养成、宠物斗兽场 PVP |
+
+### 3.2 `admin_games` 可视化调参 UI 与 `GamesConfig` 21 字段清单
+
+在 `/菜单` → `⚙️ 管理后台` → `🎮 玩法与事件调参`（`menu:nav:admin_games`）中，管理员可通过 **4 个预填参数弹窗（Prefilled Modals）** 与 **5 个快捷管理按钮** 实时修改 `guild_configs.games_config_json`：
+
+- **4 个预填弹窗（`menu:modal:*` → `menu:modal_sub:*`）**：
+  1. `admin_props`（`🧰 道具价格`）：预填并校验 5 项黑市道具价格（`trap`、`lockpick`、`shield`、`curse`、`nickname`，均允许整数 `0 ~ 100,000`）。
+  2. `admin_events`（`🎁 事件与Boss`）：预填并校验 `threshold`（自动触发发言数 `5~500`）、`cooldown`（事件冷却秒数 `60~86,400`）、`bossHp`（Boss 基础 HP `100~100,000`）、`bossPool`（Boss 奖池 `100~1,000,000`）、`chestRange`（宝箱总额范围 `min-max`，各 `10~500,000` 且 `min <= max`）。
+  3. `admin_pets_cp`（`🐾 宠物与CP`）：预填并校验 `petGachaPrice`（抽盲盒 `0~100,000`）、`petFeedPrice`（喂食 `0~10,000`）、`petMaxOwned`（单人宠物上限 `1~25`）、`cpProposeCost`（求婚/结拜费 `0~100,000`）、`cpMaxSworn`（结拜上限 `1~10`）。
+  4. `admin_bounty`（`🎯 悬赏参数`）：预填并校验 `minAmount`（最低悬赏 `1~100,000`）、`clearMult`（自费撤单倍率 `1.0~5.0`）。
+- **5 个快捷管理按钮（`menu:admin:*`）**：
+  - `toggle_auto_event`：一键开/关群聊活跃自动刷出宝箱或 Boss（`eventAutoEnabled`）。
+  - `toggle_event_channel`：绑定当前频道为专属事件频道，或解绑恢复在当前活跃发言频道降临（`eventChannelId`）。
+  - `spawn_chest` / `spawn_boss`：立即向目标事件频道投放宝箱或召唤世界 Boss。
+  - `reset_games`：恢复 `DEFAULT_GAMES_CONFIG` 默认值（保留已绑定的 `eventChannelId`）。
+
+**`GamesConfig` 全部 21 个配置字段与默认值（`src/config/defaults.ts`）**：
+
+| # | 字段名 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| 1 | `propTrapPrice` | `500` | 黑市道具：🪤 捕兽夹价格 |
+| 2 | `propLockpickPrice` | `400` | 黑市道具：🗝️ 万能撬锁价格 |
+| 3 | `propShieldPrice` | `600` | 黑市道具：🛡️ 防盗保险价格 |
+| 4 | `propCursePrice` | `300` | 黑市道具：🧿 衰神符价格 |
+| 5 | `propNicknamePrice` | `1000` | 黑市道具：🎭 改昵称卡价格 |
+| 6 | `bountyMinAmount` | `200` | 单笔最低悬赏金额 |
+| 7 | `bountyClearMultiplier` | `1.5` | 目标自费撤单赏金倍率 |
+| 8 | `eventChannelId` | `null` | 世界事件固定发布频道 ID（`null` 表示随活跃频道刷出） |
+| 9 | `eventAutoEnabled` | `true` | 是否启用群聊活跃自动刷出世界事件 |
+| 10 | `eventMsgThreshold` | `30` | 自动触发世界事件所需的非 Bot 累计发言数 |
+| 11 | `eventCooldownSec` | `1800` | 自动世界事件冷却时间（秒，默认 30 分钟） |
+| 12 | `bossBaseHp` | `1000` | 世界 Boss 基础血量 |
+| 13 | `bossRewardPool` | `3000` | 世界 Boss 基础讨伐奖池 |
+| 14 | `chestRewardMin` | `800` | 天降宝箱随机总奖池下限 |
+| 15 | `chestRewardMax` | `2000` | 天降宝箱随机总奖池上限 |
+| 16 | `chestShares` | `5` | 天降宝箱可领取总份数（代码中钳制 `1~20`） |
+| 17 | `petGachaPrice` | `500` | 盲盒抽宠单次价格 |
+| 18 | `petFeedPrice` | `80` | 宠物每日喂食费用 |
+| 19 | `petMaxOwned` | `12` | 单人宠物栏位上限 |
+| 20 | `cpProposeCost` | `500` | 求婚/结拜仪式手续费 |
+| 21 | `cpMaxSworn` | `3` | 单人最多可结拜死党人数上限 |
 
 ---
 
@@ -267,22 +343,40 @@ flowchart TD
 
 ### 4.6 整蛊与博弈玩法（`ChaosService`）
 
-- **黑市攻防道具（5 种）**：`捕兽夹`（24h 内反抓下一位小偷，强制双倍赔款 30% 且钳制 `[100, 1000]`）、`万能撬锁`（下次偷钱成功率 `+25%`，封顶 `85%`）、`防盗保险`（立即开启或延长 `4` 小时护盾）、`衰神符`（使目标下次打工收益减半）、`改昵称卡`（强制修改目标群友昵称；**若遇群主或权限不足 `50013` 则不扣卡**）。
-- **悬赏通缉令**：最低悬赏默认 `200`（可调），支持多人叠加悬赏同一人；任何人对该目标**偷钱得手**或**骰子决斗获胜**即在同一数据库事务内领走全额赏金池。目标本人可花费 `1.5x`（可调）赏金总额自费撤单。
-- **俄罗斯轮盘（2~6 人吃鸡）**：先扣入场费上桌，6 孔左轮装 1 发实弹；开局打乱顺位，每人限时 `30` 秒扣扳机（超时后台自动代扣），中弹淘汰后重新装弹，最后唯一幸存者独吞全部入场费奖池。招募超过 10 分钟未开局自动退币。
-- **数字炸弹（频道抢猜）**：系统在 `2~99` 埋雷（范围 `[1, 100]`），发起人及猜数者均需口袋现金 `>=` 罚金；禁止同人连续猜两次；踩雷者扣除罚金并平分给本局所有其他存活猜数者。
+- **黑市攻防道具（5 种）**：
+  - `🪤 捕兽夹`（默认 `500`）：自用部署（`trap_armed`，`1` 次消耗，有效期 **`24` 小时**）；下位小偷对部署者 `rob()` 时触发反抓，强制赔付攻击者口袋现金的 `30%`（钳制 `[100, 1000]` 且不超过其现有现金），攻击者进入 `robCooldownSec` 冷却。
+  - `🗝️ 万能撬锁`（默认 `400`）：自用激活（`lockpick_ready`，`1` 次消耗，不限时）；使下次通过冷却/护盾/贫穷前置校验的 `rob()` 成功率 `+25%`，总成功率上限封顶 `85%`。
+  - `🛡️ 防盗保险`（默认 `600`）：自用激活，立即在 `max(nowMs, robShieldUntil)` 基础上开启或延长 **`4` 小时**防盗护盾，免疫普通偷钱/打劫。
+  - `🧿 衰神符`（默认 `300`）：对其他群友使用（`work_cursed`，`1` 次消耗，有效期 **`48` 小时**），使目标下次 `work()` 收益减半（至少 `1` 星币），并在当前频道公开播报。
+  - `🎭 改昵称卡`（默认 `1000`）：强制修改目标群友服务器昵称（`1~32` 字符）并在频道公开播报；**若遇群主、获取成员失败或权限不足（如对方身份组更高 `50013`）则不扣卡**。
+- **悬赏通缉令**：最低悬赏默认 `200`（`bountyMinAmount` 可调），不可悬赏自己或 Bot，支持多人叠加悬赏同一目标；任何群友对该目标**偷钱得手**（`EconomyService.rob`）或**骰子决斗获胜**（`MultiplayerService.acceptDuel`）即在同一 SQLite 事务内领走全部 `open` 赏金池。目标本人可花费 `max(1, ceil(openTotal * bountyClearMultiplier))`（默认 `1.5x`）自费撤单并全群公告。
+- **俄罗斯轮盘（2~6 人吃鸡）**：入场费 `50 ~ 1,000,000`，座位数 `2 ~ 6` 人，开桌及上桌时立即从口袋预扣入场费；招募有效期 **`10` 分钟**，满 2 人即可由房主或 Bot 管理员开局（招募期可退出退币，房主退出或散桌全员退币；超时由 `gamesTimer` 自动解散退币）。开局后打乱顺位并在 6 孔左轮装 1 发实弹，每人限时 **`30` 秒**扣动扳机（超时由后台自动代扣），中弹淘汰后重新装弹重置 `chamberPos = 0`，最后唯一幸存者独吞全部奖池（`entryFee * players.length`）。
+- **数字炸弹（频道抢猜）**：罚金 `100 ~ 500,000`，有效期 **`15` 分钟**，系统在 `2~99` 随机埋雷（初始安全区间 `[1, 100]`）；发起人与所有猜数者均需口袋现金 `>=` 罚金（防白嫖）；禁止同一人连续猜两次。踩雷者扣除 `min(coins, penalty)`：若本局存在其他已安全过关的存活参与者，罚金**平分给其他所有存活参与者**（整除余数顺延给第 1 位）；若无其他存活者但踩雷者非房主，则罚金归房主；若房主首轮自爆且无人参与，则系统没收。超 15 分钟未引爆由后台自动拆弹取消。
 
 ### 4.7 全群吃瓜盘口与世界事件（`WorldEventService`）
 
-- **自由吃瓜开盘（2~4 选项）**：任意群友可发起话题与封盘时间，按各选项资金实时展示动态赔率；仅限开盘人或 Bot 管理员公布胜出项并按比例零损耗瓜分全部奖池（若胜出方无人下注或主动/异常作废，则全额退币）；到点由后台自动封盘。
-- **天降宝箱 & 合力讨伐世界 Boss**：群聊消息达到 `eventMsgThreshold` 且过冷却 `eventCooldownSec` 后在设定事件频道（或当前活跃频道）概率刷出宝箱（55%）或 Boss（45%），也支持管理员在后台一键放箱/召 Boss。
-  - **宝箱**：按二倍均值随机瓜分奖池，5 分钟有效。
-  - **Boss**：`normal`（12s 冷却，`35~65` 伤 / 15% 暴击）与 `heavy`（25s 冷却，25% 空大，`90~155` 伤 / 25% 暴击），若有出战宠物自动附加 `floor(pet.atk * 0.5)` 助战伤害。击败后按总伤害占比分奖池 + 尾刀 MVP 额外 `+25%` 暴击大奖；10 分钟未击败逃跑则按伤害发 `30~150` 参与安慰奖。
+- **自由吃瓜开盘（2~4 选项）**：任意群友可发起盘口（标题 `1~100` 字、`2~4` 个不重复选项每项 `<= 40` 字、封盘倒计时 `1 ~ 10,080` 分钟），单笔押注 `1 ~ 1,000,000` 实时扣款并展示各选项实时动态赔率（`totalPool / optionAmount`）。到点由 `gamesTimer` 自动封盘，也可由开盘人或 Bot 管理员手动封盘、宣布胜出项结算或作废。结算按胜方各自注额占比**零损耗**瓜分全部总奖池（整数余数按注额降序轮流 `+1` 补足）；若胜出选项无人下注或盘口主动/异常作废，则全额退还所有下注本金。
+- **天降宝箱 & 合力讨伐世界 Boss**：
+  - **自动刷出与并发上限**：开启 `modules.worldEvents` 与 `games.eventAutoEnabled` 且当前无活跃世界事件时（同一服务器同一时刻最多 `1` 个活跃世界事件），群聊非 Bot 发言累计达 `eventMsgThreshold`（默认 `30` 条）且距上次世界事件超过 `eventCooldownSec`（默认 `1800` 秒 / 30 分钟），在 `eventChannelId`（未绑定则为当前活跃频道）以 **`55%` 概率刷出宝箱 / `45%` 概率刷出 Boss**；也支持管理员在后台一键放箱/召 Boss。
+  - **天降宝箱**：4 套模板，总奖池在 `[chestRewardMin, chestRewardMax]`（默认 `800~2000`）内随机生成并分成 `chestShares` 份（默认 `5` 份，钳制 `1~20`），按二倍均值算法先到先得（每人限抢 1 次），有效期 **`5` 分钟**。
+  - **世界 Boss**：8 套模板，默认 `bossBaseHp = 1000`、`bossRewardPool = 3000`，有效期 **`10` 分钟**。提供两种攻击模式：
+    - `normal`（普通攻击）：**`12` 秒**个人冷却，造成 `35~65` 基础伤害，**`15%` 暴击率**（暴击倍率 `1.5x`）。
+    - `heavy`（蓄力重击）：**`25` 秒**个人冷却，**`25%` 概率挥空**，命中造成 `90~155` 基础伤害，**`25%` 暴击率**（暴击倍率 `1.5x`）。
+    - 若玩家持有出战宠物，命中时额外附加 **`floor(pet.atk * 0.5)`** 助战伤害。
+    - 击杀后按累计总伤害占比零损耗瓜分 `rewardPool`，**尾刀绝杀者（MVP）额外获赠 `+25%`（`floor(rewardPool * 0.25)`）暴击大奖**；若 10 分钟未击败逃跑，则向每位有效输出参与者发放 `clamp(floor(damage * 0.5), 30, 150)` 安慰奖。
 
 ### 4.8 轻量 CP 关系与盲盒宠物（`SocialPetService`）
 
-- **结婚 / 结拜 CP 系统**：纯社交向（无共同金库/不分割财产）。结婚严格 1 对 1，结拜上限可配（默认 `3` 人）。公开求婚/结拜仪式拒绝或 15 分钟超时自动退还手续费。每日打卡涨 `10~20` 亲密度，到达 `50 / 150 / 400` 双方自动解锁专属 CP 称号入背包，并登全服 CP 亲密度榜。
-- **盲盒电子宠物与斗兽场**：20 种搞怪宠物池（N 55% / R 30% / SR 12% / SSR 3%），支持喂食/训练/打工升级、改名、放生退币。斗兽场支持定向挑战或全群公开摆擂台，最多 12 回合自动计算速度先手/暴击/闪避，结算赌注并双方宠物加经验。
+- **结婚 / 结拜 CP 系统**：纯社交向（无共同金库/不分割个人财产）。结婚（`marriage`）严格 `1` 对 `1`，结拜（`sworn`）每人上限可配（`cpMaxSworn`，默认 `3` 人），同一对群友间仅可存在一段关系（数据库 `user_a < user_b` 唯一约束）。发起公开仪式需预扣手续费 `cpProposeCost`（默认 `500`），仪式卡片有效期 **`15` 分钟**（对方拒绝、撤回、存在冲突或超时均自动全额退还手续费）。缔结关系初始亲密度 `10`，双方任一人每日按 `TIMEZONE` 可打卡 1 次（每天全关系限 1 次），亲密度随机 **`+10 ~ +20`**；累计达到 **`50 / 150 / 400`** 时自动向双方背包发放专属称号并全群广播（结婚：`💞 甜蜜新婚` / `💍 灵魂伴侣` / `👑 模范神仙眷侣`；结拜：`🍻 铁血死党` / `🔥 生死之交` / `⚔️ 传奇结拜兄弟`），支持和平解除与全服 CP 亲密度榜（`cp_lb`）。
+- **盲盒电子宠物与养成**：
+  - **盲盒抽取**：共 `20` 种搞怪宠物（7 N / 6 R / 4 SR / 3 SSR）与 `8` 种性格；单抽价格 `petGachaPrice`（默认 `500`），单人上限 `petMaxOwned`（默认 `12` 只，后台可调 `1~25`）；概率分布 **N `55%` / R `30%` / SR `12%` / SSR `3%`**（抽中 `SR`/`SSR` 自动全群喜报，首宠自动设为出战）。
+  - **初始属性与升级**：升级所需经验 `max(60, level * 60)`。各稀有度初始四维与每级成长如下：
+    - `N`：HP `95~120` / ATK `16~22` / SPD `12~18` / 暴击 `8%~12%`（每级 `+12 HP / +3 ATK / +2 SPD`；放生退 `100`）
+    - `R`：HP `120~150` / ATK `22~29` / SPD `16~24` / 暴击 `12%~16%`（每级 `+16 HP / +4 ATK / +2 SPD`；放生退 `200`）
+    - `SR`：HP `155~190` / ATK `29~38` / SPD `22~30` / 暴击 `16%~22%`（每级 `+20 HP / +5 ATK / +3 SPD`；放生退 `400`）
+    - `SSR`：HP `195~240` / ATK `38~50` / SPD `28~38` / 暴击 `22%~30%`（每级 `+26 HP / +6 ATK / +4 SPD`；放生退 `1000`）
+  - **养成冷却与收益**：每日喂食（`petFeedPrice` 默认 `80`，按 `TIMEZONE` 每日 1 次，`+40 XP`）；特训（免费，**`1` 小时**冷却，`+20~35 XP`）；宠物打工（**`2` 小时**冷却，`+15 XP` 并赚取星币：N `60~110` / R `90~150` / SR `130~210` / SSR `180~280` 外加 `(level - 1) * 15` 等级加成）；支持改名（`1~20` 字）与放生退币。
+- **宠物斗兽场 PVP（`pet_arena`）**：支持定向约战或全群公开摆擂台，赌注 `0 ~ 1,000,000`（`0` 为友谊切磋；摆擂时不预先扣款，应战时原子校验双方余额并结算），擂台有效期 **`10` 分钟**。战斗最多进行 `12` 回合（速度高者先手、同速各 50%、`8%` 闪避率、基础伤害浮动 `0.85~1.15x`、暴击 `1.6x`、最低 `5` 伤；打满 12 回合未分胜负则按剩余 HP 比例判胜），战后赢家宠物 `+30 XP`、败者宠物 `+12 XP` 并转移赌注。
 
 ---
 
@@ -319,9 +413,18 @@ if (!configColNames.has('admin_user_ids_json')) {
 if (!configColNames.has('games_config_json')) {
   db.exec("ALTER TABLE guild_configs ADD COLUMN games_config_json TEXT NOT NULL DEFAULT '{}';");
 }
+
+const columns = db.pragma('table_info(member_profiles)') as Array<{ name: string }>;
+const columnNames = new Set(columns.map((col) => col.name));
+if (!columnNames.has('bank_coins')) {
+  db.exec('ALTER TABLE member_profiles ADD COLUMN bank_coins INTEGER NOT NULL DEFAULT 0;');
+}
+if (!columnNames.has('last_bank_interest_date')) {
+  db.exec('ALTER TABLE member_profiles ADD COLUMN last_bank_interest_date TEXT;');
+}
 ```
 
-- **行为保证**：存量数据库中已有的钱包余额、银行存款、管理员白名单、等级等数据完全保留，自动补全缺失列与全部新表；多次重复调用 `initSchema(db)` 幂等无报错（见 `tests/db/schema.test.ts`）。
+- **行为保证**：存量数据库中已有的钱包余额、银行存款、管理员白名单、等级等数据完全保留，自动补全缺失列与全部新表；`GuildConfigRepo.getOrCreate()` 读取时会以 `{ ...DEFAULT_MODULES, ...obj }` 与 `{ ...DEFAULT_GAMES_CONFIG, ...obj }` 合并默认值，确保迁移后 `'{}'` 行无缝继承全部 11 模块与 21 项玩法默认配置；多次重复调用 `initSchema(db)` 幂等无报错（见 `tests/db/schema.test.ts`）。
 
 ---
 
@@ -420,8 +523,9 @@ cd /opt/zh-discord-bot
 git pull
 npm install
 npm run build
-# 若本次更新增改了斜杠指令名称/选项/本地化，需再执行一次：
+# 若本次更新增改了斜杠指令名称/选项/本地化，或需运行 npm run e2e，务必在 npm prune --omit=dev 之前执行（因 tsx 位于 devDependencies）：
 # npm run deploy-commands
+# npm run e2e
 npm prune --omit=dev
 sudo systemctl restart zh-discord-bot
 sudo systemctl status zh-discord-bot --no-pager
