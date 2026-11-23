@@ -41,6 +41,14 @@ export type TransferResult =
   | { ok: true; amount: number; fromBalance: number; toBalance: number }
   | { ok: false; reason: 'self_target' | 'invalid_amount' | 'insufficient_funds' };
 
+export type BankTransferResult =
+  | { ok: true; amount: number; coins: number; bankCoins: number }
+  | { ok: false; reason: 'invalid_amount' | 'insufficient_funds' };
+
+export type BankInterestResult =
+  | { ok: true; interest: number; bankCoins: number }
+  | { ok: false; reason: 'already_claimed' | 'below_minimum'; minDeposit?: number };
+
 export type DiceChoice = 'big' | 'small' | 'triple';
 
 export type DiceResult =
@@ -390,6 +398,74 @@ export class EconomyService {
       this.profileRepo.save({ ...profile, coins: balance });
 
       return { ok: true, reels, multiplier, payout, netChange, balance };
+    })();
+  }
+
+  deposit(guildId: string, userId: string, amount: number): BankTransferResult {
+    return this.transferBank(guildId, userId, amount, 'deposit');
+  }
+
+  withdraw(guildId: string, userId: string, amount: number): BankTransferResult {
+    return this.transferBank(guildId, userId, amount, 'withdraw');
+  }
+
+  claimBankInterest(guildId: string, userId: string, nowMs = Date.now()): BankInterestResult {
+    const cfg = this.configRepo.getOrCreate(guildId).economy;
+    const today = getDateKey(nowMs, this.timezone);
+
+    return this.db.transaction((): BankInterestResult => {
+      const profile = this.profileRepo.getOrCreate(guildId, userId);
+      if (profile.lastBankInterestDate === today) {
+        return { ok: false, reason: 'already_claimed' };
+      }
+      if (profile.bankCoins < cfg.bankInterestMinDeposit) {
+        return {
+          ok: false,
+          reason: 'below_minimum',
+          minDeposit: cfg.bankInterestMinDeposit,
+        };
+      }
+
+      const interest = Math.max(
+        1,
+        Math.min(cfg.bankInterestMax, Math.floor(profile.bankCoins * cfg.bankInterestRate)),
+      );
+      const bankCoins = profile.bankCoins + interest;
+
+      this.profileRepo.save({
+        ...profile,
+        bankCoins,
+        lastBankInterestDate: today,
+      });
+
+      return { ok: true, interest, bankCoins };
+    })();
+  }
+
+  private transferBank(
+    guildId: string,
+    userId: string,
+    amount: number,
+    direction: 'deposit' | 'withdraw',
+  ): BankTransferResult {
+    const cleanAmount = Math.floor(amount);
+    if (!Number.isFinite(cleanAmount) || cleanAmount <= 0) {
+      return { ok: false, reason: 'invalid_amount' };
+    }
+
+    return this.db.transaction((): BankTransferResult => {
+      const profile = this.profileRepo.getOrCreate(guildId, userId);
+      const sourceBalance = direction === 'deposit' ? profile.coins : profile.bankCoins;
+      if (sourceBalance < cleanAmount) {
+        return { ok: false, reason: 'insufficient_funds' };
+      }
+
+      const delta = direction === 'deposit' ? cleanAmount : -cleanAmount;
+      const coins = profile.coins - delta;
+      const bankCoins = profile.bankCoins + delta;
+      this.profileRepo.save({ ...profile, coins, bankCoins });
+
+      return { ok: true, amount: cleanAmount, coins, bankCoins };
     })();
   }
 }

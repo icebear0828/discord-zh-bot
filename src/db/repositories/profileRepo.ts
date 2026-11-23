@@ -8,8 +8,10 @@ export interface MemberProfile {
   messageCount: number;
   voiceMinutes: number;
   coins: number;
+  bankCoins: number;
   dailyStreak: number;
   lastDailyDate: string | null;
+  lastBankInterestDate: string | null;
   lastWorkAt: number;
   lastRobAt: number;
   robShieldUntil: number;
@@ -36,8 +38,10 @@ interface MemberProfileRow {
   message_count: number;
   voice_minutes: number;
   coins: number;
+  bank_coins: number;
   daily_streak: number;
   last_daily_date: string | null;
+  last_bank_interest_date: string | null;
   last_work_at: number;
   last_rob_at: number;
   rob_shield_until: number;
@@ -65,8 +69,10 @@ function mapProfile(row: MemberProfileRow): MemberProfile {
     messageCount: row.message_count,
     voiceMinutes: row.voice_minutes,
     coins: row.coins,
+    bankCoins: row.bank_coins,
     dailyStreak: row.daily_streak,
     lastDailyDate: row.last_daily_date,
+    lastBankInterestDate: row.last_bank_interest_date,
     lastWorkAt: row.last_work_at,
     lastRobAt: row.last_rob_at,
     robShieldUntil: row.rob_shield_until,
@@ -108,8 +114,8 @@ export class ProfileRepo {
       .prepare(
         `UPDATE member_profiles SET
           xp = ?, level = ?, message_count = ?, voice_minutes = ?,
-          coins = ?, daily_streak = ?, last_daily_date = ?,
-          last_work_at = ?, last_rob_at = ?, rob_shield_until = ?,
+          coins = ?, bank_coins = ?, daily_streak = ?, last_daily_date = ?,
+          last_bank_interest_date = ?, last_work_at = ?, last_rob_at = ?, rob_shield_until = ?,
           equipped_title = ?, xp_boost_multiplier = ?, xp_boost_expires_at = ?,
           heat_streak = ?, last_xp_at = ?, hour_window_start = ?, hour_xp_earned = ?
          WHERE guild_id = ? AND user_id = ?`,
@@ -120,8 +126,10 @@ export class ProfileRepo {
         profile.messageCount,
         profile.voiceMinutes,
         profile.coins,
+        profile.bankCoins,
         profile.dailyStreak,
         profile.lastDailyDate,
+        profile.lastBankInterestDate,
         profile.lastWorkAt,
         profile.lastRobAt,
         profile.robShieldUntil,
@@ -182,13 +190,23 @@ export class ProfileRepo {
   ): { items: MemberProfile[]; total: number } {
     const rows = this.db
       .prepare(
-        'SELECT * FROM member_profiles WHERE guild_id = ? ORDER BY coins DESC, xp DESC LIMIT ? OFFSET ?',
+        'SELECT * FROM member_profiles WHERE guild_id = ? ORDER BY (coins + bank_coins) DESC, coins DESC, xp DESC LIMIT ? OFFSET ?',
       )
       .all(guildId, limit, offset) as MemberProfileRow[];
     const total = this.db
       .prepare('SELECT COUNT(*) AS cnt FROM member_profiles WHERE guild_id = ?')
       .get(guildId) as { cnt: number };
     return { items: rows.map(mapProfile), total: total.cnt };
+  }
+
+  listRobTargets(guildId: string, excludeUserId: string, limit = 8): MemberProfile[] {
+    const safeLimit = Math.max(0, Math.floor(limit));
+    const rows = this.db
+      .prepare(
+        'SELECT * FROM member_profiles WHERE guild_id = ? AND user_id != ? AND coins >= 100 ORDER BY coins DESC LIMIT ?',
+      )
+      .all(guildId, excludeUserId, safeLimit) as MemberProfileRow[];
+    return rows.map(mapProfile);
   }
 
   setLevelReward(guildId: string, level: number, roleId: string): void {

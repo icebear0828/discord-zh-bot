@@ -294,8 +294,8 @@ export class LevelingService {
       totalItems: res.total,
       items: res.items.map((p) => ({
         userId: p.userId,
-        primaryValue: type === 'coins' ? p.coins : p.xp,
-        secondaryValue: p.level,
+        primaryValue: type === 'coins' ? p.coins + p.bankCoins : p.xp,
+        secondaryValue: type === 'coins' ? p.bankCoins : p.level,
         equippedTitle: p.equippedTitle,
       })),
     };

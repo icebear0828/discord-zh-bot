@@ -20,8 +20,10 @@ CREATE TABLE IF NOT EXISTS member_profiles (
   message_count INTEGER NOT NULL DEFAULT 0,
   voice_minutes INTEGER NOT NULL DEFAULT 0,
   coins INTEGER NOT NULL DEFAULT 0,
+  bank_coins INTEGER NOT NULL DEFAULT 0,
   daily_streak INTEGER NOT NULL DEFAULT 0,
   last_daily_date TEXT,
+  last_bank_interest_date TEXT,
   last_work_at INTEGER NOT NULL DEFAULT 0,
   last_rob_at INTEGER NOT NULL DEFAULT 0,
   rob_shield_until INTEGER NOT NULL DEFAULT 0,
@@ -187,4 +189,14 @@ CREATE INDEX IF NOT EXISTS idx_role_panel_options_panel
 
 export function initSchema(db: Database.Database): void {
   db.exec(SCHEMA_SQL);
+
+  const columns = db.pragma('table_info(member_profiles)') as Array<{ name: string }>;
+  const columnNames = new Set(columns.map((col) => col.name));
+
+  if (!columnNames.has('bank_coins')) {
+    db.exec('ALTER TABLE member_profiles ADD COLUMN bank_coins INTEGER NOT NULL DEFAULT 0;');
+  }
+  if (!columnNames.has('last_bank_interest_date')) {
+    db.exec('ALTER TABLE member_profiles ADD COLUMN last_bank_interest_date TEXT;');
+  }
 }

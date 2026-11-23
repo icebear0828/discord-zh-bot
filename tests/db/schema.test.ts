@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import Database from 'better-sqlite3';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -7,6 +8,7 @@ import { createDatabase } from '../../src/db/database.js';
 import { initSchema } from '../../src/db/schema.js';
 import { GuildConfigRepo } from '../../src/db/repositories/guildConfigRepo.js';
 import { GiveawayRepo } from '../../src/db/repositories/giveawayRepo.js';
+import { ProfileRepo } from '../../src/db/repositories/profileRepo.js';
 import { RolePanelRepo } from '../../src/db/repositories/rolePanelRepo.js';
 
 describe('env & database schema', () => {
@@ -119,6 +121,63 @@ describe('env & database schema', () => {
     expect(panelRepo.listOptions(panel.id)).toHaveLength(1);
     panelRepo.delete(panel.id, 'g1');
     expect(panelRepo.listOptions(panel.id)).toHaveLength(0);
+
+    db.close();
+  });
+
+  it('migrates legacy v1 member_profiles table by adding bank_coins and last_bank_interest_date while preserving existing rows', () => {
+    const db = new Database(':memory:');
+    db.exec(`
+      CREATE TABLE member_profiles (
+        guild_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        xp INTEGER NOT NULL DEFAULT 0,
+        level INTEGER NOT NULL DEFAULT 0,
+        message_count INTEGER NOT NULL DEFAULT 0,
+        voice_minutes INTEGER NOT NULL DEFAULT 0,
+        coins INTEGER NOT NULL DEFAULT 0,
+        daily_streak INTEGER NOT NULL DEFAULT 0,
+        last_daily_date TEXT,
+        last_work_at INTEGER NOT NULL DEFAULT 0,
+        last_rob_at INTEGER NOT NULL DEFAULT 0,
+        rob_shield_until INTEGER NOT NULL DEFAULT 0,
+        equipped_title TEXT,
+        xp_boost_multiplier REAL NOT NULL DEFAULT 1.0,
+        xp_boost_expires_at INTEGER NOT NULL DEFAULT 0,
+        heat_streak INTEGER NOT NULL DEFAULT 0,
+        last_xp_at INTEGER NOT NULL DEFAULT 0,
+        hour_window_start INTEGER NOT NULL DEFAULT 0,
+        hour_xp_earned INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (guild_id, user_id)
+      );
+      INSERT INTO member_profiles (guild_id, user_id, coins) VALUES ('g1', 'u1', 500);
+    `);
+
+    initSchema(db);
+    // Idempotent second call should also succeed
+    initSchema(db);
+
+    const cols = db.pragma('table_info(member_profiles)') as Array<{ name: string }>;
+    const colNames = cols.map((c) => c.name);
+    expect(colNames).toContain('bank_coins');
+    expect(colNames).toContain('last_bank_interest_date');
+
+    const row = db
+      .prepare('SELECT coins, bank_coins, last_bank_interest_date FROM member_profiles WHERE guild_id = ? AND user_id = ?')
+      .get('g1', 'u1') as {
+      coins: number;
+      bank_coins: number;
+      last_bank_interest_date: string | null;
+    };
+    expect(row.coins).toBe(500);
+    expect(row.bank_coins).toBe(0);
+    expect(row.last_bank_interest_date).toBeNull();
+
+    const profileRepo = new ProfileRepo(db);
+    const profile = profileRepo.getOrCreate('g1', 'u1');
+    expect(profile.coins).toBe(500);
+    expect(profile.bankCoins).toBe(0);
+    expect(profile.lastBankInterestDate).toBeNull();
 
     db.close();
   });

@@ -36,8 +36,18 @@ export const balanceCommand: CommandDefinition = {
       })
       .addFields(
         {
-          name: `${cfg.currencyEmoji} 当前余额`,
+          name: `${cfg.currencyEmoji} 口袋现金 (可能被偷)`,
           value: `**${profile.coins}** ${cfg.currencyName}`,
+          inline: true,
+        },
+        {
+          name: '🏦 银行存款 (防偷安全)',
+          value: `**${profile.bankCoins}** ${cfg.currencyName}`,
+          inline: true,
+        },
+        {
+          name: '💎 总资产',
+          value: `**${profile.coins + profile.bankCoins}** ${cfg.currencyName}`,
           inline: true,
         },
         {

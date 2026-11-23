@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { createDatabase } from '../../src/db/database.js';
 import { GuildConfigRepo } from '../../src/db/repositories/guildConfigRepo.js';
+import { InviteRepo } from '../../src/db/repositories/inviteRepo.js';
 import { ProfileRepo } from '../../src/db/repositories/profileRepo.js';
 import { EconomyService, getDateKey } from '../../src/services/economyService.js';
+import { LevelingService } from '../../src/services/levelingService.js';
 
 describe('economyService', () => {
   it('computes Shanghai date keys and daily streak rewards', () => {
@@ -116,6 +118,154 @@ describe('economyService', () => {
       expect(slots.netChange).toBe(1400);
     }
 
+    db.close();
+  });
+
+  it('handles bank deposit, withdraw, and daily bank interest with caps', () => {
+    const db = createDatabase(':memory:');
+    const configRepo = new GuildConfigRepo(db);
+    const profileRepo = new ProfileRepo(db);
+    const svc = new EconomyService(db, configRepo, profileRepo, 'Asia/Shanghai');
+
+    profileRepo.addCoins('g1', 'u1', 500);
+
+    // Deposit validation
+    expect(svc.deposit('g1', 'u1', 0)).toEqual({ ok: false, reason: 'invalid_amount' });
+    expect(svc.deposit('g1', 'u1', -10)).toEqual({ ok: false, reason: 'invalid_amount' });
+    expect(svc.deposit('g1', 'u1', Number.NaN)).toEqual({ ok: false, reason: 'invalid_amount' });
+    expect(svc.deposit('g1', 'u1', Number.POSITIVE_INFINITY)).toEqual({
+      ok: false,
+      reason: 'invalid_amount',
+    });
+    expect(svc.deposit('g1', 'u1', 501)).toEqual({ ok: false, reason: 'insufficient_funds' });
+
+    const d1 = svc.deposit('g1', 'u1', 99);
+    expect(d1).toEqual({ ok: true, amount: 99, coins: 401, bankCoins: 99 });
+
+    // Interest below minimum deposit
+    const day1 = Date.UTC(2026, 4, 1, 4, 0, 0);
+    const iLow = svc.claimBankInterest('g1', 'u1', day1);
+    expect(iLow).toEqual({ ok: false, reason: 'below_minimum', minDeposit: 100 });
+
+    // Deposit more to reach 500 in bank
+    const d2 = svc.deposit('g1', 'u1', 401);
+    expect(d2).toEqual({ ok: true, amount: 401, coins: 0, bankCoins: 500 });
+
+    // Claim interest succeeds (500 * 0.02 = 10)
+    const i1 = svc.claimBankInterest('g1', 'u1', day1);
+    expect(i1).toEqual({ ok: true, interest: 10, bankCoins: 510 });
+
+    // Same-day duplicate claim rejected
+    const iSame = svc.claimBankInterest('g1', 'u1', day1 + 3600_000);
+    expect(iSame).toEqual({ ok: false, reason: 'already_claimed' });
+
+    // Next-day claim succeeds (Math.floor(510 * 0.02) = 10)
+    const day2 = day1 + 24 * 3600_000;
+    const i2 = svc.claimBankInterest('g1', 'u1', day2);
+    expect(i2).toEqual({ ok: true, interest: 10, bankCoins: 520 });
+
+    // Interest cap at bankInterestMax (500)
+    const p = profileRepo.getOrCreate('g1', 'u1');
+    profileRepo.save({ ...p, bankCoins: 100_000 });
+    const day3 = day2 + 24 * 3600_000;
+    const iCapped = svc.claimBankInterest('g1', 'u1', day3);
+    expect(iCapped).toEqual({ ok: true, interest: 500, bankCoins: 100_500 });
+
+    // Withdraw validation and execution
+    expect(svc.withdraw('g1', 'u1', 0)).toEqual({ ok: false, reason: 'invalid_amount' });
+    expect(svc.withdraw('g1', 'u1', -5)).toEqual({ ok: false, reason: 'invalid_amount' });
+    expect(svc.withdraw('g1', 'u1', 100_501)).toEqual({
+      ok: false,
+      reason: 'insufficient_funds',
+    });
+
+    const w1 = svc.withdraw('g1', 'u1', 500);
+    expect(w1).toEqual({ ok: true, amount: 500, coins: 500, bankCoins: 100_000 });
+
+    const persisted = profileRepo.getOrCreate('g1', 'u1');
+    expect(persisted.coins).toBe(500);
+    expect(persisted.bankCoins).toBe(100_000);
+
+    db.close();
+  });
+
+  it('protects bankCoins from rob(), filters rob targets by pocket cash, and ranks rich leaderboard by net worth', () => {
+    const db = createDatabase(':memory:');
+    const configRepo = new GuildConfigRepo(db);
+    const profileRepo = new ProfileRepo(db);
+    const inviteRepo = new InviteRepo(db);
+    const svc = new EconomyService(db, configRepo, profileRepo, 'Asia/Shanghai');
+    const levelingSvc = new LevelingService(configRepo, profileRepo, inviteRepo);
+
+    profileRepo.addCoins('g1', 'u1', 500);
+    profileRepo.addCoins('g1', 'u2', 500);
+
+    // u2 deposits 450 leaving 50 in pocket -> rob fails as target_too_poor
+    expect(svc.deposit('g1', 'u2', 450).ok).toBe(true);
+    const now = 1_700_000_000_000;
+    const robPoor = svc.rob('g1', 'u1', 'u2', now, () => 0.1);
+    expect(robPoor).toEqual({ ok: false, reason: 'target_too_poor' });
+    expect(profileRepo.getOrCreate('g1', 'u2').bankCoins).toBe(450);
+
+    // Even when u2 has >= 100 in pocket, successful rob only touches pocket coins and never bankCoins
+    profileRepo.addCoins('g1', 'u2', 150); // pocket = 200, bank = 450
+    const robHit = svc.rob('g1', 'u1', 'u2', now, () => 0.1);
+    expect(robHit.ok).toBe(true);
+    if (robHit.ok) {
+      expect(robHit.success).toBe(true);
+      expect(robHit.targetBalance).toBeLessThan(200);
+    }
+    expect(profileRepo.getOrCreate('g1', 'u2').bankCoins).toBe(450);
+
+    // Setup fresh profiles for listRobTargets & net-worth leaderboard
+    const db2 = createDatabase(':memory:');
+    const cfgRepo2 = new GuildConfigRepo(db2);
+    const profRepo2 = new ProfileRepo(db2);
+    const invRepo2 = new InviteRepo(db2);
+    const lvlSvc2 = new LevelingService(cfgRepo2, profRepo2, invRepo2);
+
+    profRepo2.addCoins('g1', 'attacker', 9000); // excluded when excludeUserId='attacker'
+    profRepo2.addCoins('g1', 'poorPocket', 99);
+    profRepo2.save({ ...profRepo2.getOrCreate('g1', 'poorPocket'), bankCoins: 5000 }); // net 5099, pocket 99 (<100)
+    profRepo2.addCoins('g1', 'richPocket', 500);
+    profRepo2.save({ ...profRepo2.getOrCreate('g1', 'richPocket'), bankCoins: 100 }); // net 600, pocket 500
+    profRepo2.addCoins('g1', 'midPocket', 300);
+    profRepo2.save({ ...profRepo2.getOrCreate('g1', 'midPocket'), bankCoins: 700 }); // net 1000, pocket 300
+    profRepo2.addCoins('g2', 'otherGuild', 8000); // different guild
+
+    const targets = profRepo2.listRobTargets('g1', 'attacker');
+    expect(targets.map((p) => p.userId)).toEqual(['richPocket', 'midPocket']);
+    expect(profRepo2.listRobTargets('g1', 'attacker', 1).map((p) => p.userId)).toEqual([
+      'richPocket',
+    ]);
+
+    // Net-worth leaderboard ordering: attacker (9000), poorPocket (5099), midPocket (1000), richPocket (600)
+    // Plus tie-breaker: coins DESC when net worth is equal
+    profRepo2.addCoins('g1', 'tieMorePocket', 400);
+    profRepo2.save({ ...profRepo2.getOrCreate('g1', 'tieMorePocket'), bankCoins: 600 }); // net 1000, pocket 400
+
+    const repoBoard = profRepo2.listLeaderboardByCoins('g1', 10, 0);
+    expect(repoBoard.items.map((p) => p.userId)).toEqual([
+      'attacker',
+      'poorPocket',
+      'tieMorePocket',
+      'midPocket',
+      'richPocket',
+    ]);
+
+    const lb = lvlSvc2.getLeaderboard('g1', 'coins', 1, 10);
+    expect(lb.items).toEqual([
+      { userId: 'attacker', primaryValue: 9000, secondaryValue: 0, equippedTitle: null },
+      { userId: 'poorPocket', primaryValue: 5099, secondaryValue: 5000, equippedTitle: null },
+      { userId: 'tieMorePocket', primaryValue: 1000, secondaryValue: 600, equippedTitle: null },
+      { userId: 'midPocket', primaryValue: 1000, secondaryValue: 700, equippedTitle: null },
+      { userId: 'richPocket', primaryValue: 600, secondaryValue: 100, equippedTitle: null },
+    ]);
+
+    // Check levelingSvc variable used without unused warning
+    expect(levelingSvc.getLeaderboard('g1', 'coins').items.length).toBe(2);
+
+    db2.close();
     db.close();
   });
 });

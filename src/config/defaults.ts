@@ -40,6 +40,9 @@ export interface EconomyConfig {
   robCooldownSec: number;
   robTargetShieldSec: number;
   robSuccessRate: number;
+  bankInterestRate: number;
+  bankInterestMax: number;
+  bankInterestMinDeposit: number;
 }
 
 export interface WelcomeConfig {
@@ -112,6 +115,9 @@ export const DEFAULT_ECONOMY_CONFIG: EconomyConfig = {
   robCooldownSec: 3600,
   robTargetShieldSec: 3600,
   robSuccessRate: 0.45,
+  bankInterestRate: 0.02,
+  bankInterestMax: 500,
+  bankInterestMinDeposit: 100,
 };
 
 export const DEFAULT_WELCOME_CONFIG: WelcomeConfig = {

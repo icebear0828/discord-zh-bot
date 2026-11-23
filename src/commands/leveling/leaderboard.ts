@@ -37,7 +37,7 @@ export function buildLeaderboardMessage(
       return `${medal} <@${item.userId}> ${titleTag} — Lv.**${item.secondaryValue}**（${item.primaryValue} XP）`;
     }
     if (type === 'coins') {
-      return `${medal} <@${item.userId}> ${titleTag} — ${cfg.economy.currencyEmoji} **${item.primaryValue}** ${cfg.economy.currencyName}`;
+      return `${medal} <@${item.userId}> ${titleTag} — ${cfg.economy.currencyEmoji} **${item.primaryValue}** ${cfg.economy.currencyName}（银行 ${item.secondaryValue}）`;
     }
     return `${medal} <@${item.userId}> — 成功邀请 **${item.primaryValue}** 人`;
   });
