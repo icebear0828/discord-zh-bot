@@ -9,6 +9,7 @@ import { TicketRepo } from './db/repositories/ticketRepo.js';
 import { GiveawayRepo } from './db/repositories/giveawayRepo.js';
 import { InviteRepo } from './db/repositories/inviteRepo.js';
 import { RolePanelRepo } from './db/repositories/rolePanelRepo.js';
+import { RedPacketRepo } from './db/repositories/redPacketRepo.js';
 import { LevelingService } from './services/levelingService.js';
 import { EconomyService } from './services/economyService.js';
 import { BlackjackManager } from './services/blackjackService.js';
@@ -18,6 +19,7 @@ import { TicketService } from './services/ticketService.js';
 import { GiveawayService } from './services/giveawayService.js';
 import { InviteService } from './services/inviteService.js';
 import { RolePanelService } from './services/rolePanelService.js';
+import { MultiplayerService } from './services/multiplayerService.js';
 import type { AppContext } from './ui/embeds.js';
 import { registerReadyEvent } from './events/ready.js';
 import { registerMessageCreateEvent } from './events/messageCreate.js';
@@ -38,6 +40,7 @@ function main(): void {
   const giveawayRepo = new GiveawayRepo(db);
   const inviteRepo = new InviteRepo(db);
   const rolePanelRepo = new RolePanelRepo(db);
+  const redPacketRepo = new RedPacketRepo(db);
 
   const ctx: AppContext = {
     db,
@@ -51,6 +54,7 @@ function main(): void {
       giveaway: giveawayRepo,
       invite: inviteRepo,
       rolePanel: rolePanelRepo,
+      redPacket: redPacketRepo,
     },
     services: {
       leveling: new LevelingService(guildConfigRepo, profileRepo, inviteRepo),
@@ -62,6 +66,7 @@ function main(): void {
       giveaway: new GiveawayService(giveawayRepo),
       invite: new InviteService(inviteRepo),
       rolePanel: new RolePanelService(rolePanelRepo),
+      multiplayer: new MultiplayerService(db, profileRepo, redPacketRepo),
     },
   };
 

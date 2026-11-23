@@ -7,6 +7,13 @@ import { handleBlackjackButton } from './blackjackHandler.js';
 import { handleTicketButton, handleTicketModal } from './ticketHandler.js';
 import { handleGiveawayButton } from './giveawayHandler.js';
 import { handleRolePanelButton, handleRolePanelSelect } from './rolePanelHandler.js';
+import {
+  handleMenuButton,
+  handleMenuModal,
+  handleMenuStringSelect,
+  handleMenuUserSelect,
+} from './menuHandler.js';
+import { handleMultiplayerButton } from './multiplayerHandler.js';
 
 function formatFriendlyError(err: unknown): string {
   if (err instanceof DiscordAPIError && err.code === 50013) {
@@ -45,6 +52,10 @@ export async function routeInteraction(
         await handleGiveawayButton(interaction, ctx);
       } else if (prefix === 'rolepanel') {
         await handleRolePanelButton(interaction, ctx);
+      } else if (prefix === 'menu') {
+        await handleMenuButton(interaction, ctx);
+      } else if (prefix === 'mp') {
+        await handleMultiplayerButton(interaction, ctx);
       }
       return;
     }
@@ -55,13 +66,26 @@ export async function routeInteraction(
         await handleHelpSelect(interaction);
       } else if (prefix === 'rolepanel') {
         await handleRolePanelSelect(interaction, ctx);
+      } else if (prefix === 'menu') {
+        await handleMenuStringSelect(interaction, ctx);
+      }
+      return;
+    }
+
+    if (interaction.isUserSelectMenu()) {
+      const prefix = interaction.customId.split(':')[0];
+      if (prefix === 'menu') {
+        await handleMenuUserSelect(interaction, ctx);
       }
       return;
     }
 
     if (interaction.isModalSubmit()) {
+      const prefix = interaction.customId.split(':')[0];
       if (interaction.customId === 'ticket:create') {
         await handleTicketModal(interaction, ctx);
+      } else if (prefix === 'menu') {
+        await handleMenuModal(interaction, ctx);
       }
     }
   } catch (err) {

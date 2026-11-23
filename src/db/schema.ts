@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3';
+import { initRedPacketSchema } from './repositories/redPacketRepo.js';
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS guild_configs (
@@ -189,6 +190,7 @@ CREATE INDEX IF NOT EXISTS idx_role_panel_options_panel
 
 export function initSchema(db: Database.Database): void {
   db.exec(SCHEMA_SQL);
+  initRedPacketSchema(db);
 
   const columns = db.pragma('table_info(member_profiles)') as Array<{ name: string }>;
   const columnNames = new Set(columns.map((col) => col.name));

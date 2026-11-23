@@ -9,7 +9,8 @@ import {
 } from 'discord.js';
 import { buildGiveawayMessage } from '../commands/giveaways/giveaway.js';
 import type { AwardXpResult } from '../services/levelingService.js';
-import { createSuccessEmbed, type AppContext } from '../ui/embeds.js';
+import { createInfoEmbed, createSuccessEmbed, type AppContext } from '../ui/embeds.js';
+import { buildRedPacketMessage } from '../ui/menuBuilder.js';
 
 export async function syncLevelRewardRoles(
   member: GuildMember,
@@ -67,11 +68,13 @@ export interface BackgroundSchedulers {
 export function registerReadyEvent(client: Client, ctx: AppContext): BackgroundSchedulers {
   let voiceTimer: NodeJS.Timeout | null = null;
   let giveawayTimer: NodeJS.Timeout | null = null;
+  let redPacketTimer: NodeJS.Timeout | null = null;
   let giveawayRunning = false;
+  let redPacketRunning = false;
 
   client.once(Events.ClientReady, async (readyClient) => {
     console.log(`[bot] 已登录为 ${readyClient.user.tag}，正在守护 ${readyClient.guilds.cache.size} 个服务器`);
-    readyClient.user.setActivity('服务器日常 | /帮助', { type: ActivityType.Watching });
+    readyClient.user.setActivity('输入 /菜单 开始游玩 | /帮助', { type: ActivityType.Watching });
 
     // Sync invite cache for all guilds
     for (const guild of readyClient.guilds.cache.values()) {
@@ -143,14 +146,60 @@ export function registerReadyEvent(client: Client, ctx: AppContext): BackgroundS
         }
       })();
     }, 10_000);
+
+    // Red packet expiration tick (every 15s, with overlap guard)
+    redPacketTimer = setInterval(() => {
+      if (redPacketRunning) return;
+      redPacketRunning = true;
+      void (async () => {
+        try {
+          const expiredList = ctx.services.multiplayer.expireDueRedPackets();
+          for (const { packet, refundedAmount } of expiredList) {
+            if (!packet.messageId) continue;
+
+            const guild = readyClient.guilds.cache.get(packet.guildId);
+            const ch =
+              guild?.channels.cache.get(packet.channelId) ??
+              (await readyClient.channels.fetch(packet.channelId).catch(() => null));
+            if (!ch || !ch.isTextBased()) continue;
+
+            const cfg = ctx.repos.guildConfig.getOrCreate(packet.guildId).economy;
+            const detail = ctx.services.multiplayer.getRedPacketWithClaims(packet.id);
+            const msg = await ch.messages.fetch(packet.messageId).catch(() => null);
+            if (msg && detail) {
+              await msg
+                .edit(buildRedPacketMessage(detail.packet, detail.claims, detail.bestLuckUserId, cfg))
+                .catch(() => undefined);
+            }
+
+            if (refundedAmount > 0 && ch.isSendable()) {
+              await ch
+                .send({
+                  embeds: [
+                    createInfoEmbed(
+                      '🧧 红包过期退回',
+                      `<@${packet.senderId}> 的红包（#${packet.id}）已过期，剩余 ${cfg.currencyEmoji} **${refundedAmount}** ${cfg.currencyName} 已自动退回钱包。`,
+                    ),
+                  ],
+                })
+                .catch(() => undefined);
+            }
+          }
+        } finally {
+          redPacketRunning = false;
+        }
+      })();
+    }, 15_000);
   });
 
   return {
     stop(): void {
       if (voiceTimer) clearInterval(voiceTimer);
       if (giveawayTimer) clearInterval(giveawayTimer);
+      if (redPacketTimer) clearInterval(redPacketTimer);
       voiceTimer = null;
       giveawayTimer = null;
+      redPacketTimer = null;
     },
   };
 }

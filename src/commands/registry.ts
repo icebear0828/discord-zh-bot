@@ -1,5 +1,6 @@
 import type { CommandDefinition } from '../ui/embeds.js';
 import { helpCommand } from './general/help.js';
+import { menuCommand } from './general/menu.js';
 import { configCommand } from './general/config.js';
 import { rankCommand } from './leveling/rank.js';
 import { leaderboardCommand } from './leveling/leaderboard.js';
@@ -26,6 +27,7 @@ import { rolePanelCommand } from './roles/rolePanel.js';
 
 export const commands: readonly CommandDefinition[] = [
   helpCommand,
+  menuCommand,
   configCommand,
   rankCommand,
   leaderboardCommand,

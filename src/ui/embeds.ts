@@ -8,6 +8,7 @@ import type { TicketRepo } from '../db/repositories/ticketRepo.js';
 import type { GiveawayRepo } from '../db/repositories/giveawayRepo.js';
 import type { InviteRepo } from '../db/repositories/inviteRepo.js';
 import type { RolePanelRepo } from '../db/repositories/rolePanelRepo.js';
+import type { RedPacketRepo } from '../db/repositories/redPacketRepo.js';
 import type { LevelingService } from '../services/levelingService.js';
 import type { EconomyService } from '../services/economyService.js';
 import type { BlackjackManager } from '../services/blackjackService.js';
@@ -17,6 +18,7 @@ import type { TicketService } from '../services/ticketService.js';
 import type { GiveawayService } from '../services/giveawayService.js';
 import type { InviteService } from '../services/inviteService.js';
 import type { RolePanelService } from '../services/rolePanelService.js';
+import type { MultiplayerService } from '../services/multiplayerService.js';
 
 export interface AppContext {
   db: Database.Database;
@@ -30,6 +32,7 @@ export interface AppContext {
     giveaway: GiveawayRepo;
     invite: InviteRepo;
     rolePanel: RolePanelRepo;
+    redPacket: RedPacketRepo;
   };
   services: {
     leveling: LevelingService;
@@ -41,6 +44,7 @@ export interface AppContext {
     giveaway: GiveawayService;
     invite: InviteService;
     rolePanel: RolePanelService;
+    multiplayer: MultiplayerService;
   };
 }
 

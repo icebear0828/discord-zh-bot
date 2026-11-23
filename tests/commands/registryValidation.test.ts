@@ -28,8 +28,8 @@ function validateNode(node: JsonOptionLike, path: string): void {
 }
 
 describe('command registry localization & Discord constraints', () => {
-  it('registers 24 unique commands with valid names, zh-CN localizations, and descriptions', () => {
-    expect(commands).toHaveLength(24);
+  it('registers 25 unique commands with valid names, zh-CN localizations, and descriptions', () => {
+    expect(commands).toHaveLength(25);
 
     const names = new Set<string>();
     const zhNames = new Set<string>();
@@ -47,5 +47,12 @@ describe('command registry localization & Discord constraints', () => {
 
       validateNode(json, json.name);
     }
+
+    expect(names.has('menu')).toBe(true);
+    expect(zhNames.has('菜单')).toBe(true);
+
+    const menuCmd = commands.find((c) => c.name === 'menu');
+    const menuJson = menuCmd?.data.toJSON() as JsonOptionLike | undefined;
+    expect(menuJson?.name_localizations?.['zh-TW']).toBe('選單');
   });
 });
