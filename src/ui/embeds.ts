@@ -9,6 +9,9 @@ import type { GiveawayRepo } from '../db/repositories/giveawayRepo.js';
 import type { InviteRepo } from '../db/repositories/inviteRepo.js';
 import type { RolePanelRepo } from '../db/repositories/rolePanelRepo.js';
 import type { RedPacketRepo } from '../db/repositories/redPacketRepo.js';
+import type { ChaosRepo } from '../db/repositories/chaosRepo.js';
+import type { WorldEventRepo } from '../db/repositories/worldEventRepo.js';
+import type { SocialPetRepo } from '../db/repositories/socialPetRepo.js';
 import type { LevelingService } from '../services/levelingService.js';
 import type { EconomyService } from '../services/economyService.js';
 import type { BlackjackManager } from '../services/blackjackService.js';
@@ -19,6 +22,9 @@ import type { GiveawayService } from '../services/giveawayService.js';
 import type { InviteService } from '../services/inviteService.js';
 import type { RolePanelService } from '../services/rolePanelService.js';
 import type { MultiplayerService } from '../services/multiplayerService.js';
+import type { ChaosService } from '../services/chaosService.js';
+import type { WorldEventService } from '../services/worldEventService.js';
+import type { SocialPetService } from '../services/socialPetService.js';
 
 export interface AppContext {
   db: Database.Database;
@@ -33,6 +39,9 @@ export interface AppContext {
     invite: InviteRepo;
     rolePanel: RolePanelRepo;
     redPacket: RedPacketRepo;
+    chaos: ChaosRepo;
+    worldEvent: WorldEventRepo;
+    socialPet: SocialPetRepo;
   };
   services: {
     leveling: LevelingService;
@@ -45,6 +54,9 @@ export interface AppContext {
     invite: InviteService;
     rolePanel: RolePanelService;
     multiplayer: MultiplayerService;
+    chaos: ChaosService;
+    worldEvent: WorldEventService;
+    socialPet: SocialPetService;
   };
 }
 

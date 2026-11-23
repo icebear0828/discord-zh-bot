@@ -2,11 +2,13 @@ import type Database from 'better-sqlite3';
 import {
   createDefaultGuildConfig,
   DEFAULT_ECONOMY_CONFIG,
+  DEFAULT_GAMES_CONFIG,
   DEFAULT_LEVELING_CONFIG,
   DEFAULT_MODULES,
   DEFAULT_TICKET_CONFIG,
   DEFAULT_WELCOME_CONFIG,
   type EconomyConfig,
+  type GamesConfig,
   type GuildConfig,
   type LevelingConfig,
   type ModuleToggles,
@@ -23,6 +25,7 @@ interface GuildConfigRow {
   economy_config_json: string;
   welcome_config_json: string;
   ticket_config_json: string;
+  games_config_json?: string;
   updated_at: number;
 }
 
@@ -88,6 +91,9 @@ export class GuildConfigRepo {
           ...DEFAULT_TICKET_CONFIG,
           staffRoleIds: [],
         }),
+        games: parseRecord<GamesConfig>(row.games_config_json ?? '{}', {
+          ...DEFAULT_GAMES_CONFIG,
+        }),
         updatedAt: row.updated_at,
       };
     }
@@ -98,8 +104,8 @@ export class GuildConfigRepo {
         `INSERT INTO guild_configs (
           guild_id, modules_json, admin_role_ids_json, admin_user_ids_json,
           leveling_config_json, economy_config_json,
-          welcome_config_json, ticket_config_json, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          welcome_config_json, ticket_config_json, games_config_json, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         created.guildId,
@@ -110,6 +116,7 @@ export class GuildConfigRepo {
         JSON.stringify(created.economy),
         JSON.stringify(created.welcome),
         JSON.stringify(created.ticket),
+        JSON.stringify(created.games),
         created.updatedAt,
       );
     return created;
@@ -174,6 +181,15 @@ export class GuildConfigRepo {
         'UPDATE guild_configs SET ticket_config_json = ?, updated_at = ? WHERE guild_id = ?',
       )
       .run(JSON.stringify(ticket), Date.now(), guildId);
+  }
+
+  updateGames(guildId: string, games: GamesConfig): void {
+    this.getOrCreate(guildId);
+    this.db
+      .prepare(
+        'UPDATE guild_configs SET games_config_json = ?, updated_at = ? WHERE guild_id = ?',
+      )
+      .run(JSON.stringify(games), Date.now(), guildId);
   }
 
   incrementTicketCounter(guildId: string): number {

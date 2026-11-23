@@ -8,9 +8,17 @@ import {
   type TextChannel,
 } from 'discord.js';
 import { buildGiveawayMessage } from '../commands/giveaways/giveaway.js';
+import { editChannelMessage, sendToChannel } from '../interactions/menuHelpers.js';
 import type { AwardXpResult } from '../services/levelingService.js';
+import { buildNumberBombCard, buildRouletteCard } from '../ui/chaosMenuBuilder.js';
 import { createInfoEmbed, createSuccessEmbed, type AppContext } from '../ui/embeds.js';
 import { buildRedPacketMessage } from '../ui/menuBuilder.js';
+import { buildPetBattleCard, buildProposalCard } from '../ui/socialPetMenuBuilder.js';
+import {
+  buildPredictionCard,
+  buildWorldBossCard,
+  buildWorldChestCard,
+} from '../ui/worldEventMenuBuilder.js';
 
 export async function syncLevelRewardRoles(
   member: GuildMember,
@@ -69,8 +77,10 @@ export function registerReadyEvent(client: Client, ctx: AppContext): BackgroundS
   let voiceTimer: NodeJS.Timeout | null = null;
   let giveawayTimer: NodeJS.Timeout | null = null;
   let redPacketTimer: NodeJS.Timeout | null = null;
+  let gamesTimer: NodeJS.Timeout | null = null;
   let giveawayRunning = false;
   let redPacketRunning = false;
+  let gamesRunning = false;
 
   client.once(Events.ClientReady, async (readyClient) => {
     console.log(`[bot] 已登录为 ${readyClient.user.tag}，正在守护 ${readyClient.guilds.cache.size} 个服务器`);
@@ -190,6 +200,115 @@ export function registerReadyEvent(client: Client, ctx: AppContext): BackgroundS
         }
       })();
     }, 15_000);
+
+    // Games & events tick (every 5s, with overlap guard)
+    gamesTimer = setInterval(() => {
+      if (gamesRunning) return;
+      gamesRunning = true;
+      void (async () => {
+        try {
+          const rouletteUpdates = ctx.services.chaos.processTimedOutRoulettes();
+          for (const upd of rouletteUpdates) {
+            const cfg = ctx.repos.guildConfig.getOrCreate(upd.game.guildId).economy;
+            const guild = readyClient.guilds.cache.get(upd.game.guildId);
+            await editChannelMessage(
+              readyClient,
+              upd.game.channelId,
+              upd.game.messageId,
+              buildRouletteCard(upd.game, cfg),
+              guild,
+            );
+            if (upd.kind === 'turn_timeout' && upd.game.status === 'finished' && upd.winnerId) {
+              await sendToChannel(readyClient, upd.game.channelId, {
+                content: `⌛ 超时自动结算！🏆 轮盘 **#${upd.game.id}** 由 <@${upd.winnerId}> 独吞 **${upd.prizePool ?? 0}** ${cfg.currencyName}！`,
+              });
+            }
+          }
+
+          const expiredBombs = ctx.services.chaos.expireDueNumberBombs();
+          for (const bomb of expiredBombs) {
+            const cfg = ctx.repos.guildConfig.getOrCreate(bomb.guildId).economy;
+            const guild = readyClient.guilds.cache.get(bomb.guildId);
+            await editChannelMessage(
+              readyClient,
+              bomb.channelId,
+              bomb.messageId,
+              buildNumberBombCard(bomb, cfg),
+              guild,
+            );
+          }
+
+          const lockedPreds = ctx.services.worldEvent.autoLockDuePredictions();
+          for (const summary of lockedPreds) {
+            const cfg = ctx.repos.guildConfig.getOrCreate(summary.prediction.guildId).economy;
+            const guild = readyClient.guilds.cache.get(summary.prediction.guildId);
+            await editChannelMessage(
+              readyClient,
+              summary.prediction.channelId,
+              summary.prediction.messageId,
+              buildPredictionCard(summary, cfg, '🔒 封盘倒计时结束，等待开盘人或管理员宣布胜出结果'),
+              guild,
+            );
+          }
+
+          const expiredWorldEvents = ctx.services.worldEvent.expireDueWorldEvents();
+          for (const item of expiredWorldEvents) {
+            const cfg = ctx.repos.guildConfig.getOrCreate(item.event.guildId).economy;
+            const guild = readyClient.guilds.cache.get(item.event.guildId);
+            const payload =
+              item.event.eventType === 'chest'
+                ? buildWorldChestCard(item.event, item.participants, cfg)
+                : buildWorldBossCard(item.event, item.participants, cfg);
+            await editChannelMessage(
+              readyClient,
+              item.event.channelId,
+              item.event.messageId,
+              payload,
+              guild,
+            );
+            if (item.event.eventType === 'boss' && item.consolations.length > 0) {
+              await sendToChannel(readyClient, item.event.channelId, {
+                embeds: [
+                  createInfoEmbed(
+                    `🏃 世界 Boss「${item.event.name}」已逃走`,
+                    `已向参与输出的 **${item.consolations.length}** 位勇士发放参与安慰奖（30~150 ${cfg.currencyName}）。`,
+                  ),
+                ],
+              });
+            }
+          }
+
+          const expiredProposals = ctx.services.socialPet.expireDueProposals();
+          for (const prop of expiredProposals) {
+            const cfg = ctx.repos.guildConfig.getOrCreate(prop.guildId).economy;
+            const guild = readyClient.guilds.cache.get(prop.guildId);
+            await editChannelMessage(
+              readyClient,
+              prop.channelId,
+              prop.messageId,
+              buildProposalCard(prop, cfg),
+              guild,
+            );
+          }
+
+          const expiredBattles = ctx.services.socialPet.expireDuePetBattles();
+          for (const battle of expiredBattles) {
+            const cfg = ctx.repos.guildConfig.getOrCreate(battle.guildId).economy;
+            const guild = readyClient.guilds.cache.get(battle.guildId);
+            const cPet = ctx.services.socialPet.getPetById(battle.challengerPetId);
+            await editChannelMessage(
+              readyClient,
+              battle.channelId,
+              battle.messageId,
+              buildPetBattleCard(battle, cPet, null, cfg),
+              guild,
+            );
+          }
+        } finally {
+          gamesRunning = false;
+        }
+      })();
+    }, 5_000);
   });
 
   return {
@@ -197,9 +316,11 @@ export function registerReadyEvent(client: Client, ctx: AppContext): BackgroundS
       if (voiceTimer) clearInterval(voiceTimer);
       if (giveawayTimer) clearInterval(giveawayTimer);
       if (redPacketTimer) clearInterval(redPacketTimer);
+      if (gamesTimer) clearInterval(gamesTimer);
       voiceTimer = null;
       giveawayTimer = null;
       redPacketTimer = null;
+      gamesTimer = null;
     },
   };
 }

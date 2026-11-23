@@ -16,6 +16,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { menuCommand } from '../../src/commands/general/menu.js';
 import { configCommand } from '../../src/commands/general/config.js';
 import { createDatabase } from '../../src/db/database.js';
+import { ChaosRepo } from '../../src/db/repositories/chaosRepo.js';
 import { FunRepo } from '../../src/db/repositories/funRepo.js';
 import { GiveawayRepo } from '../../src/db/repositories/giveawayRepo.js';
 import { GuildConfigRepo } from '../../src/db/repositories/guildConfigRepo.js';
@@ -24,9 +25,12 @@ import { ProfileRepo } from '../../src/db/repositories/profileRepo.js';
 import { RedPacketRepo } from '../../src/db/repositories/redPacketRepo.js';
 import { RolePanelRepo } from '../../src/db/repositories/rolePanelRepo.js';
 import { ShopRepo } from '../../src/db/repositories/shopRepo.js';
+import { SocialPetRepo } from '../../src/db/repositories/socialPetRepo.js';
 import { TicketRepo } from '../../src/db/repositories/ticketRepo.js';
+import { WorldEventRepo } from '../../src/db/repositories/worldEventRepo.js';
 import { routeInteraction } from '../../src/interactions/router.js';
 import { BlackjackManager } from '../../src/services/blackjackService.js';
+import { ChaosService } from '../../src/services/chaosService.js';
 import { EconomyService } from '../../src/services/economyService.js';
 import { FunService } from '../../src/services/funService.js';
 import { GiveawayService } from '../../src/services/giveawayService.js';
@@ -35,7 +39,9 @@ import { LevelingService } from '../../src/services/levelingService.js';
 import { MultiplayerService } from '../../src/services/multiplayerService.js';
 import { RolePanelService } from '../../src/services/rolePanelService.js';
 import { ShopService } from '../../src/services/shopService.js';
+import { SocialPetService } from '../../src/services/socialPetService.js';
 import { TicketService } from '../../src/services/ticketService.js';
+import { WorldEventService } from '../../src/services/worldEventService.js';
 import type { AppContext } from '../../src/ui/embeds.js';
 
 function createTestCtx(): AppContext {
@@ -49,6 +55,9 @@ function createTestCtx(): AppContext {
   const invite = new InviteRepo(db);
   const rolePanel = new RolePanelRepo(db);
   const redPacket = new RedPacketRepo(db);
+  const chaos = new ChaosRepo(db);
+  const worldEvent = new WorldEventRepo(db);
+  const socialPet = new SocialPetRepo(db);
 
   return {
     db,
@@ -63,10 +72,13 @@ function createTestCtx(): AppContext {
       invite,
       rolePanel,
       redPacket,
+      chaos,
+      worldEvent,
+      socialPet,
     },
     services: {
       leveling: new LevelingService(guildConfig, profile, invite),
-      economy: new EconomyService(db, guildConfig, profile, 'Asia/Shanghai'),
+      economy: new EconomyService(db, guildConfig, profile, 'Asia/Shanghai', chaos),
       blackjack: new BlackjackManager(db, profile),
       shop: new ShopService(db, profile, shop),
       fun: new FunService(db, profile, shop, fun, 'Asia/Shanghai'),
@@ -74,7 +86,10 @@ function createTestCtx(): AppContext {
       giveaway: new GiveawayService(giveaway),
       invite: new InviteService(invite),
       rolePanel: new RolePanelService(rolePanel),
-      multiplayer: new MultiplayerService(db, profile, redPacket),
+      multiplayer: new MultiplayerService(db, profile, redPacket, chaos),
+      chaos: new ChaosService(db, guildConfig, profile, chaos),
+      worldEvent: new WorldEventService(db, guildConfig, profile, worldEvent, socialPet),
+      socialPet: new SocialPetService(db, guildConfig, profile, shop, socialPet, 'Asia/Shanghai'),
     },
   };
 }
@@ -262,12 +277,19 @@ function createStringSelectMock(opts: {
   const update = vi.fn(async (_payload: MockPayload) => undefined);
   const followUp = vi.fn(async (_payload: MockPayload) => undefined);
   const member = makeMockMember(opts.userId, false, opts.failRoleAdd ?? false);
+  const channel = makeMockChannel(true);
 
   const mock = {
     customId: opts.customId,
     guildId: 'g1',
     guild: { id: 'g1', name: '测试服务器' },
-    channelId: 'c1',
+    channelId: channel.id,
+    channel,
+    client: {
+      channels: {
+        fetch: vi.fn(async () => null),
+      },
+    },
     values: opts.values,
     user: makeMockUser({ id: opts.userId }),
     member,
@@ -1348,6 +1370,246 @@ describe('menu router & multiplayer interaction flows', () => {
     expect(ctx.repos.profile.getOrCreate('g1', 'u10').coins).toBe(2000);
     expect(ctx.repos.profile.getOrCreate('g1', 'b1').coins).toBe(0);
     expect(grantAllModal.editReply).toHaveBeenCalledTimes(1);
+
+    ctx.db.close();
+  });
+
+  it('routes chaos props (including 50013 nickname protection), bounty+rob, roulette, and bomb modals without deferring', async () => {
+    const ctx = createTestCtx();
+    ctx.repos.profile.addCoins('g1', 'u1', 10_000);
+    ctx.repos.profile.addCoins('g1', 'u2', 10_000);
+
+    // Buy nickname card & verify failed setNickname (50013/owner) does NOT consume card
+    const buyNick = createStringSelectMock({
+      customId: 'menu:prop_buy',
+      userId: 'u1',
+      values: ['nickname'],
+    });
+    await routeInteraction(buyNick.interaction, ctx);
+    expect(ctx.services.chaos.getPropQuantity('g1', 'u1', 'nickname')).toBe(1);
+
+    const nickUserSelect = createUserSelectMock({
+      customId: 'menu:user:prop_nick',
+      userId: 'u1',
+      target: { id: 'u2' },
+    });
+    await routeInteraction(nickUserSelect.interaction, ctx);
+    expect(nickUserSelect.showModal).toHaveBeenCalledTimes(1);
+    expect(nickUserSelect.deferUpdate).not.toHaveBeenCalled();
+
+    // Failed setNickname leaves prop intact
+    const failNickModal = createModalMock({
+      customId: 'menu:modal_sub:prop_nick:u2',
+      userId: 'u1',
+      fields: { nickname: '大聪明' },
+    });
+    const mutableGuild = (failNickModal.interaction as unknown as {
+      guild: { ownerId?: string; members: { fetch: ReturnType<typeof vi.fn> } };
+    }).guild;
+    mutableGuild.ownerId = 'owner-id';
+    mutableGuild.members.fetch = vi.fn(async () => ({
+      displayName: 'User-u2',
+      setNickname: vi.fn(async () => {
+        throw new Error('Missing Permissions');
+      }),
+    }));
+    await routeInteraction(failNickModal.interaction, ctx);
+    expect(ctx.services.chaos.getPropQuantity('g1', 'u1', 'nickname')).toBe(1);
+
+    // Succeeding setNickname consumes prop & broadcasts
+    const okNickModal = createModalMock({
+      customId: 'menu:modal_sub:prop_nick:u2',
+      userId: 'u1',
+      fields: { nickname: '群内显眼包' },
+    });
+    const okGuild = (okNickModal.interaction as unknown as {
+      guild: { ownerId?: string; members: { fetch: ReturnType<typeof vi.fn> } };
+    }).guild;
+    okGuild.ownerId = 'owner-id';
+    const setNickFn = vi.fn(async () => undefined);
+    okGuild.members.fetch = vi.fn(async () => ({
+      displayName: 'User-u2',
+      setNickname: setNickFn,
+    }));
+    await routeInteraction(okNickModal.interaction, ctx);
+    expect(setNickFn).toHaveBeenCalledWith('群内显眼包', expect.any(String));
+    expect(ctx.services.chaos.getPropQuantity('g1', 'u1', 'nickname')).toBe(0);
+    expect(okNickModal.channel.send).toHaveBeenCalledTimes(1);
+
+    // Place bounty via modal -> rob succeeds (guaranteed rate) and pays bounty!
+    const cfg = ctx.repos.guildConfig.getOrCreate('g1');
+    ctx.repos.guildConfig.updateEconomy('g1', { ...cfg.economy, robSuccessRate: 1.0 });
+
+    const bountySelect = createUserSelectMock({
+      customId: 'menu:user:bounty',
+      userId: 'u1',
+      target: { id: 'u2' },
+    });
+    await routeInteraction(bountySelect.interaction, ctx);
+    expect(bountySelect.showModal).toHaveBeenCalledTimes(1);
+
+    const bountySub = createModalMock({
+      customId: 'menu:modal_sub:bounty:u2',
+      userId: 'u1',
+      fields: { amount: '600' },
+    });
+    await routeInteraction(bountySub.interaction, ctx);
+    expect(ctx.services.chaos.getOpenBountyTotal('g1', 'u2')).toBe(600);
+
+    const robSelect = createUserSelectMock({
+      customId: 'menu:user:rob',
+      userId: 'u1',
+      target: { id: 'u2' },
+    });
+    await routeInteraction(robSelect.interaction, ctx);
+    expect(ctx.services.chaos.getOpenBountyTotal('g1', 'u2')).toBe(0);
+    expect(robSelect.channel.send.mock.calls[0]![0].content).toContain('600');
+
+    // Roulette create & ch:rl:join/start
+    const rlNew = createButtonMock({ customId: 'menu:roulette:new:100', userId: 'u1' });
+    await routeInteraction(rlNew.interaction, ctx);
+    expect(rlNew.channel.send).toHaveBeenCalledTimes(1);
+    const activeRl = ctx.services.chaos.listActiveRoulettes('g1')[0]!;
+
+    const rlJoin = createButtonMock({ customId: `ch:rl:join:${activeRl.id}`, userId: 'u2' });
+    await routeInteraction(rlJoin.interaction, ctx);
+    expect(ctx.services.chaos.getRoulette(activeRl.id)?.players).toEqual(['u1', 'u2']);
+
+    const rlStart = createButtonMock({ customId: `ch:rl:start:${activeRl.id}`, userId: 'u1' });
+    await routeInteraction(rlStart.interaction, ctx);
+    expect(ctx.services.chaos.getRoulette(activeRl.id)?.status).toBe('playing');
+
+    // Number bomb public button opens modal without deferring & processes guess
+    const bombBtnNew = createButtonMock({ customId: 'menu:bomb:new:200', userId: 'u1' });
+    await routeInteraction(bombBtnNew.interaction, ctx);
+    const openBomb = ctx.services.chaos.listOpenNumberBombs('g1')[0]!;
+
+    const bombGuessBtn = createButtonMock({ customId: `ch:bomb:guess:${openBomb.id}`, userId: 'u2' });
+    await routeInteraction(bombGuessBtn.interaction, ctx);
+    expect(bombGuessBtn.showModal).toHaveBeenCalledTimes(1);
+    expect(bombGuessBtn.deferUpdate).not.toHaveBeenCalled();
+
+    const safeGuess = openBomb.secretNumber > 50 ? 25 : 75;
+    const bombGuessModal = createModalMock({
+      customId: `ch:bomb_sub:${openBomb.id}`,
+      userId: 'u2',
+      fields: { guess: String(safeGuess) },
+    });
+    await routeInteraction(bombGuessModal.interaction, ctx);
+    expect(ctx.services.chaos.getNumberBomb(openBomb.id)?.lastGuesserId).toBe('u2');
+
+    ctx.db.close();
+  });
+
+  it('routes world events, predictions, CP/pets, and admin_games tuning end-to-end', async () => {
+    const ctx = createTestCtx();
+    ctx.repos.profile.addCoins('g1', 'u1', 10_000);
+    ctx.repos.profile.addCoins('g1', 'u2', 10_000);
+    ctx.repos.guildConfig.updateAdminUsers('g1', ['u1']);
+
+    // Create prediction via modal -> public card ev:pred:bet modal (never defers!) -> ev:pred:settle
+    const createPredModal = createModalMock({
+      customId: 'menu:modal_sub:pred_create',
+      userId: 'u1',
+      fields: {
+        title: '今晚大老板发红包吗',
+        opt1: '发大包',
+        opt2: '肯定鸽',
+        extraOpts: '发一元',
+        closeMinutes: '60',
+      },
+    });
+    await routeInteraction(createPredModal.interaction, ctx);
+    const pred = ctx.services.worldEvent.listPredictions('g1')[0]!;
+    expect(pred.options).toEqual(['发大包', '肯定鸽', '发一元']);
+
+    const predBetBtn = createButtonMock({ customId: `ev:pred:bet:${pred.id}:0`, userId: 'u2' });
+    await routeInteraction(predBetBtn.interaction, ctx);
+    expect(predBetBtn.showModal).toHaveBeenCalledTimes(1);
+    expect(predBetBtn.deferUpdate).not.toHaveBeenCalled();
+
+    const predBetSub = createModalMock({
+      customId: `ev:pred_bet_sub:${pred.id}:0`,
+      userId: 'u2',
+      fields: { amount: '500' },
+    });
+    await routeInteraction(predBetSub.interaction, ctx);
+    expect(ctx.repos.profile.getOrCreate('g1', 'u2').coins).toBe(9500);
+
+    const predSettle = createStringSelectMock({
+      customId: `ev:pred:settle:${pred.id}`,
+      userId: 'u1',
+      values: ['0'],
+    });
+    await routeInteraction(predSettle.interaction, ctx);
+    expect(ctx.repos.profile.getOrCreate('g1', 'u2').coins).toBe(10_000);
+
+    // Spawn chest & claim via ev:chest:claim
+    const chest = ctx.services.worldEvent.spawnChest('g1', 'c1');
+    const claimChest = createButtonMock({ customId: `ev:chest:claim:${chest.id}`, userId: 'u2' });
+    await routeInteraction(claimChest.interaction, ctx);
+    expect(ctx.repos.profile.getOrCreate('g1', 'u2').coins).toBeGreaterThan(10_000);
+
+    // CP propose -> sp:prop:accept -> daily checkin
+    const marrySelect = createUserSelectMock({
+      customId: 'menu:user:cp_marry',
+      userId: 'u1',
+      target: { id: 'u2' },
+    });
+    await routeInteraction(marrySelect.interaction, ctx);
+    expect(marrySelect.channel.send).toHaveBeenCalledTimes(1);
+    const proposals = ctx.db
+      .prepare('SELECT id FROM relationship_proposals ORDER BY id DESC LIMIT 1')
+      .get() as { id: number };
+
+    const acceptProp = createButtonMock({ customId: `sp:prop:accept:${proposals.id}`, userId: 'u2' });
+    await routeInteraction(acceptProp.interaction, ctx);
+    expect(ctx.services.socialPet.listUserRelationships('g1', 'u1')).toHaveLength(1);
+
+    // Pull pets for u1 & u2 -> open pet battle -> accept battle
+    const g1Pet = createButtonMock({ customId: 'menu:pet:gacha', userId: 'u1' });
+    await routeInteraction(g1Pet.interaction, ctx);
+    const g2Pet = createButtonMock({ customId: 'menu:pet:gacha', userId: 'u2' });
+    await routeInteraction(g2Pet.interaction, ctx);
+
+    const openBattleModal = createModalMock({
+      customId: 'menu:modal_sub:pet_open_battle',
+      userId: 'u1',
+      fields: { bet: '150' },
+    });
+    await routeInteraction(openBattleModal.interaction, ctx);
+    const battleRow = ctx.db
+      .prepare('SELECT id FROM pet_battles ORDER BY id DESC LIMIT 1')
+      .get() as { id: number };
+
+    const acceptBattle = createButtonMock({
+      customId: `sp:petbattle:accept:${battleRow.id}`,
+      userId: 'u2',
+    });
+    await routeInteraction(acceptBattle.interaction, ctx);
+    expect(ctx.services.socialPet.getPetBattle(battleRow.id)?.status).toBe('completed');
+
+    // admin_games modal & toggles
+    const adminPropsModal = createModalMock({
+      customId: 'menu:modal_sub:admin_props',
+      userId: 'u1',
+      fields: {
+        trap: '700',
+        lockpick: '600',
+        shield: '800',
+        curse: '400',
+        nickname: '1500',
+      },
+    });
+    await routeInteraction(adminPropsModal.interaction, ctx);
+    expect(ctx.repos.guildConfig.getOrCreate('g1').games.propTrapPrice).toBe(700);
+
+    const toggleAutoEv = createButtonMock({
+      customId: 'menu:admin:toggle_auto_event',
+      userId: 'u1',
+    });
+    await routeInteraction(toggleAutoEv.interaction, ctx);
+    expect(ctx.repos.guildConfig.getOrCreate('g1').games.eventAutoEnabled).toBe(false);
 
     ctx.db.close();
   });

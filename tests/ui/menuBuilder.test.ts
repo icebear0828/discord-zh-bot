@@ -1,6 +1,7 @@
 import { ComponentType, type APIEmbed, type APIActionRowComponent, type APIMessageActionRowComponent } from 'discord.js';
 import { describe, expect, it } from 'vitest';
 import { createDatabase } from '../../src/db/database.js';
+import { ChaosRepo } from '../../src/db/repositories/chaosRepo.js';
 import { FunRepo } from '../../src/db/repositories/funRepo.js';
 import { GiveawayRepo } from '../../src/db/repositories/giveawayRepo.js';
 import { GuildConfigRepo } from '../../src/db/repositories/guildConfigRepo.js';
@@ -9,8 +10,11 @@ import { ProfileRepo } from '../../src/db/repositories/profileRepo.js';
 import { RedPacketRepo } from '../../src/db/repositories/redPacketRepo.js';
 import { RolePanelRepo } from '../../src/db/repositories/rolePanelRepo.js';
 import { ShopRepo } from '../../src/db/repositories/shopRepo.js';
+import { SocialPetRepo } from '../../src/db/repositories/socialPetRepo.js';
 import { TicketRepo } from '../../src/db/repositories/ticketRepo.js';
+import { WorldEventRepo } from '../../src/db/repositories/worldEventRepo.js';
 import { BlackjackManager, type Card } from '../../src/services/blackjackService.js';
+import { ChaosService } from '../../src/services/chaosService.js';
 import { EconomyService } from '../../src/services/economyService.js';
 import { FunService } from '../../src/services/funService.js';
 import { GiveawayService } from '../../src/services/giveawayService.js';
@@ -19,7 +23,10 @@ import { LevelingService } from '../../src/services/levelingService.js';
 import { MultiplayerService } from '../../src/services/multiplayerService.js';
 import { RolePanelService } from '../../src/services/rolePanelService.js';
 import { ShopService } from '../../src/services/shopService.js';
+import { SocialPetService } from '../../src/services/socialPetService.js';
 import { TicketService } from '../../src/services/ticketService.js';
+import { WorldEventService } from '../../src/services/worldEventService.js';
+import { buildNumberBombCard, buildRouletteCard } from '../../src/ui/chaosMenuBuilder.js';
 import type { AppContext } from '../../src/ui/embeds.js';
 import {
   buildDuelMessage,
@@ -29,6 +36,12 @@ import {
   type MenuActor,
   type MenuView,
 } from '../../src/ui/menuBuilder.js';
+import { buildPetBattleCard, buildProposalCard } from '../../src/ui/socialPetMenuBuilder.js';
+import {
+  buildPredictionCard,
+  buildWorldBossCard,
+  buildWorldChestCard,
+} from '../../src/ui/worldEventMenuBuilder.js';
 
 function createTestCtx(): AppContext {
   const db = createDatabase(':memory:');
@@ -41,6 +54,9 @@ function createTestCtx(): AppContext {
   const invite = new InviteRepo(db);
   const rolePanel = new RolePanelRepo(db);
   const redPacket = new RedPacketRepo(db);
+  const chaos = new ChaosRepo(db);
+  const worldEvent = new WorldEventRepo(db);
+  const socialPet = new SocialPetRepo(db);
 
   return {
     db,
@@ -55,10 +71,13 @@ function createTestCtx(): AppContext {
       invite,
       rolePanel,
       redPacket,
+      chaos,
+      worldEvent,
+      socialPet,
     },
     services: {
       leveling: new LevelingService(guildConfig, profile, invite),
-      economy: new EconomyService(db, guildConfig, profile, 'Asia/Shanghai'),
+      economy: new EconomyService(db, guildConfig, profile, 'Asia/Shanghai', chaos),
       blackjack: new BlackjackManager(db, profile),
       shop: new ShopService(db, profile, shop),
       fun: new FunService(db, profile, shop, fun, 'Asia/Shanghai'),
@@ -66,7 +85,10 @@ function createTestCtx(): AppContext {
       giveaway: new GiveawayService(giveaway),
       invite: new InviteService(invite),
       rolePanel: new RolePanelService(rolePanel),
-      multiplayer: new MultiplayerService(db, profile, redPacket),
+      multiplayer: new MultiplayerService(db, profile, redPacket, chaos),
+      chaos: new ChaosService(db, guildConfig, profile, chaos),
+      worldEvent: new WorldEventService(db, guildConfig, profile, worldEvent, socialPet),
+      socialPet: new SocialPetService(db, guildConfig, profile, shop, socialPet, 'Asia/Shanghai'),
     },
   };
 }
@@ -185,11 +207,50 @@ describe('menuBuilder Discord component constraints & schema integration', () =>
       });
     }
 
-    // Put some items into inventory
+    // Put some items into inventory & seed new feature entities to test non-empty selects!
     ctx.repos.profile.addCoins('g1', 'u1', 50_000);
+    ctx.repos.profile.addCoins('g1', 'u2', 50_000);
     for (let itemId = 1; itemId <= 28; itemId++) {
       ctx.services.shop.buyItem('g1', 'u1', itemId);
     }
+
+    const predRes = ctx.services.worldEvent.createPrediction({
+      guildId: 'g1',
+      channelId: 'c1',
+      creatorId: 'u1',
+      title: '测试吃瓜盘口：今天会不会下雨？',
+      options: ['会下暴雨', '绝对晴天', '看心情'],
+      closeMinutes: 60,
+    });
+    const predId = predRes.ok ? predRes.summary.prediction.id : 1;
+
+    const rouletteRes = ctx.services.chaos.createRoulette({
+      guildId: 'g1',
+      channelId: 'c1',
+      hostId: 'u1',
+      entryFee: 100,
+    });
+    expect(rouletteRes.ok).toBe(true);
+    const bombRes = ctx.services.chaos.createNumberBomb({
+      guildId: 'g1',
+      channelId: 'c1',
+      hostId: 'u1',
+      penalty: 100,
+    });
+    expect(bombRes.ok).toBe(true);
+    const chestEvent = ctx.services.worldEvent.spawnChest('g1', 'c1');
+    expect(chestEvent.id).toBeGreaterThan(0);
+    const propRes = ctx.services.socialPet.createProposal({
+      guildId: 'g1',
+      channelId: 'c1',
+      proposerId: 'u1',
+      targetId: 'u2',
+      relType: 'marriage',
+    });
+    if (propRes.ok) {
+      ctx.services.socialPet.acceptProposal(propRes.proposal.id, 'u2');
+    }
+    ctx.services.socialPet.pullPetGacha('g1', 'u1');
 
     const views: MenuView[] = [
       { page: 'home' },
@@ -206,6 +267,19 @@ describe('menuBuilder Discord component constraints & schema integration', () =>
       { page: 'duel' },
       { page: 'social', action: 'pat' },
       { page: 'social', action: 'snowball' },
+      { page: 'props' },
+      { page: 'bounty' },
+      { page: 'roulette' },
+      { page: 'bomb' },
+      { page: 'events' },
+      { page: 'predictions' },
+      { page: 'pred_detail', predictionId: predId },
+      { page: 'world_status' },
+      { page: 'social_hub' },
+      { page: 'cp' },
+      { page: 'cp_lb', lbPage: 1 },
+      { page: 'pets' },
+      { page: 'pet_arena' },
       { page: 'shop' },
       { page: 'bag' },
       { page: 'rank' },
@@ -215,6 +289,7 @@ describe('menuBuilder Discord component constraints & schema integration', () =>
       { page: 'admin' },
       { page: 'admin_econ' },
       { page: 'admin_lvl' },
+      { page: 'admin_games' },
       { page: 'admin_mod' },
       { page: 'admin_ops' },
     ];
@@ -341,6 +416,63 @@ describe('menuBuilder Discord component constraints & schema integration', () =>
         const finishedCard = buildRedPacketMessage(c2.packet, c2.claims, c2.bestLuckUserId, cfg);
         assertDiscordMessageLimits(finishedCard, 'redpacket:finished');
         expect(finishedCard.components).toHaveLength(0);
+      }
+    }
+
+    // Validate all 7 new public card builders under Discord API limits
+    const rlRes = ctx.services.chaos.createRoulette({ guildId: 'g1', channelId: 'c1', hostId: 'u1', entryFee: 100 });
+    if (rlRes.ok) {
+      assertDiscordMessageLimits(buildRouletteCard(rlRes.game, cfg), 'roulette:recruiting');
+    }
+
+    const nbRes = ctx.services.chaos.createNumberBomb({ guildId: 'g1', channelId: 'c1', hostId: 'u1', penalty: 100 });
+    if (nbRes.ok) {
+      assertDiscordMessageLimits(buildNumberBombCard(nbRes.game, cfg), 'bomb:open');
+    }
+
+    const predRes = ctx.services.worldEvent.createPrediction({
+      guildId: 'g1',
+      channelId: 'c1',
+      creatorId: 'u1',
+      title: '测试公开盘口卡片限制',
+      options: ['选A', '选B', '选C', '选D'],
+      closeMinutes: 30,
+    });
+    if (predRes.ok) {
+      assertDiscordMessageLimits(buildPredictionCard(predRes.summary, cfg), 'prediction:open');
+    }
+
+    const chest = ctx.services.worldEvent.spawnChest('g1', 'c1');
+    assertDiscordMessageLimits(buildWorldChestCard(chest, [], cfg), 'world:chest');
+
+    const boss = ctx.services.worldEvent.spawnBoss('g1', 'c1');
+    assertDiscordMessageLimits(buildWorldBossCard(boss, [], cfg), 'world:boss');
+
+    const propRes = ctx.services.socialPet.createProposal({
+      guildId: 'g1',
+      channelId: 'c1',
+      proposerId: 'u1',
+      targetId: 'u2',
+      relType: 'marriage',
+    });
+    if (propRes.ok) {
+      assertDiscordMessageLimits(buildProposalCard(propRes.proposal, cfg), 'cp:proposal');
+    }
+
+    const petRes = ctx.services.socialPet.pullPetGacha('g1', 'u1');
+    if (petRes.ok) {
+      const battleRes = ctx.services.socialPet.createPetBattle({
+        guildId: 'g1',
+        channelId: 'c1',
+        challengerId: 'u1',
+        opponentId: null,
+        bet: 100,
+      });
+      if (battleRes.ok) {
+        assertDiscordMessageLimits(
+          buildPetBattleCard(battleRes.battle, battleRes.challengerPet, null, cfg),
+          'pet:battle',
+        );
       }
     }
 

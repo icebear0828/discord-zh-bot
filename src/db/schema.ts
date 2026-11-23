@@ -1,5 +1,8 @@
 import type Database from 'better-sqlite3';
+import { initChaosSchema } from './repositories/chaosRepo.js';
 import { initRedPacketSchema } from './repositories/redPacketRepo.js';
+import { initSocialPetSchema } from './repositories/socialPetRepo.js';
+import { initWorldEventSchema } from './repositories/worldEventRepo.js';
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS guild_configs (
@@ -11,6 +14,7 @@ CREATE TABLE IF NOT EXISTS guild_configs (
   economy_config_json TEXT NOT NULL,
   welcome_config_json TEXT NOT NULL,
   ticket_config_json TEXT NOT NULL,
+  games_config_json TEXT NOT NULL DEFAULT '{}',
   updated_at INTEGER NOT NULL
 );
 
@@ -192,11 +196,17 @@ CREATE INDEX IF NOT EXISTS idx_role_panel_options_panel
 export function initSchema(db: Database.Database): void {
   db.exec(SCHEMA_SQL);
   initRedPacketSchema(db);
+  initChaosSchema(db);
+  initWorldEventSchema(db);
+  initSocialPetSchema(db);
 
   const configCols = db.pragma('table_info(guild_configs)') as Array<{ name: string }>;
   const configColNames = new Set(configCols.map((col) => col.name));
   if (!configColNames.has('admin_user_ids_json')) {
     db.exec("ALTER TABLE guild_configs ADD COLUMN admin_user_ids_json TEXT NOT NULL DEFAULT '[]';");
+  }
+  if (!configColNames.has('games_config_json')) {
+    db.exec("ALTER TABLE guild_configs ADD COLUMN games_config_json TEXT NOT NULL DEFAULT '{}';");
   }
 
   const columns = db.pragma('table_info(member_profiles)') as Array<{ name: string }>;

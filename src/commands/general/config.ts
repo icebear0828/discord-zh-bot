@@ -24,6 +24,9 @@ const MODULE_LABELS: Record<ModuleKey, string> = {
   giveaways: '抽奖系统',
   invites: '邀请追踪',
   rolePanels: '自助身份组',
+  socialGames: '整蛊与博弈',
+  worldEvents: '吃瓜与世界事件',
+  petsAndCp: '关系与宠物',
 };
 
 const MODULE_CHOICES: ReadonlyArray<{ name: string; value: ModuleKey }> = [
@@ -35,6 +38,9 @@ const MODULE_CHOICES: ReadonlyArray<{ name: string; value: ModuleKey }> = [
   { name: '抽奖系统 (giveaways)', value: 'giveaways' },
   { name: '邀请追踪 (invites)', value: 'invites' },
   { name: '自助身份组 (rolePanels)', value: 'rolePanels' },
+  { name: '整蛊与博弈 (socialGames)', value: 'socialGames' },
+  { name: '吃瓜与世界事件 (worldEvents)', value: 'worldEvents' },
+  { name: '关系与宠物 (petsAndCp)', value: 'petsAndCp' },
 ];
 
 export const configCommand: CommandDefinition = {

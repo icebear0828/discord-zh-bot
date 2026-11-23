@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import type Database from 'better-sqlite3';
+import type { ChaosRepo } from '../db/repositories/chaosRepo.js';
 import type { ProfileRepo } from '../db/repositories/profileRepo.js';
 import type {
   RedPacket,
@@ -74,6 +75,7 @@ export type AcceptDuelResult =
       loserId: string | null;
       challengerBalance: number;
       opponentBalance: number;
+      bountyClaimed?: number;
     }
   | {
       ok: false;
@@ -117,6 +119,7 @@ export class MultiplayerService {
     private readonly db: Database.Database,
     private readonly profileRepo: ProfileRepo,
     private readonly redPacketRepo: RedPacketRepo,
+    private readonly chaosRepo?: ChaosRepo,
   ) {}
 
   createRedPacket(input: {
@@ -365,21 +368,26 @@ export class MultiplayerService {
       let tie = false;
       let winnerId: string | null = null;
       let loserId: string | null = null;
+      let bountyClaimed = 0;
 
       if (challengerSum === opponentSum) {
         tie = true;
       } else if (challengerSum > opponentSum) {
         winnerId = duel.challengerId;
         loserId = duel.opponentId;
-        challengerBalance = challenger.coins + duel.bet;
+        bountyClaimed =
+          this.chaosRepo?.claimOpenBounties(duel.guildId, loserId, winnerId, nowMs) ?? 0;
+        challengerBalance = challenger.coins + duel.bet + bountyClaimed;
         opponentBalance = opponent.coins - duel.bet;
         this.profileRepo.save({ ...challenger, coins: challengerBalance });
         this.profileRepo.save({ ...opponent, coins: opponentBalance });
       } else {
         winnerId = duel.opponentId;
         loserId = duel.challengerId;
+        bountyClaimed =
+          this.chaosRepo?.claimOpenBounties(duel.guildId, loserId, winnerId, nowMs) ?? 0;
         challengerBalance = challenger.coins - duel.bet;
-        opponentBalance = opponent.coins + duel.bet;
+        opponentBalance = opponent.coins + duel.bet + bountyClaimed;
         this.profileRepo.save({ ...challenger, coins: challengerBalance });
         this.profileRepo.save({ ...opponent, coins: opponentBalance });
       }
@@ -398,6 +406,7 @@ export class MultiplayerService {
         loserId,
         challengerBalance,
         opponentBalance,
+        ...(bountyClaimed > 0 ? { bountyClaimed } : {}),
       };
     })();
   }

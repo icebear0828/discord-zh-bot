@@ -63,6 +63,21 @@ describe('env & database schema', () => {
           'invite_records',
           'role_panels',
           'role_panel_options',
+          'red_packets',
+          'red_packet_claims',
+          'user_props',
+          'user_effects',
+          'bounties',
+          'roulette_games',
+          'number_bomb_games',
+          'predictions',
+          'prediction_bets',
+          'world_events',
+          'world_event_participants',
+          'relationships',
+          'relationship_proposals',
+          'user_pets',
+          'pet_battles',
         ]),
       );
 
@@ -204,10 +219,14 @@ describe('env & database schema', () => {
     initSchema(db);
 
     const cols = db.pragma('table_info(guild_configs)') as Array<{ name: string }>;
-    expect(cols.map((c) => c.name)).toContain('admin_user_ids_json');
+    const colNames = cols.map((c) => c.name);
+    expect(colNames).toContain('admin_user_ids_json');
+    expect(colNames).toContain('games_config_json');
 
     const repo = new GuildConfigRepo(db);
     expect(repo.getOrCreate('g1').adminUserIds).toEqual([]);
+    expect(repo.getOrCreate('g1').games.petGachaPrice).toBe(500);
+    expect(repo.getOrCreate('g1').modules.socialGames).toBe(true);
     repo.updateAdminUsers('g1', ['u100', 'u200']);
     expect(repo.getOrCreate('g1').adminUserIds).toEqual(['u100', 'u200']);
 

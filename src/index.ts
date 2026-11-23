@@ -10,6 +10,9 @@ import { GiveawayRepo } from './db/repositories/giveawayRepo.js';
 import { InviteRepo } from './db/repositories/inviteRepo.js';
 import { RolePanelRepo } from './db/repositories/rolePanelRepo.js';
 import { RedPacketRepo } from './db/repositories/redPacketRepo.js';
+import { ChaosRepo } from './db/repositories/chaosRepo.js';
+import { WorldEventRepo } from './db/repositories/worldEventRepo.js';
+import { SocialPetRepo } from './db/repositories/socialPetRepo.js';
 import { LevelingService } from './services/levelingService.js';
 import { EconomyService } from './services/economyService.js';
 import { BlackjackManager } from './services/blackjackService.js';
@@ -20,6 +23,9 @@ import { GiveawayService } from './services/giveawayService.js';
 import { InviteService } from './services/inviteService.js';
 import { RolePanelService } from './services/rolePanelService.js';
 import { MultiplayerService } from './services/multiplayerService.js';
+import { ChaosService } from './services/chaosService.js';
+import { WorldEventService } from './services/worldEventService.js';
+import { SocialPetService } from './services/socialPetService.js';
 import type { AppContext } from './ui/embeds.js';
 import { registerReadyEvent } from './events/ready.js';
 import { registerMessageCreateEvent } from './events/messageCreate.js';
@@ -41,6 +47,9 @@ function main(): void {
   const inviteRepo = new InviteRepo(db);
   const rolePanelRepo = new RolePanelRepo(db);
   const redPacketRepo = new RedPacketRepo(db);
+  const chaosRepo = new ChaosRepo(db);
+  const worldEventRepo = new WorldEventRepo(db);
+  const socialPetRepo = new SocialPetRepo(db);
 
   const ctx: AppContext = {
     db,
@@ -55,10 +64,13 @@ function main(): void {
       invite: inviteRepo,
       rolePanel: rolePanelRepo,
       redPacket: redPacketRepo,
+      chaos: chaosRepo,
+      worldEvent: worldEventRepo,
+      socialPet: socialPetRepo,
     },
     services: {
       leveling: new LevelingService(guildConfigRepo, profileRepo, inviteRepo),
-      economy: new EconomyService(db, guildConfigRepo, profileRepo, env.timezone),
+      economy: new EconomyService(db, guildConfigRepo, profileRepo, env.timezone, chaosRepo),
       blackjack: new BlackjackManager(db, profileRepo),
       shop: new ShopService(db, profileRepo, shopRepo),
       fun: new FunService(db, profileRepo, shopRepo, funRepo, env.timezone),
@@ -66,7 +78,23 @@ function main(): void {
       giveaway: new GiveawayService(giveawayRepo),
       invite: new InviteService(inviteRepo),
       rolePanel: new RolePanelService(rolePanelRepo),
-      multiplayer: new MultiplayerService(db, profileRepo, redPacketRepo),
+      multiplayer: new MultiplayerService(db, profileRepo, redPacketRepo, chaosRepo),
+      chaos: new ChaosService(db, guildConfigRepo, profileRepo, chaosRepo),
+      worldEvent: new WorldEventService(
+        db,
+        guildConfigRepo,
+        profileRepo,
+        worldEventRepo,
+        socialPetRepo,
+      ),
+      socialPet: new SocialPetService(
+        db,
+        guildConfigRepo,
+        profileRepo,
+        shopRepo,
+        socialPetRepo,
+        env.timezone,
+      ),
     },
   };
 

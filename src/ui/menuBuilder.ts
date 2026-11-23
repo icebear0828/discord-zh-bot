@@ -1,6 +1,5 @@
 import {
   ActionRowBuilder,
-  ButtonBuilder,
   ButtonStyle,
   EmbedBuilder,
   StringSelectMenuBuilder,
@@ -12,67 +11,61 @@ import type { RedPacket, RedPacketClaim } from '../db/repositories/redPacketRepo
 import {
   evaluateHand,
   formatHand,
-  type BlackjackGame,
 } from '../services/blackjackService.js';
 import { getDateKey, type DiceChoice } from '../services/economyService.js';
 import type { InteractionAction } from '../services/funService.js';
 import type { LeaderboardType } from '../services/levelingService.js';
 import type { AcceptDuelResult, DuelChallenge } from '../services/multiplayerService.js';
+import { PET_SPECIES_MAP } from '../services/socialPetService.js';
+import {
+  buildBountyView,
+  buildBombView,
+  buildPropsView,
+  buildRouletteView,
+} from './chaosMenuBuilder.js';
 import {
   COLORS,
   formatDurationZh,
   renderProgressBar,
   type AppContext,
 } from './embeds.js';
+import {
+  buttonRow,
+  formatRatePercent,
+  makeButton,
+  resolveColor,
+  truncateText,
+  withFeedback,
+  type BuiltButtonMessage,
+  type BuiltMenuMessage,
+  type MenuActor,
+  type MenuComponentRow,
+  type MenuFeedback,
+  type MenuView,
+} from './menuShared.js';
+import {
+  buildCpLeaderboardView,
+  buildCpView,
+  buildPetArenaView,
+  buildPetsView,
+  buildSocialHubView,
+} from './socialPetMenuBuilder.js';
+import {
+  buildEventsHubView,
+  buildPredDetailView,
+  buildPredictionsListView,
+  buildWorldStatusView,
+} from './worldEventMenuBuilder.js';
 
-export interface MenuActor {
-  id: string;
-  displayName: string;
-  avatarUrl: string;
-  isAdmin?: boolean;
-}
-
-export interface MenuFeedback {
-  type: 'success' | 'error' | 'info';
-  text: string;
-}
-
-export type MenuView =
-  | { page: 'home' }
-  | { page: 'solo' }
-  | { page: 'slots' }
-  | { page: 'dice'; choice: DiceChoice }
-  | { page: 'bj'; finishedGame?: BlackjackGame; balanceAfterFinish?: number }
-  | { page: 'bank' }
-  | { page: 'multi' }
-  | { page: 'rob' }
-  | { page: 'pay' }
-  | { page: 'duel' }
-  | { page: 'social'; action: InteractionAction }
-  | { page: 'shop' }
-  | { page: 'bag' }
-  | { page: 'rank' }
-  | { page: 'leaderboard'; lbType: LeaderboardType; lbPage: number }
-  | { page: 'admin' }
-  | { page: 'admin_econ' }
-  | { page: 'admin_lvl' }
-  | { page: 'admin_mod' }
-  | { page: 'admin_ops' };
-
-export type MenuComponentRow =
-  | ActionRowBuilder<ButtonBuilder>
-  | ActionRowBuilder<StringSelectMenuBuilder>
-  | ActionRowBuilder<UserSelectMenuBuilder>;
-
-export interface BuiltMenuMessage {
-  embeds: EmbedBuilder[];
-  components: MenuComponentRow[];
-}
-
-export interface BuiltButtonMessage {
-  embeds: EmbedBuilder[];
-  components: ActionRowBuilder<ButtonBuilder>[];
-}
+export {
+  truncateText,
+  type BuiltButtonMessage,
+  type BuiltMenuMessage,
+  type MenuActor,
+  type MenuComponentRow,
+  type MenuFeedback,
+  type MenuView,
+};
 
 export const SOCIAL_ACTIONS: ReadonlyArray<{
   value: InteractionAction;
@@ -93,50 +86,6 @@ const DICE_CHOICE_LABELS: Record<DiceChoice, string> = {
   triple: '豹子 (三同点，10倍净利)',
 };
 
-export function truncateText(text: string, maxLen: number): string {
-  if (text.length <= maxLen) return text;
-  if (maxLen <= 1) return text.slice(0, maxLen);
-  return `${text.slice(0, maxLen - 1)}…`;
-}
-
-function makeButton(
-  customId: string,
-  label: string,
-  style: ButtonStyle = ButtonStyle.Secondary,
-  disabled = false,
-): ButtonBuilder {
-  return new ButtonBuilder()
-    .setCustomId(customId)
-    .setLabel(truncateText(label, 80))
-    .setStyle(style)
-    .setDisabled(disabled);
-}
-
-function buttonRow(...buttons: ButtonBuilder[]): ActionRowBuilder<ButtonBuilder> {
-  return new ActionRowBuilder<ButtonBuilder>().addComponents(...buttons);
-}
-
-function resolveColor(defaultColor: number, feedback?: MenuFeedback): number {
-  if (!feedback) return defaultColor;
-  if (feedback.type === 'success') return COLORS.SUCCESS;
-  if (feedback.type === 'error') return COLORS.ERROR;
-  return defaultColor;
-}
-
-function withFeedback(description: string, feedback?: MenuFeedback): string {
-  if (!feedback) return truncateText(description, 4096);
-  const icon = feedback.type === 'success' ? '✅' : feedback.type === 'error' ? '❌' : 'ℹ️';
-  const banner = feedback.text
-    .split('\n')
-    .map((line) => `> ${line}`)
-    .join('\n');
-  return truncateText(`> **${icon} 操作提示**\n${banner}\n\n${description}`, 4096);
-}
-
-function formatRatePercent(rate: number): string {
-  return `${(rate * 100).toFixed(2).replace(/\.?0+$/, '')}%`;
-}
-
 export function buildLobbyMessage(guildName?: string): BuiltButtonMessage {
   const titlePrefix = guildName ? `${guildName} · ` : '';
   const embed = new EmbedBuilder()
@@ -147,9 +96,10 @@ export function buildLobbyMessage(guildName?: string): BuiltButtonMessage {
         '点击下方按钮即可打开**仅你自己可见**的一站式互动面板，无需记忆指令也不刷屏频道！',
         '',
         '• 🎮 **独立游玩**：每日签到、打工赚币、今日运势、老虎机、猜大小、二十一点',
-        '• 👥 **多人互动**：偷钱打劫、群友转账、骰子决斗、拼手气红包、趣味互动',
-        '• 🏦 **银行保险柜**：存钱防被偷，存款满额每日还能领利息',
-        '• 🛒 **商店与名片**：购买身份组/称号/经验卡、查看等级进度与排行榜',
+        '• 👥 **多人博弈**：偷钱打劫、转账、骰子决斗、拼手气红包、黑市道具、悬赏、轮盘、数字炸弹',
+        '• 🎯 **吃瓜事件**：自由开盘押注、天降宝箱、合力讨伐世界 Boss（含尾刀暴击大奖）',
+        '• 💞 **关系宠物**：结婚/结拜 CP 打卡称号、盲盒电子宠物与公开斗兽场 PVP',
+        '• 🏦 **银行与商店**：存钱防偷每日领息、购买身份组/称号/经验卡与查看榜单',
       ].join('\n'),
     )
     .setFooter({ text: '提示：也可随时发送斜杠指令 /菜单 打开个人面板' })
@@ -228,10 +178,10 @@ function buildHomeView(
 
   const navRow = buttonRow(
     makeButton('menu:nav:solo', '🎮 独立游玩', ButtonStyle.Primary),
-    makeButton('menu:nav:multi', '👥 多人互动', ButtonStyle.Primary),
+    makeButton('menu:nav:multi', '👥 多人博弈', ButtonStyle.Primary),
+    makeButton('menu:nav:events', '🎯 吃瓜事件', ButtonStyle.Primary),
+    makeButton('menu:nav:social_hub', '💞 关系宠物', ButtonStyle.Primary),
     makeButton('menu:nav:bank', '🏦 银行存钱', ButtonStyle.Success),
-    makeButton('menu:nav:shop', '🛒 商店背包', ButtonStyle.Secondary),
-    makeButton('menu:nav:rank', '🏆 排行名片', ButtonStyle.Secondary),
   );
 
   const quickButtons = [
@@ -245,7 +195,12 @@ function buildHomeView(
   }
   const quickRow = buttonRow(...quickButtons);
 
-  return { embeds: [embed], components: [navRow, quickRow] };
+  const extraRow = buttonRow(
+    makeButton('menu:nav:shop', '🛒 商店与黑市', ButtonStyle.Secondary),
+    makeButton('menu:nav:rank', '🏆 排行名片', ButtonStyle.Secondary),
+  );
+
+  return { embeds: [embed], components: [navRow, quickRow, extraRow] };
 }
 
 function buildSoloView(
@@ -611,14 +566,17 @@ function buildMultiView(
     '• **⚔️ 骰子决斗**：在当前频道发起公开 3 骰押注对战',
     '• **🧧 发拼手气红包**：在当前频道派发 2~20 份随机金额红包',
     '• **💕 趣味互动**：摸头、抱抱、贴贴、戳一戳、投喂、丢雪球',
+    '• **🧰 黑市道具**：捕兽夹反抓小偷、万能撬锁、防盗盾、衰神符、改昵称卡',
+    '• **🎯 悬赏通缉**：多人叠加悬赏，成功偷钱或决斗胜出即独吞全额赏金',
+    '• **🔫 俄罗斯轮盘 & 💣 数字炸弹**：2~6人吃鸡局、频道抢猜踩雷分罚金',
   ].join('\n');
 
   const embed = new EmbedBuilder()
     .setColor(resolveColor(COLORS.FUN, feedback))
-    .setAuthor({ name: `${actor.displayName} · 多人互动`, iconURL: actor.avatarUrl })
-    .setTitle('👥 多人互动大厅')
+    .setAuthor({ name: `${actor.displayName} · 多人博弈`, iconURL: actor.avatarUrl })
+    .setTitle('👥 多人互动与整蛊博弈大厅')
     .setDescription(withFeedback(description, feedback))
-    .setFooter({ text: '📢 公开互动区：偷钱、转账、决斗、红包、趣味互动全群都看得到！' })
+    .setFooter({ text: '📢 公开互动区：偷钱、转账、决斗、红包、悬赏、轮盘、炸弹全群都能看到！' })
     .setTimestamp();
 
   return {
@@ -630,6 +588,12 @@ function buildMultiView(
         makeButton('menu:nav:duel', '⚔️ 骰子决斗', ButtonStyle.Primary),
         makeButton('menu:modal:redpacket', '🧧 发拼手气红包', ButtonStyle.Success),
         makeButton('menu:nav:social:pat', '💕 趣味互动', ButtonStyle.Secondary),
+      ),
+      buttonRow(
+        makeButton('menu:nav:props', '🧰 黑市道具', ButtonStyle.Danger),
+        makeButton('menu:nav:bounty', '🎯 悬赏通缉', ButtonStyle.Primary),
+        makeButton('menu:nav:roulette', '🔫 俄罗斯轮盘', ButtonStyle.Danger),
+        makeButton('menu:nav:bomb', '💣 数字炸弹', ButtonStyle.Primary),
       ),
       buttonRow(
         makeButton('menu:nav:bank', '🏦 存钱防偷', ButtonStyle.Secondary),
@@ -896,6 +860,7 @@ function buildShopView(
   const tabRow = buttonRow(
     makeButton('menu:nav:shop', '🛒 商店', ButtonStyle.Primary),
     makeButton('menu:nav:bag', '🎒 背包与称号', ButtonStyle.Secondary),
+    makeButton('menu:nav:props', '🧰 黑市攻防道具', ButtonStyle.Danger),
     makeButton('menu:nav:home', '🏠 主菜单', ButtonStyle.Secondary),
   );
 
@@ -1025,6 +990,20 @@ function createRankEmbed(
       ? `⚡ **${data.activeBoostMultiplier}x**（剩余 ${formatDurationZh(data.boostExpiresAt - nowMs)}）`
       : '未启用';
 
+  const rels = ctx.services.socialPet.listUserRelationships(guildId, actor.id);
+  const marriage = rels.find((r) => r.relType === 'marriage');
+  const swornCount = rels.filter((r) => r.relType === 'sworn').length;
+  const activePet = ctx.services.socialPet.getActivePet(guildId, actor.id);
+  const partnerPart = marriage
+    ? `💍 <@${marriage.userA === actor.id ? marriage.userB : marriage.userA}>（亲密 ${marriage.affinity}）`
+    : swornCount > 0
+      ? `🍻 结拜死党 ${swornCount} 人`
+      : '暂无 CP 绑定';
+  const activeSp = activePet ? PET_SPECIES_MAP.get(activePet.speciesKey) : undefined;
+  const petPart = activePet
+    ? `${activeSp?.emoji ?? '🐾'} **${activePet.nickname}** [${activePet.rarity} Lv.${activePet.level}]`
+    : '暂无出战宠';
+
   return new EmbedBuilder()
     .setColor(resolveColor(COLORS.PRIMARY, feedback))
     .setAuthor({
@@ -1048,6 +1027,10 @@ function createRankEmbed(
         name: '🔥 聊天热度 / 经验卡',
         value: `热度 **${data.heatMultiplier}x**（连击 ${data.profile.heatStreak}）\n经验卡：${boostText}`,
         inline: true,
+      },
+      {
+        name: '💞 社交与宠物',
+        value: `${partnerPart}\n出战宠：${petPart}`,
       },
       {
         name: '💬 活跃统计',
@@ -1211,6 +1194,9 @@ const MODULE_META: ReadonlyArray<{ key: ModuleKey; label: string; emoji: string 
   { key: 'giveaways', label: '抽奖系统', emoji: '🎁' },
   { key: 'invites', label: '邀请追踪', emoji: '📨' },
   { key: 'rolePanels', label: '自助身份组', emoji: '🎭' },
+  { key: 'socialGames', label: '整蛊与博弈', emoji: '💣' },
+  { key: 'worldEvents', label: '吃瓜与事件', emoji: '🎯' },
+  { key: 'petsAndCp', label: '关系与宠物', emoji: '💞' },
 ];
 
 function buildAdminOverviewView(
@@ -1240,6 +1226,7 @@ function buildAdminOverviewView(
     `📈 **等级 / 热度 / 语音**：基础 XP ${cfg.leveling.baseMinXp}~${cfg.leveling.baseMaxXp}（冷却 ${cfg.leveling.cooldownSec}s）｜ 热度上限 ${cfg.leveling.heatMaxMultiplier}x（窗口 ${cfg.leveling.heatWindowSec}s）｜ 语音 ${cfg.leveling.voiceEnabled ? `${cfg.leveling.voiceXpPerMin} XP/分` : '关闭'} ｜ 升级奖励 +${cfg.leveling.levelUpCoinReward}`,
     `👑 **Bot 管理员用户**：${adminUsersText}`,
     `🛡️ **Bot 管理员身份组**：${adminRolesText}`,
+    `🎯 **事件与宠物**：事件每 **${cfg.games.eventMsgThreshold}** 发言/冷却 **${cfg.games.eventCooldownSec}s**（${cfg.games.eventAutoEnabled ? '自动开' : '自动关'}）｜ Boss HP **${cfg.games.bossBaseHp}** / 池 **${cfg.games.bossRewardPool}** ｜ 宠盲盒 **${cfg.games.petGachaPrice}** / 求婚 **${cfg.games.cpProposeCost}**`,
   ].join('\n');
 
   const embed = new EmbedBuilder()
@@ -1256,13 +1243,14 @@ function buildAdminOverviewView(
       buttonRow(
         makeButton('menu:nav:admin_econ', '💰 经济/抢钱/银行', ButtonStyle.Primary),
         makeButton('menu:nav:admin_lvl', '📈 等级/热度/语音', ButtonStyle.Primary),
+        makeButton('menu:nav:admin_games', '🎮 玩法与事件调参', ButtonStyle.Primary),
         makeButton('menu:nav:admin_mod', '🧩 模块开关', ButtonStyle.Secondary),
         makeButton('menu:nav:admin_ops', '👥 发币与管理员', ButtonStyle.Secondary),
-        makeButton('menu:nav:home', '🏠 主菜单', ButtonStyle.Secondary),
       ),
       buttonRow(
         makeButton('menu:admin:send_lobby', '📌 发送频道大厅入口', ButtonStyle.Success),
         makeButton('menu:nav:admin', '🔄 刷新配置', ButtonStyle.Secondary),
+        makeButton('menu:nav:home', '🏠 主菜单', ButtonStyle.Secondary),
       ),
     ],
   };
@@ -1474,6 +1462,66 @@ function buildAdminOpsView(
   };
 }
 
+function buildAdminGamesView(
+  ctx: AppContext,
+  guildId: string,
+  actor: MenuActor,
+  feedback: MenuFeedback | undefined,
+): BuiltMenuMessage {
+  const cfg = ctx.repos.guildConfig.getOrCreate(guildId);
+  const g = cfg.games;
+  const unit = cfg.economy.currencyName;
+
+  const description = [
+    '点击下方按钮即可通过预填弹窗修改新玩法定价、事件阈值、Boss/宝箱收益、宠物与 CP 参数：',
+    '',
+    `🧰 **黑市道具定价**：捕兽夹 **${g.propTrapPrice}** ｜ 撬锁 **${g.propLockpickPrice}** ｜ 护盾 **${g.propShieldPrice}** ｜ 衰神符 **${g.propCursePrice}** ｜ 改昵称 **${g.propNicknamePrice}** ${unit}`,
+    `🎯 **悬赏参数**：最低悬赏 **${g.bountyMinAmount}** ${unit} ｜ 自清倍率 **${g.bountyClearMultiplier}x**`,
+    `⚡ **世界事件 / Boss / 宝箱**：自动触发 ${g.eventAutoEnabled ? '✅ 开启' : '⛔ 关闭'} ｜ 指定频道 ${g.eventChannelId ? `<#${g.eventChannelId}>` : '随当前活跃频道'}`,
+    `   触发阈值 **${g.eventMsgThreshold}** 条消息 / 冷却 **${g.eventCooldownSec}s** ｜ Boss HP **${g.bossBaseHp}** / 奖池 **${g.bossRewardPool}** ｜ 宝箱 **${g.chestRewardMin}~${g.chestRewardMax}** (${g.chestShares}份)`,
+    `💞 **宠物与 CP**：抽宠盲盒 **${g.petGachaPrice}** ｜ 每日喂食 **${g.petFeedPrice}** ｜ 上限 **${g.petMaxOwned}** 只 ｜ 求婚/结拜费 **${g.cpProposeCost}** ｜ 结拜上限 **${g.cpMaxSworn}** 人`,
+  ].join('\n');
+
+  const embed = new EmbedBuilder()
+    .setColor(resolveColor(COLORS.FUN, feedback))
+    .setAuthor({ name: `${actor.displayName} · 新玩法与事件调参`, iconURL: actor.avatarUrl })
+    .setTitle('🎮 新玩法与世界事件管理')
+    .setDescription(withFeedback(description, feedback))
+    .setFooter({ text: '🔒 修改实时写入数据库并对新事件/购买立即生效' })
+    .setTimestamp();
+
+  return {
+    embeds: [embed],
+    components: [
+      buttonRow(
+        makeButton('menu:modal:admin_props', '🧰 道具价格', ButtonStyle.Primary),
+        makeButton('menu:modal:admin_events', '🎁 事件与Boss', ButtonStyle.Primary),
+        makeButton('menu:modal:admin_pets_cp', '🐾 宠物与CP', ButtonStyle.Primary),
+        makeButton('menu:modal:admin_bounty', '🎯 悬赏参数', ButtonStyle.Primary),
+      ),
+      buttonRow(
+        makeButton(
+          'menu:admin:toggle_auto_event',
+          `⚡ 自动事件: ${g.eventAutoEnabled ? '开' : '关'}`,
+          g.eventAutoEnabled ? ButtonStyle.Success : ButtonStyle.Secondary,
+        ),
+        makeButton(
+          'menu:admin:toggle_event_channel',
+          g.eventChannelId ? '📌 解绑事件频道' : '📌 设当前为事件频道',
+          ButtonStyle.Secondary,
+        ),
+        makeButton('menu:admin:spawn_chest', '🎁 放宝箱', ButtonStyle.Success),
+        makeButton('menu:admin:spawn_boss', '👹 召Boss', ButtonStyle.Danger),
+        makeButton('menu:admin:reset_games', '♻️ 恢复默认', ButtonStyle.Danger),
+      ),
+      buttonRow(
+        makeButton('menu:nav:admin', '⬅️ 管理后台', ButtonStyle.Secondary),
+        makeButton('menu:nav:home', '🏠 主菜单', ButtonStyle.Secondary),
+      ),
+    ],
+  };
+}
+
 export function buildMenuMessage(
   ctx: AppContext,
   guildId: string,
@@ -1505,6 +1553,32 @@ export function buildMenuMessage(
       return buildDuelView(ctx, guildId, actor, feedback);
     case 'social':
       return buildSocialView(actor, view.action, feedback);
+    case 'props':
+      return buildPropsView(ctx, guildId, actor, feedback, nowMs);
+    case 'bounty':
+      return buildBountyView(ctx, guildId, actor, feedback);
+    case 'roulette':
+      return buildRouletteView(ctx, guildId, actor, feedback);
+    case 'bomb':
+      return buildBombView(ctx, guildId, actor, feedback);
+    case 'events':
+      return buildEventsHubView(ctx, guildId, actor, feedback);
+    case 'predictions':
+      return buildPredictionsListView(ctx, guildId, actor, feedback);
+    case 'pred_detail':
+      return buildPredDetailView(ctx, guildId, actor, view.predictionId, feedback);
+    case 'world_status':
+      return buildWorldStatusView(ctx, guildId, actor, feedback);
+    case 'social_hub':
+      return buildSocialHubView(ctx, guildId, actor, feedback);
+    case 'cp':
+      return buildCpView(ctx, guildId, actor, feedback, nowMs);
+    case 'cp_lb':
+      return buildCpLeaderboardView(ctx, guildId, view.lbPage, feedback);
+    case 'pets':
+      return buildPetsView(ctx, guildId, actor, feedback, nowMs);
+    case 'pet_arena':
+      return buildPetArenaView(ctx, guildId, actor, feedback);
     case 'shop':
       return buildShopView(ctx, guildId, actor, feedback);
     case 'bag':
@@ -1519,6 +1593,8 @@ export function buildMenuMessage(
       return buildAdminEconView(ctx, guildId, actor, feedback);
     case 'admin_lvl':
       return buildAdminLvlView(ctx, guildId, actor, feedback);
+    case 'admin_games':
+      return buildAdminGamesView(ctx, guildId, actor, feedback);
     case 'admin_mod':
       return buildAdminModView(ctx, guildId, actor, feedback);
     case 'admin_ops':
@@ -1564,7 +1640,12 @@ export function buildDuelMessage(
     const opponentDiceText = result.opponentDice.map((d) => `🎲 **${d}**`).join(' ');
     const outcomeLine = result.tie
       ? `🤝 **双方平局！** 赌注 **${duel.bet}** ${economyCfg.currencyName} 各自保留。`
-      : `🏆 胜者：<@${result.winnerId}> 赢得 ${economyCfg.currencyEmoji} **+${duel.bet}** ${economyCfg.currencyName}！`;
+      : [
+          `🏆 胜者：<@${result.winnerId}> 赢得 ${economyCfg.currencyEmoji} **+${duel.bet}** ${economyCfg.currencyName}！`,
+          ...(result.bountyClaimed && result.bountyClaimed > 0
+            ? [`🎯 顺手击毙通缉犯 <@${result.loserId}>，额外独吞悬赏赏金 **+${result.bountyClaimed}** ${economyCfg.currencyName}！`]
+            : []),
+        ].join('\n');
 
     const embed = new EmbedBuilder()
       .setColor(result.tie ? COLORS.WARNING : COLORS.SUCCESS)

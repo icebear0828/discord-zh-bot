@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3';
+import type { ChaosRepo } from '../db/repositories/chaosRepo.js';
 import type { GuildConfigRepo } from '../db/repositories/guildConfigRepo.js';
 import type { ProfileRepo } from '../db/repositories/profileRepo.js';
 
@@ -20,7 +21,7 @@ export type DailyResult =
   | { ok: false; reason: 'already_claimed'; streak: number };
 
 export type WorkResult =
-  | { ok: true; reward: number; story: string; balance: number }
+  | { ok: true; reward: number; story: string; balance: number; cursed?: boolean }
   | { ok: false; reason: 'cooldown'; retryAfterSec: number };
 
 export type RobResult =
@@ -30,6 +31,9 @@ export type RobResult =
       amount: number;
       attackerBalance: number;
       targetBalance: number;
+      trapped?: boolean;
+      usedLockpick?: boolean;
+      bountyClaimed?: number;
     }
   | {
       ok: false;
@@ -111,6 +115,7 @@ export class EconomyService {
     private readonly configRepo: GuildConfigRepo,
     private readonly profileRepo: ProfileRepo,
     private readonly timezone = 'Asia/Shanghai',
+    private readonly chaosRepo?: ChaosRepo,
   ) {}
 
   claimDaily(guildId: string, userId: string, nowMs = Date.now()): DailyResult {
@@ -171,7 +176,10 @@ export class EconomyService {
 
       const min = Math.min(cfg.workMin, cfg.workMax);
       const max = Math.max(cfg.workMin, cfg.workMax);
-      const reward = min + Math.floor(rng() * (max - min + 1));
+      const baseReward = min + Math.floor(rng() * (max - min + 1));
+      const cursedEffect = this.chaosRepo?.consumeEffect(guildId, userId, 'work_cursed', nowMs);
+      const cursed = Boolean(cursedEffect);
+      const reward = cursed ? Math.max(1, Math.floor(baseReward * 0.5)) : baseReward;
       const storyIndex = Math.min(
         WORK_STORIES.length - 1,
         Math.floor(rng() * WORK_STORIES.length),
@@ -185,7 +193,7 @@ export class EconomyService {
         lastWorkAt: nowMs,
       });
 
-      return { ok: true, reward, story, balance: nextCoins };
+      return { ok: true, reward, story, balance: nextCoins, ...(cursed ? { cursed: true } : {}) };
     })();
   }
 
@@ -227,12 +235,49 @@ export class EconomyService {
         return { ok: false, reason: 'target_too_poor' };
       }
 
-      const succeeded = rng() < cfg.robSuccessRate;
+      const usedLockpick = Boolean(
+        this.chaosRepo?.consumeEffect(guildId, attackerId, 'lockpick_ready', nowMs),
+      );
+      const trappedEffect = this.chaosRepo?.consumeEffect(guildId, targetId, 'trap_armed', nowMs);
+
+      if (trappedEffect) {
+        const rawTrapFine = Math.max(100, Math.min(1000, Math.floor(attacker.coins * 0.3)));
+        const actualFine = Math.min(rawTrapFine, attacker.coins);
+        const nextAttacker = attacker.coins - actualFine;
+        const nextTarget = target.coins + actualFine;
+
+        this.profileRepo.save({
+          ...attacker,
+          coins: nextAttacker,
+          lastRobAt: nowMs,
+        });
+        this.profileRepo.save({
+          ...target,
+          coins: nextTarget,
+        });
+
+        return {
+          ok: true,
+          success: false,
+          amount: actualFine,
+          attackerBalance: nextAttacker,
+          targetBalance: nextTarget,
+          trapped: true,
+          ...(usedLockpick ? { usedLockpick: true } : {}),
+        };
+      }
+
+      const effectiveRate = usedLockpick
+        ? Math.min(0.85, cfg.robSuccessRate + 0.25)
+        : cfg.robSuccessRate;
+      const succeeded = rng() < effectiveRate;
       if (succeeded) {
         const pct = 0.15 + rng() * 0.2;
         const stolen = Math.max(15, Math.min(1000, Math.floor(target.coins * pct)));
         const actualStolen = Math.min(stolen, target.coins);
-        const nextAttacker = attacker.coins + actualStolen;
+        const bountyClaimed =
+          this.chaosRepo?.claimOpenBounties(guildId, targetId, attackerId, nowMs) ?? 0;
+        const nextAttacker = attacker.coins + actualStolen + bountyClaimed;
         const nextTarget = target.coins - actualStolen;
 
         this.profileRepo.save({
@@ -252,6 +297,8 @@ export class EconomyService {
           amount: actualStolen,
           attackerBalance: nextAttacker,
           targetBalance: nextTarget,
+          ...(usedLockpick ? { usedLockpick: true } : {}),
+          ...(bountyClaimed > 0 ? { bountyClaimed } : {}),
         };
       }
 
@@ -276,6 +323,7 @@ export class EconomyService {
         amount: actualFine,
         attackerBalance: nextAttacker,
         targetBalance: nextTarget,
+        ...(usedLockpick ? { usedLockpick: true } : {}),
       };
     })();
   }

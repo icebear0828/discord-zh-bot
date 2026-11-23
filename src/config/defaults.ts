@@ -7,6 +7,9 @@ export interface ModuleToggles {
   giveaways: boolean;
   invites: boolean;
   rolePanels: boolean;
+  socialGames: boolean;
+  worldEvents: boolean;
+  petsAndCp: boolean;
 }
 
 export type ModuleKey = keyof ModuleToggles;
@@ -64,6 +67,30 @@ export interface TicketConfig {
   maxOpenPerUser: number;
 }
 
+export interface GamesConfig {
+  propTrapPrice: number;
+  propLockpickPrice: number;
+  propShieldPrice: number;
+  propCursePrice: number;
+  propNicknamePrice: number;
+  bountyMinAmount: number;
+  bountyClearMultiplier: number;
+  eventChannelId: string | null;
+  eventAutoEnabled: boolean;
+  eventMsgThreshold: number;
+  eventCooldownSec: number;
+  bossBaseHp: number;
+  bossRewardPool: number;
+  chestRewardMin: number;
+  chestRewardMax: number;
+  chestShares: number;
+  petGachaPrice: number;
+  petFeedPrice: number;
+  petMaxOwned: number;
+  cpProposeCost: number;
+  cpMaxSworn: number;
+}
+
 export interface GuildConfig {
   guildId: string;
   modules: ModuleToggles;
@@ -73,6 +100,7 @@ export interface GuildConfig {
   economy: EconomyConfig;
   welcome: WelcomeConfig;
   ticket: TicketConfig;
+  games: GamesConfig;
   updatedAt: number;
 }
 
@@ -85,6 +113,9 @@ export const DEFAULT_MODULES: ModuleToggles = {
   giveaways: true,
   invites: true,
   rolePanels: true,
+  socialGames: true,
+  worldEvents: true,
+  petsAndCp: true,
 };
 
 export const DEFAULT_LEVELING_CONFIG: LevelingConfig = {
@@ -140,6 +171,30 @@ export const DEFAULT_TICKET_CONFIG: TicketConfig = {
   maxOpenPerUser: 2,
 };
 
+export const DEFAULT_GAMES_CONFIG: GamesConfig = {
+  propTrapPrice: 500,
+  propLockpickPrice: 400,
+  propShieldPrice: 600,
+  propCursePrice: 300,
+  propNicknamePrice: 1000,
+  bountyMinAmount: 200,
+  bountyClearMultiplier: 1.5,
+  eventChannelId: null,
+  eventAutoEnabled: true,
+  eventMsgThreshold: 30,
+  eventCooldownSec: 1800,
+  bossBaseHp: 1000,
+  bossRewardPool: 3000,
+  chestRewardMin: 800,
+  chestRewardMax: 2000,
+  chestShares: 5,
+  petGachaPrice: 500,
+  petFeedPrice: 80,
+  petMaxOwned: 12,
+  cpProposeCost: 500,
+  cpMaxSworn: 3,
+};
+
 export function createDefaultGuildConfig(guildId: string, nowMs = Date.now()): GuildConfig {
   return {
     guildId,
@@ -160,6 +215,7 @@ export function createDefaultGuildConfig(guildId: string, nowMs = Date.now()): G
       ...DEFAULT_TICKET_CONFIG,
       staffRoleIds: [],
     },
+    games: { ...DEFAULT_GAMES_CONFIG },
     updatedAt: nowMs,
   };
 }

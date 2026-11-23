@@ -43,6 +43,12 @@ import {
   type MenuFeedback,
   type MenuView,
 } from '../ui/menuBuilder.js';
+import {
+  tryHandleGamesMenuButton,
+  tryHandleGamesMenuModal,
+  tryHandleGamesMenuStringSelect,
+  tryHandleGamesMenuUserSelect,
+} from './gamesMenuHandler.js';
 
 const VALID_SOCIAL_ACTIONS: ReadonlySet<string> = new Set([
   'pat',
@@ -62,6 +68,9 @@ const VALID_MODULE_KEYS: ReadonlySet<string> = new Set([
   'giveaways',
   'invites',
   'rolePanels',
+  'socialGames',
+  'worldEvents',
+  'petsAndCp',
 ]);
 
 const ADMIN_DENIED_FEEDBACK: MenuFeedback = {
@@ -535,6 +544,10 @@ export async function handleMenuButton(
     return;
   }
 
+  if (await tryHandleGamesMenuButton(interaction, ctx, guildId, actor, parts)) {
+    return;
+  }
+
   if (section === 'nav') {
     const target = parts[2];
     if (
@@ -631,7 +644,7 @@ export async function handleMenuButton(
       const feedback: MenuFeedback = res.ok
         ? {
             type: 'success',
-            text: `你${res.story}，赚取了 ${cfg.currencyEmoji} **+${res.reward}** ${cfg.currencyName}！`,
+            text: `你${res.story}，赚取了 ${cfg.currencyEmoji} **+${res.reward}** ${cfg.currencyName}！${res.cursed ? '\n🧿 *（你中了衰神符诅咒，本次打工收益已减半！）*' : ''}`,
           }
         : {
             type: 'error',
@@ -1198,6 +1211,10 @@ export async function handleMenuStringSelect(
   const section = parts[1];
   const selected = interaction.values[0];
 
+  if (await tryHandleGamesMenuStringSelect(interaction, ctx, guildId, actor, parts)) {
+    return;
+  }
+
   if (section === 'admin_toggle_mod') {
     if (!actor.isAdmin) {
       await interaction.update(
@@ -1394,6 +1411,20 @@ export async function handleMenuUserSelect(
   }
   const targetUser = interaction.users.get(targetId) ?? interaction.users.first();
 
+  if (
+    await tryHandleGamesMenuUserSelect(
+      interaction,
+      ctx,
+      guildId,
+      actor,
+      actionType,
+      targetId,
+      Boolean(targetUser?.bot),
+    )
+  ) {
+    return;
+  }
+
   if (actionType === 'admin_grant') {
     if (!actor.isAdmin) {
       await interaction.update(
@@ -1532,12 +1563,15 @@ export async function handleMenuUserSelect(
       interaction,
       res.success
         ? {
-            content: `🥷 <@${actor.id}> 抢了 <@${targetId}> **${res.amount}** ${cfg.currencyName}！`,
+            content: `🥷 <@${actor.id}> 抢了 <@${targetId}> **${res.amount}** ${cfg.currencyName}！${res.bountyClaimed ? `顺手领走通缉赏金 **+${res.bountyClaimed}**！` : ''}`,
             embeds: [
               createSuccessEmbed(
                 '🥷 频道快报：抢钱得手！',
                 [
-                  `<@${actor.id}> 从 <@${targetId}> 的口袋里抢走了 ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}！`,
+                  `<@${actor.id}>${res.usedLockpick ? '（🗝️ 使用万能撬锁）' : ''} 从 <@${targetId}> 的口袋里抢走了 ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}！`,
+                  ...(res.bountyClaimed && res.bountyClaimed > 0
+                    ? [`🎯 **通缉令兑现**：成功击破通缉目标，额外独吞赏金 **+${res.bountyClaimed}** ${cfg.currencyName}！`]
+                    : []),
                   `受害者剩余现金：**${res.targetBalance}** ｜ 抢劫者当前现金：**${res.attackerBalance}**`,
                   `🛡️ <@${targetId}> 已自动触发防盗护盾（快把现金存进银行防偷吧！）`,
                 ].join('\n'),
@@ -1545,12 +1579,16 @@ export async function handleMenuUserSelect(
             ],
           }
         : {
-            content: `🚨 <@${actor.id}> 抢 <@${targetId}> 翻车被抓，反赔了 **${res.amount}** ${cfg.currencyName}！`,
+            content: res.trapped
+              ? `🪤 <@${actor.id}> 偷 <@${targetId}> 时一脚踩中防盗捕兽夹，双倍赔了 **${res.amount}** ${cfg.currencyName}！`
+              : `🚨 <@${actor.id}> 抢 <@${targetId}> 翻车被抓，反赔了 **${res.amount}** ${cfg.currencyName}！`,
             embeds: [
               createErrorEmbed(
-                '🚨 频道快报：抢钱翻车现场！',
+                res.trapped ? '🪤 频道快报：捕兽夹反抓小偷！' : '🚨 频道快报：抢钱翻车现场！',
                 [
-                  `<@${actor.id}> 企图打劫 <@${targetId}> 时翻车被抓，现场赔偿了 ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}！`,
+                  res.trapped
+                    ? `<@${actor.id}> 偷钱时一头撞进 <@${targetId}> 预设的【🪤 捕兽夹】，被反抓双倍赔款 ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}！`
+                    : `<@${actor.id}> 企图打劫 <@${targetId}> 时翻车被抓，现场赔偿了 ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}！`,
                   `抢劫者当前现金：**${res.attackerBalance}** ｜ 受害者当前现金：**${res.targetBalance}**`,
                 ].join('\n'),
               ),
@@ -1565,11 +1603,13 @@ export async function handleMenuUserSelect(
     const feedback: MenuFeedback = res.success
       ? {
           type: 'success',
-          text: `🥷 打劫得手！从 <@${targetId}> 口袋顺走了 ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}，你的现金：**${res.attackerBalance}**。${warnSuffix}`,
+          text: `🥷 打劫得手！${res.usedLockpick ? '（🗝️ 撬锁生效）' : ''}从 <@${targetId}> 口袋顺走了 ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}${res.bountyClaimed ? `，并兑现悬赏 **+${res.bountyClaimed}**` : ''}，你的现金：**${res.attackerBalance}**。${warnSuffix}`,
         }
       : {
           type: 'error',
-          text: `🚨 打劫翻车被抓现行！向 <@${targetId}> 赔偿了 ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}，你的现金：**${res.attackerBalance}**。${warnSuffix}`,
+          text: res.trapped
+            ? `🪤 踩雷了！对方提前埋了【捕兽夹】，强制翻倍赔偿 <@${targetId}> ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}，你的现金：**${res.attackerBalance}**。${warnSuffix}`
+            : `🚨 打劫翻车被抓现行！向 <@${targetId}> 赔偿了 ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}，你的现金：**${res.attackerBalance}**。${warnSuffix}`,
         };
 
     await interaction.update(buildMenuMessage(ctx, guildId, actor, { page: 'rob' }, feedback));
@@ -1734,6 +1774,10 @@ export async function handleMenuModal(
   const actor = getActor(interaction, ctx, guildId);
   const parts = interaction.customId.split(':');
   const modalType = parts[2];
+
+  if (await tryHandleGamesMenuModal(interaction, ctx, guildId, actor, parts)) {
+    return;
+  }
 
   if (modalType?.startsWith('admin_')) {
     if (!actor.isAdmin) {

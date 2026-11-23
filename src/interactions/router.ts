@@ -14,6 +14,13 @@ import {
   handleMenuUserSelect,
 } from './menuHandler.js';
 import { handleMultiplayerButton } from './multiplayerHandler.js';
+import { handleChaosButton, handleChaosModal } from './chaosHandler.js';
+import {
+  handleWorldEventButton,
+  handleWorldEventModal,
+  handleWorldEventStringSelect,
+} from './worldEventHandler.js';
+import { handleSocialPetButton } from './socialPetHandler.js';
 
 function formatFriendlyError(err: unknown): string {
   if (err instanceof DiscordAPIError && err.code === 50013) {
@@ -56,6 +63,12 @@ export async function routeInteraction(
         await handleMenuButton(interaction, ctx);
       } else if (prefix === 'mp') {
         await handleMultiplayerButton(interaction, ctx);
+      } else if (prefix === 'ch') {
+        await handleChaosButton(interaction, ctx);
+      } else if (prefix === 'ev') {
+        await handleWorldEventButton(interaction, ctx);
+      } else if (prefix === 'sp') {
+        await handleSocialPetButton(interaction, ctx);
       }
       return;
     }
@@ -68,6 +81,8 @@ export async function routeInteraction(
         await handleRolePanelSelect(interaction, ctx);
       } else if (prefix === 'menu') {
         await handleMenuStringSelect(interaction, ctx);
+      } else if (prefix === 'ev') {
+        await handleWorldEventStringSelect(interaction, ctx);
       }
       return;
     }
@@ -86,6 +101,10 @@ export async function routeInteraction(
         await handleTicketModal(interaction, ctx);
       } else if (prefix === 'menu') {
         await handleMenuModal(interaction, ctx);
+      } else if (prefix === 'ch') {
+        await handleChaosModal(interaction, ctx);
+      } else if (prefix === 'ev') {
+        await handleWorldEventModal(interaction, ctx);
       }
     }
   } catch (err) {
