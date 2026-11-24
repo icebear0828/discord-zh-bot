@@ -131,7 +131,8 @@ export function parseCardColor(
 }
 
 export function xpRequiredForLevel(level: number): number {
-  return 100 + level * 75 + level * level * 15;
+  const safeLevel = Math.max(0, Math.floor(level));
+  return 40 + safeLevel * 20 + safeLevel * safeLevel * 10 + safeLevel * safeLevel * safeLevel * 2;
 }
 
 export function calculateLevelProgress(totalXp: number): LevelProgress {

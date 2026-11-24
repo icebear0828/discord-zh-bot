@@ -15,8 +15,12 @@ import { buildLevelUpEmbed } from '../../src/events/ready.js';
 
 describe('levelingService', () => {
   it('computes XP curve and heat multiplier brackets accurately', () => {
-    expect(xpRequiredForLevel(0)).toBe(100);
-    expect(xpRequiredForLevel(1)).toBe(190);
+    expect(xpRequiredForLevel(0)).toBe(40);
+    expect(xpRequiredForLevel(1)).toBe(72);
+    expect(xpRequiredForLevel(2)).toBe(136);
+    expect(xpRequiredForLevel(10)).toBe(3240);
+    expect(xpRequiredForLevel(20)).toBe(20440);
+    expect(xpRequiredForLevel(20)).toBeGreaterThan(xpRequiredForLevel(5) * 20);
     expect(getHeatMultiplier(0, 2.0)).toBe(1.0);
     expect(getHeatMultiplier(2, 2.0)).toBe(1.25);
     expect(getHeatMultiplier(4, 2.0)).toBe(1.5);
@@ -25,9 +29,9 @@ describe('levelingService', () => {
     expect(getHeatMultiplier(10, 1.5)).toBe(1.5);
 
     const progress = calculateLevelProgress(150);
-    expect(progress.level).toBe(1);
-    expect(progress.currentLevelXp).toBe(50);
-    expect(progress.nextLevelXp).toBe(190);
+    expect(progress.level).toBe(2);
+    expect(progress.currentLevelXp).toBe(38);
+    expect(progress.nextLevelXp).toBe(136);
   });
 
   it('enforces cooldown, escalates chat heat within window, resets after window, and applies hourly cap', () => {
@@ -95,17 +99,17 @@ describe('levelingService', () => {
 
     expect(svc.awardMessageXp('g1', 'u1', 'c-ignored', 1_000_000).reason).toBe('ignored_channel');
 
-    // Give active 2x XP boost card and start near level 2 threshold (100 + 190 = 290)
+    // Give active 2x XP boost card and start near level 2 threshold (40 + 72 = 112)
     const p = profileRepo.getOrCreate('g1', 'u1');
     profileRepo.save({
       ...p,
-      xp: 260,
+      xp: 90,
       level: 1,
       xpBoostMultiplier: 2.0,
       xpBoostExpiresAt: 5_000_000,
     });
 
-    // Base 20 * channel 1.5 * boost 2.0 = 60 -> total 320 >= 290 (level 2!)
+    // Base 20 * channel 1.5 * boost 2.0 = 60 -> total 150 >= 112 (level 2!)
     const res = svc.awardMessageXp('g1', 'u1', 'c-bonus', 1_000_000, () => 0.5);
     expect(res.awarded).toBe(true);
     expect(res.xpGained).toBe(60);
