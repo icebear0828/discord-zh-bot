@@ -860,7 +860,7 @@ export class SocialPetService {
       return { ok: false, reason: 'self_target' };
     }
     const bet = Math.floor(input.bet);
-    if (!Number.isFinite(bet) || bet < 0 || bet > 1_000_000) {
+    if (!Number.isFinite(bet) || bet < 0 || bet > 1_000_000_000) {
       return { ok: false, reason: 'invalid_bet' };
     }
     const nowMs = input.nowMs ?? Date.now();

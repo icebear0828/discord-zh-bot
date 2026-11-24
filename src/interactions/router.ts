@@ -1,5 +1,10 @@
 import { DiscordAPIError, MessageFlags, type Interaction } from 'discord.js';
 import { commandMap } from '../commands/registry.js';
+import {
+  MonitorRepo,
+  type InteractionKind,
+  type InteractionLogStatus,
+} from '../db/repositories/monitorRepo.js';
 import { createErrorEmbed, type AppContext } from '../ui/embeds.js';
 import { handleHelpSelect } from './helpHandler.js';
 import { handleLeaderboardButton } from './leaderboardHandler.js';
@@ -24,6 +29,8 @@ import {
 } from './worldEventHandler.js';
 import { handleSocialPetButton } from './socialPetHandler.js';
 
+const SLOW_INTERACTION_THRESHOLD_MS = 1500;
+
 function formatFriendlyError(err: unknown): string {
   if (err instanceof DiscordAPIError && err.code === 50013) {
     return '机器人权限不足（50013），请检查 Bot 身份组权限与身份组顺序。';
@@ -31,10 +38,153 @@ function formatFriendlyError(err: unknown): string {
   return '执行操作时发生内部异常，请稍后再试或查看服务端日志。';
 }
 
+function getInteractionMeta(interaction: Interaction): {
+  interactionType: InteractionKind;
+  interactionKey: string;
+} {
+  if (interaction.isChatInputCommand()) {
+    const group = interaction.options.getSubcommandGroup(false);
+    const sub = interaction.options.getSubcommand(false);
+    const parts = [`/${interaction.commandName}`];
+    if (group) parts.push(group);
+    if (sub) parts.push(sub);
+    return {
+      interactionType: 'command',
+      interactionKey: parts.join(' '),
+    };
+  }
+  if (interaction.isButton()) {
+    return { interactionType: 'button', interactionKey: interaction.customId };
+  }
+  if (interaction.isStringSelectMenu()) {
+    return { interactionType: 'string_select', interactionKey: interaction.customId };
+  }
+  if (interaction.isUserSelectMenu()) {
+    return { interactionType: 'user_select', interactionKey: interaction.customId };
+  }
+  if (interaction.isRoleSelectMenu()) {
+    return { interactionType: 'role_select', interactionKey: interaction.customId };
+  }
+  if (interaction.isChannelSelectMenu()) {
+    return { interactionType: 'channel_select', interactionKey: interaction.customId };
+  }
+  if (interaction.isModalSubmit()) {
+    return { interactionType: 'modal', interactionKey: interaction.customId };
+  }
+  return { interactionType: 'other', interactionKey: 'unknown' };
+}
+
+function extractErrorDetails(err: unknown): {
+  errorName: string;
+  errorCode: string | null;
+  errorMessage: string;
+  errorStack: string | null;
+} {
+  if (err instanceof DiscordAPIError) {
+    return {
+      errorName: err.name || 'DiscordAPIError',
+      errorCode: String(err.code),
+      errorMessage: err.message,
+      errorStack: err.stack ?? null,
+    };
+  }
+  if (err instanceof Error) {
+    const maybeCode = (err as { code?: unknown }).code;
+    return {
+      errorName: err.name || 'Error',
+      errorCode:
+        typeof maybeCode === 'string' || typeof maybeCode === 'number'
+          ? String(maybeCode)
+          : null,
+      errorMessage: err.message,
+      errorStack: err.stack ?? null,
+    };
+  }
+  return {
+    errorName: 'UnknownError',
+    errorCode: null,
+    errorMessage: String(err),
+    errorStack: null,
+  };
+}
+
+function recordInteractionTelemetry(
+  ctx: AppContext,
+  input: {
+    guildId: string | null;
+    channelId: string | null;
+    userId: string;
+    userTag: string;
+    interactionType: InteractionKind;
+    interactionKey: string;
+    status: InteractionLogStatus;
+    durationMs: number;
+    errorName?: string | null;
+    errorCode?: string | null;
+    errorMessage?: string | null;
+    errorStack?: string | null;
+    createdAt: number;
+  },
+): void {
+  const baseLine = `[interaction:${input.status}] type=${input.interactionType} key=${input.interactionKey} user=${input.userTag}(${input.userId}) guild=${input.guildId ?? 'dm'} channel=${input.channelId ?? '-'} duration=${input.durationMs}ms`;
+  if (input.status === 'error') {
+    console.error(
+      `${baseLine} err=${input.errorName ?? 'Error'}${input.errorCode ? `(${input.errorCode})` : ''}: ${input.errorMessage ?? ''}`,
+    );
+    if (input.errorStack) {
+      console.error(input.errorStack);
+    }
+  } else if (input.status === 'unhandled' || input.status === 'slow') {
+    console.warn(`${baseLine}${input.errorMessage ? ` detail=${input.errorMessage}` : ''}`);
+  } else {
+    console.log(baseLine);
+  }
+
+  try {
+    const repo = ctx.repos.monitor ?? new MonitorRepo(ctx.db);
+    repo.record({
+      guildId: input.guildId,
+      channelId: input.channelId,
+      userId: input.userId,
+      userName: input.userTag,
+      interactionType: input.interactionType,
+      interactionKey: input.interactionKey,
+      status: input.status,
+      durationMs: input.durationMs,
+      errorCode: input.errorCode ?? input.errorName ?? null,
+      errorMessage: input.errorMessage ?? null,
+      createdAt: input.createdAt,
+    });
+  } catch (dbErr) {
+    console.error('[interaction:monitor_write_failed]', dbErr);
+  }
+}
+
 export async function routeInteraction(
   interaction: Interaction,
   ctx: AppContext,
 ): Promise<void> {
+  const startMs = Date.now();
+  const { interactionType, interactionKey } = getInteractionMeta(interaction);
+  const userTag =
+    interaction.user?.username ?? interaction.user?.displayName ?? interaction.user?.id ?? 'unknown';
+  const userId = interaction.user?.id ?? 'unknown';
+  const guildId = interaction.guildId ?? null;
+  const channelId = interaction.channelId ?? null;
+
+  let acknowledgedByAction = false;
+  const mutableInteraction = interaction as unknown as Record<string, unknown>;
+  for (const methodName of ['reply', 'update', 'deferReply', 'deferUpdate', 'showModal'] as const) {
+    const candidate = mutableInteraction[methodName];
+    if (typeof candidate === 'function') {
+      const orig = (candidate as (...args: unknown[]) => unknown).bind(interaction);
+      mutableInteraction[methodName] = async (...args: unknown[]) => {
+        acknowledgedByAction = true;
+        return orig(...args);
+      };
+    }
+  }
+
   try {
     if (interaction.isChatInputCommand()) {
       const cmd = commandMap.get(interaction.commandName);
@@ -43,13 +193,10 @@ export async function routeInteraction(
           embeds: [createErrorEmbed('❓ 未知指令', '找不到该指令的处理程序，请尝试重新同步斜杠命令。')],
           flags: MessageFlags.Ephemeral,
         });
-        return;
+      } else {
+        await cmd.execute(interaction, ctx);
       }
-      await cmd.execute(interaction, ctx);
-      return;
-    }
-
-    if (interaction.isButton()) {
+    } else if (interaction.isButton()) {
       const prefix = interaction.customId.split(':')[0];
       if (prefix === 'lb') {
         await handleLeaderboardButton(interaction, ctx);
@@ -72,10 +219,7 @@ export async function routeInteraction(
       } else if (prefix === 'sp') {
         await handleSocialPetButton(interaction, ctx);
       }
-      return;
-    }
-
-    if (interaction.isStringSelectMenu()) {
+    } else if (interaction.isStringSelectMenu()) {
       const prefix = interaction.customId.split(':')[0];
       if (prefix === 'help') {
         await handleHelpSelect(interaction);
@@ -86,34 +230,22 @@ export async function routeInteraction(
       } else if (prefix === 'ev') {
         await handleWorldEventStringSelect(interaction, ctx);
       }
-      return;
-    }
-
-    if (interaction.isUserSelectMenu()) {
+    } else if (interaction.isUserSelectMenu()) {
       const prefix = interaction.customId.split(':')[0];
       if (prefix === 'menu') {
         await handleMenuUserSelect(interaction, ctx);
       }
-      return;
-    }
-
-    if (interaction.isRoleSelectMenu()) {
+    } else if (interaction.isRoleSelectMenu()) {
       const prefix = interaction.customId.split(':')[0];
       if (prefix === 'menu') {
         await handleMenuRoleSelect(interaction, ctx);
       }
-      return;
-    }
-
-    if (interaction.isChannelSelectMenu()) {
+    } else if (interaction.isChannelSelectMenu()) {
       const prefix = interaction.customId.split(':')[0];
       if (prefix === 'menu') {
         await handleMenuChannelSelect(interaction, ctx);
       }
-      return;
-    }
-
-    if (interaction.isModalSubmit()) {
+    } else if (interaction.isModalSubmit()) {
       const prefix = interaction.customId.split(':')[0];
       if (interaction.customId === 'ticket:create') {
         await handleTicketModal(interaction, ctx);
@@ -125,8 +257,73 @@ export async function routeInteraction(
         await handleWorldEventModal(interaction, ctx);
       }
     }
+
+    const durationMs = Math.max(0, Date.now() - startMs);
+    const acknowledged =
+      acknowledgedByAction ||
+      (interaction.isRepliable() && Boolean(interaction.replied || interaction.deferred));
+
+    if (interaction.isRepliable() && !acknowledged) {
+      await interaction
+        .reply({
+          embeds: [
+            createErrorEmbed(
+              '⚠️ 交互未响应',
+              `该交互（\`${interactionKey}\`）未能完成响应（可能该面板已过期或参数失效），请重新打开 \`/菜单\` 再试。`,
+            ),
+          ],
+          flags: MessageFlags.Ephemeral,
+        })
+        .catch(() => undefined);
+
+      recordInteractionTelemetry(ctx, {
+        guildId,
+        channelId,
+        userId,
+        userTag,
+        interactionType,
+        interactionKey,
+        status: 'unhandled',
+        durationMs,
+        errorName: 'UnhandledInteraction',
+        errorMessage: 'Interaction handler returned without reply/update/showModal',
+        createdAt: startMs,
+      });
+      return;
+    }
+
+    const status: InteractionLogStatus =
+      durationMs >= SLOW_INTERACTION_THRESHOLD_MS ? 'slow' : 'ok';
+    recordInteractionTelemetry(ctx, {
+      guildId,
+      channelId,
+      userId,
+      userTag,
+      interactionType,
+      interactionKey,
+      status,
+      durationMs,
+      createdAt: startMs,
+    });
   } catch (err) {
-    console.error('[interaction] 处理交互失败:', err);
+    const durationMs = Math.max(0, Date.now() - startMs);
+    const details = extractErrorDetails(err);
+    recordInteractionTelemetry(ctx, {
+      guildId,
+      channelId,
+      userId,
+      userTag,
+      interactionType,
+      interactionKey,
+      status: 'error',
+      durationMs,
+      errorName: details.errorName,
+      errorCode: details.errorCode,
+      errorMessage: details.errorMessage,
+      errorStack: details.errorStack,
+      createdAt: startMs,
+    });
+
     if (interaction.isRepliable()) {
       const embed = createErrorEmbed('⚠️ 操作失败', formatFriendlyError(err));
       if (interaction.replied || interaction.deferred) {

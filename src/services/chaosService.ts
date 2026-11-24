@@ -401,7 +401,7 @@ export class ChaosService {
     const maxPlayers = Math.floor(input.maxPlayers ?? 6);
     const nowMs = input.nowMs ?? Date.now();
 
-    if (!Number.isFinite(entryFee) || entryFee < 50 || entryFee > 1_000_000) {
+    if (!Number.isFinite(entryFee) || entryFee < 50 || entryFee > 1_000_000_000) {
       return { ok: false, reason: 'invalid_fee' };
     }
     if (!Number.isFinite(maxPlayers) || maxPlayers < 2 || maxPlayers > 6) {
@@ -741,7 +741,7 @@ export class ChaosService {
     const nowMs = input.nowMs ?? Date.now();
     const rng = input.rng ?? Math.random;
 
-    if (!Number.isFinite(penalty) || penalty < 100 || penalty > 500_000) {
+    if (!Number.isFinite(penalty) || penalty < 100 || penalty > 1_000_000_000) {
       return { ok: false, reason: 'invalid_penalty' };
     }
 

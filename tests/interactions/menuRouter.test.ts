@@ -1127,7 +1127,7 @@ describe('menu router & multiplayer interaction flows', () => {
     const lbPage2 = createButtonMock({ customId: 'menu:rank:coins:2:next', userId: 'u1' });
     await routeInteraction(lbPage2.interaction, ctx);
     expect(lbPage2.update.mock.calls[0]![0].embeds?.[0]?.toJSON().footer?.text).toContain('第 2 / 2 页');
-    expect(lbPage2.channel.send).toHaveBeenCalledTimes(1);
+    expect(lbPage2.channel.send).not.toHaveBeenCalled();
 
     const lbStat = createButtonMock({ customId: 'menu:rank:stat:1', userId: 'u1' });
     await routeInteraction(lbStat.interaction, ctx);
@@ -2347,6 +2347,137 @@ describe('menu router & multiplayer interaction flows', () => {
     });
     await routeInteraction(aiMemDel.interaction, ctx);
     expect(ctx.services.ai.listMemories('g1', 'user', 'member1')).toHaveLength(0);
+
+    ctx.db.close();
+  });
+
+  it('supports bank vault heist (menu:user:rob_bank), >1M coin grants, admin random/system red packets, boss cooldown card preservation, and admin_monitor logging', async () => {
+    const ctx = createTestCtx();
+    ctx.repos.guildConfig.updateAdminUsers('g1', ['admin1']);
+
+    // 1. Admin single grant > 1,000,000 (e.g. 50,000,000)
+    const highGrantModal = createModalMock({
+      customId: 'menu:modal_sub:admin_grant:u1',
+      userId: 'admin1',
+      fields: { amount: '50000000' },
+    });
+    await routeInteraction(highGrantModal.interaction, ctx);
+    expect(ctx.repos.profile.getOrCreate('g1', 'u1').coins).toBe(50_000_000);
+
+    // 2. Admin random red packet distribution (5,000,000 across 2 members)
+    const membersMap = new Map([
+      ['u1', { id: 'u1', user: makeMockUser({ id: 'u1' }) }],
+      ['u2', { id: 'u2', user: makeMockUser({ id: 'u2' }) }],
+      ['b1', { id: 'b1', user: makeMockUser({ id: 'b1', bot: true }) }],
+    ]);
+    const randomRpModal = createModalMock({
+      customId: 'menu:modal_sub:admin_random_redpacket',
+      userId: 'admin1',
+      fields: {
+        totalAmount: '5000000',
+        totalCount: '2',
+        greeting: '五百万随机大红包',
+      },
+      membersMap,
+    });
+    await routeInteraction(randomRpModal.interaction, ctx);
+    expect(randomRpModal.deferUpdate).toHaveBeenCalledTimes(1);
+    expect(randomRpModal.channel.send).toHaveBeenCalledTimes(1);
+    expect(randomRpModal.channel.send.mock.calls[0]![0].embeds?.[0]?.toJSON().title).toContain(
+      '五百万随机大红包',
+    );
+    const totalAfterRandomRp =
+      ctx.repos.profile.getOrCreate('g1', 'u1').coins +
+      ctx.repos.profile.getOrCreate('g1', 'u2').coins;
+    expect(totalAfterRandomRp).toBe(55_000_000);
+
+    // 3. Admin system-funded red packet card in channel
+    const sysRpModal = createModalMock({
+      customId: 'menu:modal_sub:admin_sys_redpacket',
+      userId: 'admin1',
+      fields: {
+        totalAmount: '20000000',
+        totalCount: '5',
+        greeting: '两千万系统红包',
+      },
+    });
+    await routeInteraction(sysRpModal.interaction, ctx);
+    expect(sysRpModal.channel.send).toHaveBeenCalledTimes(1);
+    expect(ctx.repos.profile.getOrCreate('g1', 'admin1').coins).toBe(0);
+
+    // 4. Bank Vault Heist via menu:user:rob_bank
+    ctx.services.economy.deposit('g1', 'u1', 10_000);
+    const cfg = ctx.repos.guildConfig.getOrCreate('g1');
+    ctx.repos.guildConfig.updateEconomy('g1', {
+      ...cfg.economy,
+      robBankSuccessRate: 1.0,
+      robCooldownSec: 0,
+      robTargetShieldSec: 0,
+    });
+    const robBankSelect = createUserSelectMock({
+      customId: 'menu:user:rob_bank',
+      userId: 'u2',
+      target: { id: 'u1' },
+    });
+    await routeInteraction(robBankSelect.interaction, ctx);
+    expect(robBankSelect.update).toHaveBeenCalledTimes(1);
+    expect(robBankSelect.channel!.send).toHaveBeenCalledTimes(1);
+    expect(robBankSelect.channel!.send.mock.calls[0]![0].embeds?.[0]?.toJSON().title).toContain(
+      '银行金库大劫案',
+    );
+    expect(ctx.repos.profile.getOrCreate('g1', 'u1').bankCoins).toBeLessThan(10_000);
+
+    // 5. World Boss cooldown click replies immediately without editing/wiping the Boss card
+    const boss = ctx.services.worldEvent.spawnBoss('g1', 'c1');
+    const hit1 = createButtonMock({ customId: `ev:boss:hit:${boss.id}:normal`, userId: 'u1' });
+    await routeInteraction(hit1.interaction, ctx);
+    expect(hit1.update).toHaveBeenCalledTimes(1);
+
+    const hitCooldown = createButtonMock({
+      customId: `ev:boss:hit:${boss.id}:normal`,
+      userId: 'u1',
+    });
+    await routeInteraction(hitCooldown.interaction, ctx);
+    expect(hitCooldown.reply).toHaveBeenCalledTimes(1);
+    expect(hitCooldown.msgEdit).not.toHaveBeenCalled();
+
+    // 6. Unhandled interaction fallback & admin_monitor dashboard view
+    const unhandledBtn = createButtonMock({
+      customId: 'unknown_prefix:noop',
+      userId: 'u1',
+    });
+    await routeInteraction(unhandledBtn.interaction, ctx);
+    expect(unhandledBtn.reply).toHaveBeenCalledTimes(1);
+    expect(unhandledBtn.reply.mock.calls[0]![0].embeds?.[0]?.toJSON().title).toContain(
+      '交互未响应',
+    );
+
+    const monitorNav = createButtonMock({
+      customId: 'menu:nav:admin_monitor',
+      userId: 'admin1',
+    });
+    await routeInteraction(monitorNav.interaction, ctx);
+    const monitorEmbed = monitorNav.update.mock.calls[0]![0].embeds?.[0]?.toJSON();
+    expect(monitorEmbed?.title).toContain('运行监控与交互诊断中心');
+    expect(monitorEmbed?.description).toContain('unknown_prefix:noop');
+
+    const monitorAllBtn = createButtonMock({
+      customId: 'menu:admin_monitor:filter:all',
+      userId: 'admin1',
+    });
+    await routeInteraction(monitorAllBtn.interaction, ctx);
+    expect(
+      monitorAllBtn.update.mock.calls[0]![0].embeds?.[0]?.toJSON().description,
+    ).toContain('全部交互流水');
+
+    const monitorClearBtn = createButtonMock({
+      customId: 'menu:admin_monitor:clear',
+      userId: 'admin1',
+    });
+    await routeInteraction(monitorClearBtn.interaction, ctx);
+    expect(
+      monitorClearBtn.update.mock.calls[0]![0].embeds?.[0]?.toJSON().description,
+    ).toContain('已清理本服务器');
 
     ctx.db.close();
   });

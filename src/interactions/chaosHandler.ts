@@ -12,6 +12,7 @@ import {
   buildRouletteCard,
 } from '../ui/chaosMenuBuilder.js';
 import { createErrorEmbed, createInfoEmbed, createSuccessEmbed, type AppContext } from '../ui/embeds.js';
+import { truncateText } from '../ui/menuShared.js';
 import {
   editChannelMessage,
   isInteractionAdmin,
@@ -27,7 +28,7 @@ export function buildBombGuessModal(
 ): ModalBuilder {
   const input = new TextInputBuilder()
     .setCustomId('guess')
-    .setLabel(`输入猜测数字 (${minBound} ~ ${maxBound})，踩雷罚 ${penalty}`)
+    .setLabel(truncateText(`输入猜测数字 (${minBound} ~ ${maxBound})，踩雷罚 ${penalty}`, 45))
     .setStyle(TextInputStyle.Short)
     .setMinLength(1)
     .setMaxLength(4)
@@ -79,11 +80,6 @@ export async function handleChaosButton(
         return;
       }
 
-      const latest = ctx.services.chaos.getRoulette(gameId);
-      if (latest && latest.status !== 'recruiting') {
-        await interaction.message.edit(buildRouletteCard(latest, cfg.economy)).catch(() => undefined);
-      }
-
       const msgMap: Record<typeof res.reason, string> = {
         not_found: '找不到这个轮盘房间。',
         not_recruiting: '该轮盘局已经开局或已结束！',
@@ -95,6 +91,10 @@ export async function handleChaosButton(
         embeds: [createErrorEmbed('❌ 无法上桌', msgMap[res.reason])],
         flags: MessageFlags.Ephemeral,
       });
+      const latest = ctx.services.chaos.getRoulette(gameId);
+      if (latest && latest.status !== 'recruiting') {
+        await interaction.message.edit(buildRouletteCard(latest, cfg.economy)).catch(() => undefined);
+      }
       return;
     }
 
@@ -200,10 +200,6 @@ export async function handleChaosButton(
         return;
       }
 
-      const latest = ctx.services.chaos.getRoulette(gameId);
-      if (latest && latest.status !== 'playing') {
-        await interaction.message.edit(buildRouletteCard(latest, cfg.economy)).catch(() => undefined);
-      }
       const msgMap: Record<typeof res.reason, string> = {
         not_found: '找不到这个轮盘局。',
         not_playing: '这局轮盘还未开局或已经结束啦！',
@@ -213,6 +209,10 @@ export async function handleChaosButton(
         embeds: [createErrorEmbed('⏳ 请稍等', msgMap[res.reason])],
         flags: MessageFlags.Ephemeral,
       });
+      const latest = ctx.services.chaos.getRoulette(gameId);
+      if (latest && latest.status !== 'playing') {
+        await interaction.message.edit(buildRouletteCard(latest, cfg.economy)).catch(() => undefined);
+      }
       return;
     }
   }
@@ -231,14 +231,14 @@ export async function handleChaosButton(
       if (game && game.status === 'open' && game.expiresAt <= Date.now()) {
         ctx.services.chaos.expireDueNumberBombs();
       }
-      const latest = ctx.services.chaos.getNumberBomb(gameId);
-      if (latest) {
-        await interaction.message.edit(buildNumberBombCard(latest, cfg.economy)).catch(() => undefined);
-      }
       await interaction.reply({
         embeds: [createErrorEmbed('⌛ 炸弹已结束', '这颗数字炸弹已经引爆或过期啦！')],
         flags: MessageFlags.Ephemeral,
       });
+      const latest = ctx.services.chaos.getNumberBomb(gameId);
+      if (latest) {
+        await interaction.message.edit(buildNumberBombCard(latest, cfg.economy)).catch(() => undefined);
+      }
       return;
     }
 

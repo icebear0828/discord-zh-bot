@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createDatabase } from '../../src/db/database.js';
+import { ChaosRepo } from '../../src/db/repositories/chaosRepo.js';
 import { GuildConfigRepo } from '../../src/db/repositories/guildConfigRepo.js';
 import { InviteRepo } from '../../src/db/repositories/inviteRepo.js';
 import { ProfileRepo } from '../../src/db/repositories/profileRepo.js';
@@ -266,6 +267,89 @@ describe('economyService', () => {
     expect(levelingSvc.getLeaderboard('g1', 'coins').items.length).toBe(2);
 
     db2.close();
+    db.close();
+  });
+
+  it('supports robBank() with lower success rate, smaller payout, and higher fine deducting from pocket then bank', () => {
+    const db = createDatabase(':memory:');
+    const configRepo = new GuildConfigRepo(db);
+    const profileRepo = new ProfileRepo(db);
+    const chaosRepo = new ChaosRepo(db);
+    const svc = new EconomyService(db, configRepo, profileRepo, 'Asia/Shanghai', chaosRepo);
+    const now = 1_700_000_000_000;
+
+    // 1. Validation: self_target, attacker_too_poor, target_bank_too_poor
+    expect(svc.robBank('g1', 'a1', 'a1', now)).toEqual({ ok: false, reason: 'self_target' });
+
+    profileRepo.addCoins('g1', 'a1', 50); // total assets 50 < 100
+    profileRepo.save({ ...profileRepo.getOrCreate('g1', 't1'), bankCoins: 2000 });
+    expect(svc.robBank('g1', 'a1', 't1', now)).toEqual({
+      ok: false,
+      reason: 'attacker_too_poor',
+    });
+
+    profileRepo.addCoins('g1', 'a1', 200); // pocket=250 >= 100
+    profileRepo.save({ ...profileRepo.getOrCreate('g1', 't_poor'), bankCoins: 99 });
+    expect(svc.robBank('g1', 'a1', 't_poor', now)).toEqual({
+      ok: false,
+      reason: 'target_bank_too_poor',
+    });
+
+    // listBankRobTargets returns targets with bankCoins >= 500 sorted DESC
+    profileRepo.save({ ...profileRepo.getOrCreate('g1', 't2'), bankCoins: 5000 });
+    const bankTargets = profileRepo.listBankRobTargets('g1', 'a1');
+    expect(bankTargets.map((t) => t.userId)).toEqual(['t2', 't1']);
+
+    // 2. Success: steals 5%~12% of target bankCoins (capped at 500), applies shield, claims bounty
+    chaosRepo.createBounty({
+      guildId: 'g1',
+      placerId: 'issuer1',
+      targetId: 't2',
+      amount: 800,
+      createdAt: now - 1000,
+    });
+    const winRes = svc.robBank('g1', 'a1', 't2', now, () => 0.05); // 0.05 < default 0.20robBankSuccessRate
+    expect(winRes.ok).toBe(true);
+    if (winRes.ok) {
+      expect(winRes.success).toBe(true);
+      expect(winRes.amount).toBeGreaterThanOrEqual(10);
+      expect(winRes.amount).toBeLessThanOrEqual(500);
+      expect(winRes.bountyClaimed).toBe(800);
+      expect(winRes.targetBankBalance).toBe(5000 - winRes.amount);
+      expect(winRes.attackerBalance).toBe(250 + winRes.amount + 800);
+    }
+
+    // Target t2 is now shielded
+    profileRepo.addCoins('g1', 'a2', 100);
+    profileRepo.save({ ...profileRepo.getOrCreate('g1', 'a2'), bankCoins: 1000 }); // pocket=100, bank=1000
+    expect(svc.robBank('g1', 'a2', 't2', now + 1000)).toMatchObject({
+      ok: false,
+      reason: 'target_shielded',
+    });
+
+    // 3. Failure with trap: deducts from attacker pocket first, then bankCoins!
+    chaosRepo.setEffect({
+      guildId: 'g1',
+      userId: 't1',
+      effectKey: 'trap_armed',
+      charges: 1,
+      expiresAt: now + 3600_000,
+      sourceUserId: null,
+      updatedAt: now,
+    });
+    const failTrap = svc.robBank('g1', 'a2', 't1', now + 1000, () => 0.9);
+    expect(failTrap.ok).toBe(true);
+    if (failTrap.ok) {
+      expect(failTrap.success).toBe(false);
+      expect(failTrap.trapped).toBe(true);
+      // Attacker a2 had pocket=100, bank=1000 (total 1100). Trap fine is 50% of 1100 = 550.
+      expect(failTrap.amount).toBe(550);
+      expect(failTrap.fineFromPocket).toBe(100);
+      expect(failTrap.fineFromBank).toBe(450);
+      expect(failTrap.attackerBalance).toBe(0);
+      expect(failTrap.attackerBankBalance).toBe(550);
+    }
+
     db.close();
   });
 });

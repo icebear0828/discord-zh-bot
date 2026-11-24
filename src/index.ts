@@ -14,6 +14,7 @@ import { ChaosRepo } from './db/repositories/chaosRepo.js';
 import { WorldEventRepo } from './db/repositories/worldEventRepo.js';
 import { SocialPetRepo } from './db/repositories/socialPetRepo.js';
 import { AiMemoryRepo } from './db/repositories/aiMemoryRepo.js';
+import { MonitorRepo } from './db/repositories/monitorRepo.js';
 import { LevelingService } from './services/levelingService.js';
 import { EconomyService } from './services/economyService.js';
 import { BlackjackManager } from './services/blackjackService.js';
@@ -54,6 +55,7 @@ function main(): void {
   const worldEventRepo = new WorldEventRepo(db);
   const socialPetRepo = new SocialPetRepo(db);
   const aiMemoryRepo = new AiMemoryRepo(db);
+  const monitorRepo = new MonitorRepo(db);
   const llmClient = new LlmClient(env.llm);
 
   const ctx: AppContext = {
@@ -73,6 +75,7 @@ function main(): void {
       worldEvent: worldEventRepo,
       socialPet: socialPetRepo,
       aiMemory: aiMemoryRepo,
+      monitor: monitorRepo,
     },
     services: {
       leveling: new LevelingService(guildConfigRepo, profileRepo, inviteRepo),
@@ -127,6 +130,16 @@ function main(): void {
   registerGuildMemberRemoveEvent(client, ctx);
   registerInviteEvents(client, ctx);
   registerInteractionCreateEvent(client, ctx);
+
+  client.on('error', (err) => {
+    console.error('[discord:client_error]', err);
+  });
+  process.on('unhandledRejection', (reason) => {
+    console.error('[process:unhandledRejection]', reason);
+  });
+  process.on('uncaughtException', (err) => {
+    console.error('[process:uncaughtException]', err);
+  });
 
   let shuttingDown = false;
   const shutdown = (signal: string): void => {

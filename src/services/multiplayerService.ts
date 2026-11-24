@@ -95,6 +95,32 @@ export type DeclineDuelResult =
       reason: 'not_found' | 'not_participant' | 'already_resolved' | 'expired';
     };
 
+export interface RandomDropShare {
+  userId: string;
+  amount: number;
+  newBalance: number;
+}
+
+export type DistributeRandomRedPacketResult =
+  | {
+      ok: true;
+      totalAmount: number;
+      winnerCount: number;
+      shares: RandomDropShare[];
+      bestLuckUserId: string;
+      bestLuckAmount: number;
+    }
+  | {
+      ok: false;
+      reason:
+        | 'no_candidates'
+        | 'invalid_count'
+        | 'invalid_amount'
+        | 'amount_too_small_for_count';
+    };
+
+export const MAX_COIN_AMOUNT = 1_000_000_000;
+export const MAX_RED_PACKET_COUNT = 100;
 const MAX_DUELS_IN_MEMORY = 100;
 const DEFAULT_RED_PACKET_TTL_MS = 24 * 3600 * 1000;
 const DEFAULT_GREETING = '恭喜发财，大吉大利！';
@@ -131,14 +157,19 @@ export class MultiplayerService {
     greeting?: string;
     nowMs?: number;
     ttlMs?: number;
+    systemFunded?: boolean;
   }): CreateRedPacketResult {
-    if (!Number.isInteger(input.totalCount) || input.totalCount < 2 || input.totalCount > 20) {
+    if (
+      !Number.isInteger(input.totalCount) ||
+      input.totalCount < 2 ||
+      input.totalCount > MAX_RED_PACKET_COUNT
+    ) {
       return { ok: false, reason: 'invalid_count' };
     }
     if (
       !Number.isInteger(input.totalAmount) ||
       input.totalAmount <= 0 ||
-      input.totalAmount > 1_000_000
+      input.totalAmount > MAX_COIN_AMOUNT
     ) {
       return { ok: false, reason: 'invalid_amount' };
     }
@@ -152,12 +183,14 @@ export class MultiplayerService {
 
     return this.db.transaction((): CreateRedPacketResult => {
       const sender = this.profileRepo.getOrCreate(input.guildId, input.senderId);
-      if (sender.coins < input.totalAmount) {
-        return { ok: false, reason: 'insufficient_funds' };
+      let senderBalance = sender.coins;
+      if (!input.systemFunded) {
+        if (sender.coins < input.totalAmount) {
+          return { ok: false, reason: 'insufficient_funds' };
+        }
+        senderBalance = sender.coins - input.totalAmount;
+        this.profileRepo.save({ ...sender, coins: senderBalance });
       }
-
-      const senderBalance = sender.coins - input.totalAmount;
-      this.profileRepo.save({ ...sender, coins: senderBalance });
 
       const packet = this.redPacketRepo.create({
         guildId: input.guildId,
@@ -171,6 +204,90 @@ export class MultiplayerService {
       });
 
       return { ok: true, packet, senderBalance };
+    })();
+  }
+
+  distributeRandomRedPacket(input: {
+    guildId: string;
+    candidateUserIds: readonly string[];
+    totalAmount: number;
+    count: number;
+    rng?: () => number;
+  }): DistributeRandomRedPacketResult {
+    const uniqueCandidates = [...new Set(input.candidateUserIds)];
+    if (uniqueCandidates.length === 0) {
+      return { ok: false, reason: 'no_candidates' };
+    }
+    if (!Number.isInteger(input.count) || input.count < 1 || input.count > MAX_RED_PACKET_COUNT) {
+      return { ok: false, reason: 'invalid_count' };
+    }
+    if (
+      !Number.isInteger(input.totalAmount) ||
+      input.totalAmount <= 0 ||
+      input.totalAmount > MAX_COIN_AMOUNT
+    ) {
+      return { ok: false, reason: 'invalid_amount' };
+    }
+
+    const winnerCount = Math.min(input.count, uniqueCandidates.length);
+    if (input.totalAmount < winnerCount) {
+      return { ok: false, reason: 'amount_too_small_for_count' };
+    }
+
+    const rng = input.rng ?? Math.random;
+    const shuffled = [...uniqueCandidates];
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.floor(rng() * (i + 1));
+      const tmp = shuffled[i]!;
+      shuffled[i] = shuffled[j]!;
+      shuffled[j] = tmp;
+    }
+    const winners = shuffled.slice(0, winnerCount);
+
+    return this.db.transaction((): DistributeRandomRedPacketResult => {
+      let remainingAmount = input.totalAmount;
+      let remainingCount = winnerCount;
+      const shares: RandomDropShare[] = [];
+      let bestLuckUserId = winners[0]!;
+      let bestLuckAmount = -1;
+
+      for (const userId of winners) {
+        let share: number;
+        if (remainingCount === 1) {
+          share = remainingAmount;
+        } else {
+          const maxShare = Math.max(
+            1,
+            Math.min(
+              remainingAmount - (remainingCount - 1),
+              Math.floor((remainingAmount / remainingCount) * 2),
+            ),
+          );
+          share = 1 + Math.min(maxShare - 1, Math.max(0, Math.floor(rng() * maxShare)));
+        }
+        remainingAmount -= share;
+        remainingCount -= 1;
+
+        const updated = this.profileRepo.addCoins(input.guildId, userId, share);
+        shares.push({
+          userId,
+          amount: share,
+          newBalance: updated.coins,
+        });
+        if (share > bestLuckAmount) {
+          bestLuckAmount = share;
+          bestLuckUserId = userId;
+        }
+      }
+
+      return {
+        ok: true,
+        totalAmount: input.totalAmount,
+        winnerCount,
+        shares,
+        bestLuckUserId,
+        bestLuckAmount,
+      };
     })();
   }
 
@@ -294,7 +411,7 @@ export class MultiplayerService {
     if (challengerId === opponentId) {
       return { ok: false, reason: 'self_target' };
     }
-    if (!Number.isInteger(bet) || bet <= 0 || bet > 1_000_000) {
+    if (!Number.isInteger(bet) || bet <= 0 || bet > MAX_COIN_AMOUNT) {
       return { ok: false, reason: 'invalid_bet' };
     }
 

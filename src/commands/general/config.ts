@@ -188,9 +188,9 @@ export const configCommand: CommandDefinition = {
               applyZh(
                 opt
                   .setName('amount')
-                  .setDescription('增减星币数量（正数发放，负数扣除）')
-                  .setMinValue(-1_000_000)
-                  .setMaxValue(1_000_000)
+                  .setDescription('增减星币数量（正数发放，负数扣除，最高 10 亿）')
+                  .setMinValue(-1_000_000_000)
+                  .setMaxValue(1_000_000_000)
                   .setRequired(true),
                 '金额',
                 '正数为发放，负数为扣除',
@@ -209,9 +209,9 @@ export const configCommand: CommandDefinition = {
               applyZh(
                 opt
                   .setName('amount')
-                  .setDescription('每位成员发放的星币数量（1 ~ 1,000,000）')
+                  .setDescription('每位成员发放的星币数量（1 ~ 1,000,000,000）')
                   .setMinValue(1)
-                  .setMaxValue(1_000_000)
+                  .setMaxValue(1_000_000_000)
                   .setRequired(true),
                 '金额',
                 '每人发放的星币数量',
@@ -219,6 +219,50 @@ export const configCommand: CommandDefinition = {
             ),
           '全员发币',
           '向服务器所有真实成员统一发放口袋星币',
+        ),
+      )
+      .addSubcommand((sub) =>
+        applyZh(
+          sub
+            .setName('random-redpacket')
+            .setDescription('【管理】设定份数与总额，由系统随机抽取群友派发拼手气红包')
+            .addIntegerOption((opt) =>
+              applyZh(
+                opt
+                  .setName('amount')
+                  .setDescription('红包总金额（1 ~ 1,000,000,000）')
+                  .setMinValue(1)
+                  .setMaxValue(1_000_000_000)
+                  .setRequired(true),
+                '总金额',
+                '派发的红包总星币数',
+              ),
+            )
+            .addIntegerOption((opt) =>
+              applyZh(
+                opt
+                  .setName('count')
+                  .setDescription('随机派发份数/人数（1 ~ 100）')
+                  .setMinValue(1)
+                  .setMaxValue(100)
+                  .setRequired(true),
+                '份数',
+                '随机抽取多少名群友分钱',
+              ),
+            )
+            .addStringOption((opt) =>
+              applyZh(
+                opt
+                  .setName('greeting')
+                  .setDescription('红包祝福语（可选）')
+                  .setMaxLength(50)
+                  .setRequired(false),
+                '祝福语',
+                '自定义红包祝福标题',
+              ),
+            ),
+          '派发红包',
+          '设定份数与总额，由系统随机抽取群友派发拼手气红包',
         ),
       )
       .addSubcommand((sub) =>
@@ -469,6 +513,67 @@ export const configCommand: CommandDefinition = {
           createSuccessEmbed(
             '🎉 全服福利发放！',
             `管理员 <@${adminCtx.member.id}> 向全服 **${humanIds.length}** 位真实群友每人发放了 ${cfg.economy.currencyEmoji} **+${amount}** ${cfg.economy.currencyName}！`,
+          ),
+        ],
+      });
+      return;
+    }
+
+    if (sub === 'random-redpacket') {
+      const totalAmount = interaction.options.getInteger('amount', true);
+      const count = interaction.options.getInteger('count', true);
+      const greeting =
+        interaction.options.getString('greeting', false)?.trim() ||
+        '管理员天降随机大红包，见者有份！';
+
+      if (totalAmount < count) {
+        await interaction.reply({
+          embeds: [createErrorEmbed('❌ 参数无效', '红包总金额不能小于派发份数（每份至少 1 星币）。')],
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
+      if (!interaction.guild) return;
+      await interaction.deferReply();
+      const members = await interaction.guild.members.fetch();
+      const humanIds = [...members.values()].filter((m) => !m.user.bot).map((m) => m.id);
+
+      const res = ctx.services.multiplayer.distributeRandomRedPacket({
+        guildId,
+        candidateUserIds: humanIds,
+        totalAmount,
+        count,
+      });
+
+      if (!res.ok) {
+        await interaction.editReply({
+          embeds: [createErrorEmbed('❌ 派发失败', '当前没有可派发红包的真实群友或参数无效。')],
+        });
+        return;
+      }
+
+      const shareLines = res.shares.slice(0, 30).map((s, idx) => {
+        const crown = res.bestLuckUserId === s.userId ? '👑 ' : `${idx + 1}. `;
+        return `${crown}<@${s.userId}> 随机分得 ${cfg.economy.currencyEmoji} **+${s.amount}** ${cfg.economy.currencyName}（余额 **${s.newBalance}**）`;
+      });
+      if (res.shares.length > 30) {
+        shareLines.push(`*…等共 ${res.shares.length} 位幸运群友*`);
+      }
+
+      await interaction.editReply({
+        content: `🧧 管理员 <@${adminCtx.member.id}> 随机派发了 **${res.totalAmount}** ${cfg.economy.currencyName} 拼手气大红包（共 **${res.winnerCount}** 份）！`,
+        embeds: [
+          createSuccessEmbed(
+            `🧧 ${greeting}`,
+            [
+              `派发管理员：<@${adminCtx.member.id}>`,
+              `红包总额：${cfg.economy.currencyEmoji} **${res.totalAmount}** ${cfg.economy.currencyName} ｜ 随机抽取：**${res.winnerCount}** 位群友`,
+              `👑 **手气最佳**：<@${res.bestLuckUserId}>（独揽 **+${res.bestLuckAmount}** ${cfg.economy.currencyName}）`,
+              '',
+              '**🎲 随机派发明细：**',
+              ...shareLines,
+            ].join('\n'),
           ),
         ],
       });

@@ -6,7 +6,8 @@ import {
   StringSelectMenuBuilder,
   StringSelectMenuOptionBuilder,
 } from 'discord.js';
-import { COLORS, type AppContext } from './embeds.js';
+import { MonitorRepo, type InteractionLogEntry } from '../db/repositories/monitorRepo.js';
+import { COLORS, formatDurationZh, type AppContext } from './embeds.js';
 import { formatShopItemTag } from './menuShared.js';
 import {
   buttonRow,
@@ -458,4 +459,113 @@ export function buildAdminShopView(
   );
 
   return { embeds: [embed], components };
+}
+
+function formatMonitorLogLine(row: InteractionLogEntry): string {
+  const statusIcon =
+    row.status === 'error'
+      ? '❌'
+      : row.status === 'unhandled'
+        ? '⚠️'
+        : row.status === 'slow'
+          ? '🐢'
+          : '✅';
+  const ts = Math.floor(row.createdAt / 1000);
+  const base = `${statusIcon} <t:${ts}:T> **${row.durationMs}ms** · \`${truncateText(row.interactionKey, 36)}\` (<@${row.userId}>)`;
+  if (row.errorMessage) {
+    const codePart = row.errorCode ? ` [${row.errorCode}]` : '';
+    return `${base}\n  > \`${truncateText(`Error${codePart}: ${row.errorMessage}`, 110)}\``;
+  }
+  return base;
+}
+
+export function buildAdminMonitorView(
+  ctx: AppContext,
+  guildId: string,
+  actor: MenuActor,
+  filter: 'issues' | 'all' = 'issues',
+  feedback: MenuFeedback | undefined,
+  nowMs = Date.now(),
+): BuiltMenuMessage {
+  const repo = ctx.repos.monitor ?? new MonitorRepo(ctx.db);
+  const since24h = nowMs - 24 * 3600 * 1000;
+  const summary = repo.getSummary(guildId, since24h);
+  const recent = repo.listRecent(guildId, {
+    onlyIssues: filter === 'issues',
+    limit: 12,
+  });
+
+  const mem = process.memoryUsage();
+  const rssMb = (mem.rss / (1024 * 1024)).toFixed(1);
+  const heapMb = (mem.heapUsed / (1024 * 1024)).toFixed(1);
+  const uptimeMs = Math.floor(process.uptime() * 1000);
+
+  const issueRate =
+    summary.totalCount > 0
+      ? (
+          ((summary.errorCount + summary.unhandledCount) / summary.totalCount) *
+          100
+        ).toFixed(2)
+      : '0.00';
+
+  const logLines =
+    recent.length > 0
+      ? recent.map(formatMonitorLogLine)
+      : [
+          filter === 'issues'
+            ? '🎉 当前暂无异常/慢交互记录！点击下方「📋 查看全部交互」可检视完整流水。'
+            : '暂无交互日志记录。',
+        ];
+
+  const description = [
+    `🖥️ **进程状态**：已连续运行 **${formatDurationZh(uptimeMs)}** ｜ 内存 RSS **${rssMb} MB**（Heap **${heapMb} MB**）`,
+    `📈 **近 24h 交互统计**：总计 **${summary.totalCount}** 次 ｜ ✅ 正常 **${summary.okCount}** ｜ 🐢 慢响应(≥1.5s) **${summary.slowCount}** ｜ ⚠️ 未响应 **${summary.unhandledCount}** ｜ ❌ 报错 **${summary.errorCount}**（异常率 **${issueRate}%**）`,
+    `⏱️ **延迟指标**：平均耗时 **${summary.avgDurationMs}ms** ｜ 峰值耗时 **${summary.maxDurationMs}ms**`,
+    '',
+    `📋 **最近交互日志（${filter === 'issues' ? '仅看异常 / 慢响应' : '全部交互流水'} · 最新 12 条）**：`,
+    ...logLines,
+  ].join('\n');
+
+  const embed = new EmbedBuilder()
+    .setColor(
+      resolveColor(
+        summary.errorCount > 0 || summary.unhandledCount > 0 ? COLORS.WARNING : COLORS.SUCCESS,
+        feedback,
+      ),
+    )
+    .setAuthor({ name: `${actor.displayName} · 运行监控与交互日志`, iconURL: actor.avatarUrl })
+    .setTitle('📊 运行监控与交互诊断中心')
+    .setDescription(withFeedback(description, feedback))
+    .setFooter({
+      text: '🔒 服务端同时输出结构化 [interaction:*] 日志至 journalctl，便于实时追踪',
+    })
+    .setTimestamp();
+
+  return {
+    embeds: [embed],
+    components: [
+      buttonRow(
+        makeButton(
+          'menu:admin_monitor:filter:issues',
+          '🚨 仅看异常/慢响应',
+          filter === 'issues' ? ButtonStyle.Primary : ButtonStyle.Secondary,
+        ),
+        makeButton(
+          'menu:admin_monitor:filter:all',
+          '📋 查看全部交互',
+          filter === 'all' ? ButtonStyle.Primary : ButtonStyle.Secondary,
+        ),
+        makeButton(
+          `menu:admin_monitor:refresh:${filter}`,
+          '🔄 刷新监控',
+          ButtonStyle.Success,
+        ),
+        makeButton('menu:admin_monitor:clear', '🧹 清空本服日志', ButtonStyle.Danger),
+      ),
+      buttonRow(
+        makeButton('menu:nav:admin', '⬅️ 管理后台', ButtonStyle.Secondary),
+        makeButton('menu:nav:home', '🏠 主菜单', ButtonStyle.Secondary),
+      ),
+    ],
+  };
 }

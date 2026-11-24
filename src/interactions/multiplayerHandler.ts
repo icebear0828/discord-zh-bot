@@ -47,14 +47,6 @@ export async function handleMultiplayerButton(
         return;
       }
 
-      if (
-        res.reason === 'already_resolved' ||
-        res.reason === 'expired' ||
-        res.reason === 'not_found'
-      ) {
-        await clearStaleDuelButtons(interaction, ctx, targetId, cfg.economy);
-      }
-
       const msgMap: Record<typeof res.reason, string> = {
         not_found: '找不到这场决斗记录（可能已过期或服务器已重启）。',
         not_opponent: '只有被挑战者本人才能点击接受决斗！',
@@ -68,6 +60,14 @@ export async function handleMultiplayerButton(
         embeds: [createErrorEmbed('❌ 无法应战', msgMap[res.reason])],
         flags: MessageFlags.Ephemeral,
       });
+
+      if (
+        res.reason === 'already_resolved' ||
+        res.reason === 'expired' ||
+        res.reason === 'not_found'
+      ) {
+        await clearStaleDuelButtons(interaction, ctx, targetId, cfg.economy);
+      }
       return;
     }
 
@@ -76,14 +76,6 @@ export async function handleMultiplayerButton(
       if (res.ok) {
         await interaction.update(buildDuelMessage(res.duel, cfg.economy));
         return;
-      }
-
-      if (
-        res.reason === 'already_resolved' ||
-        res.reason === 'expired' ||
-        res.reason === 'not_found'
-      ) {
-        await clearStaleDuelButtons(interaction, ctx, targetId, cfg.economy);
       }
 
       const msgMap: Record<typeof res.reason, string> = {
@@ -97,6 +89,14 @@ export async function handleMultiplayerButton(
         embeds: [createErrorEmbed('❌ 无法取消决斗', msgMap[res.reason])],
         flags: MessageFlags.Ephemeral,
       });
+
+      if (
+        res.reason === 'already_resolved' ||
+        res.reason === 'expired' ||
+        res.reason === 'not_found'
+      ) {
+        await clearStaleDuelButtons(interaction, ctx, targetId, cfg.economy);
+      }
       return;
     }
   }
@@ -140,6 +140,18 @@ export async function handleMultiplayerButton(
       ctx.services.multiplayer.expireDueRedPackets();
     }
 
+    const msgMap: Record<typeof res.reason, string> = {
+      not_found: '该红包不存在或已被清理。',
+      expired: '手慢啦，这个红包已经过期了。',
+      finished: '手慢啦，红包已经被抢光了！',
+      already_claimed: '你已经抢过这个红包啦，把机会留给其他群友吧！',
+    };
+
+    await interaction.reply({
+      embeds: [createErrorEmbed('❌ 无法领取红包', msgMap[res.reason])],
+      flags: MessageFlags.Ephemeral,
+    });
+
     if (res.reason === 'finished' || res.reason === 'expired') {
       const detail = ctx.services.multiplayer.getRedPacketWithClaims(packetId);
       if (detail && detail.packet.status !== 'open') {
@@ -155,17 +167,5 @@ export async function handleMultiplayerButton(
           .catch(() => undefined);
       }
     }
-
-    const msgMap: Record<typeof res.reason, string> = {
-      not_found: '该红包不存在或已被清理。',
-      expired: '手慢啦，这个红包已经过期了。',
-      finished: '手慢啦，红包已经被抢光了！',
-      already_claimed: '你已经抢过这个红包啦，把机会留给其他群友吧！',
-    };
-
-    await interaction.reply({
-      embeds: [createErrorEmbed('❌ 无法领取红包', msgMap[res.reason])],
-      flags: MessageFlags.Ephemeral,
-    });
   }
 }

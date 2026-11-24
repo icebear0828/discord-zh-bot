@@ -17,7 +17,7 @@ import { PET_SPECIES_MAP } from '../services/socialPetService.js';
 import type { BossAttackMode } from '../services/worldEventService.js';
 import { buildNumberBombCard, buildRouletteCard } from '../ui/chaosMenuBuilder.js';
 import { createSuccessEmbed, formatDurationZh, type AppContext } from '../ui/embeds.js';
-import { buildMenuMessage } from '../ui/menuBuilder.js';
+import { buildMenuMessage, truncateText } from '../ui/menuBuilder.js';
 import type { MenuActor, MenuFeedback, MenuView } from '../ui/menuShared.js';
 import {
   buildPetBattleCard,
@@ -59,7 +59,7 @@ function buildTextModal(input: {
 }): ModalBuilder {
   const field = new TextInputBuilder()
     .setCustomId(input.fieldId)
-    .setLabel(input.label)
+    .setLabel(truncateText(input.label, 45))
     .setStyle(TextInputStyle.Short)
     .setMinLength(1)
     .setMaxLength(input.maxLength ?? 32)
@@ -72,7 +72,7 @@ function buildTextModal(input: {
 
   return new ModalBuilder()
     .setCustomId(input.customId)
-    .setTitle(input.title)
+    .setTitle(truncateText(input.title, 45))
     .addComponents(new ActionRowBuilder<TextInputBuilder>().addComponents(field));
 }
 
@@ -159,7 +159,7 @@ async function launchRouletteRoom(
     if (res.reason === 'invalid_max_players') {
       return { type: 'error', text: '房间人数上限必须在 2 ~ 6 人之间。' };
     }
-    return { type: 'error', text: '轮盘入场费必须为 50 ~ 1,000,000 之间的整数。' };
+    return { type: 'error', text: '轮盘入场费必须为 50 ~ 1,000,000,000 之间的整数。' };
   }
 
   const broadcast = await sendPublicBroadcast(interaction, {
@@ -211,7 +211,7 @@ async function launchNumberBomb(
       text:
         res.reason === 'insufficient_funds'
           ? `你自己的口袋现金需 >= **${penalty}** ${cfg.currencyName} 才能发起该档位数字炸弹。`
-          : '数字炸弹罚金必须在 100 ~ 500,000 之间。',
+          : '数字炸弹罚金必须在 100 ~ 1,000,000,000 之间。',
     };
   }
 
@@ -481,7 +481,7 @@ export async function tryHandleGamesMenuButton(
         fieldId: 'amount',
         label: `押注「${optLabel.slice(0, 18)}」的金额`,
         placeholder: '例如：200',
-        maxLength: 10,
+        maxLength: 12,
       }),
     );
     return true;
@@ -947,7 +947,7 @@ export async function tryHandleGamesMenuButton(
           .setCustomId('menu:modal_sub:roulette')
           .setTitle('🔫 创建自定义轮盘房间')
           .addComponents(
-            prefilledField('entryFee', '入场费（50 ~ 1000000）', 200, 10),
+            prefilledField('entryFee', '入场费（50 ~ 1000000000）', 200, 12),
             prefilledField('maxPlayers', '最大座位数（2 ~ 6 人）', 6, 2),
           ),
       );
@@ -960,9 +960,9 @@ export async function tryHandleGamesMenuButton(
           customId: 'menu:modal_sub:bomb',
           title: '💣 投放数字炸弹',
           fieldId: 'penalty',
-          label: '踩雷罚金（100 ~ 500000 星币）',
+          label: '踩雷罚金（100 ~ 1000000000 星币）',
           placeholder: '例如：300',
-          maxLength: 8,
+          maxLength: 12,
           defaultValue: '200',
         }),
       );
@@ -1010,7 +1010,7 @@ export async function tryHandleGamesMenuButton(
           fieldId: 'bet',
           label: '擂台赌注（0 = 友谊赛，可填正整数）',
           placeholder: '例如：200',
-          maxLength: 8,
+          maxLength: 12,
           defaultValue: '200',
         }),
       );
@@ -1056,8 +1056,8 @@ export async function tryHandleGamesMenuButton(
               prefilledField('threshold', '自动触发发言数（5~500）', g.eventMsgThreshold),
               prefilledField('cooldown', '事件冷却秒数（60~86400）', g.eventCooldownSec),
               prefilledField('bossHp', 'Boss基础血量（100~100000）', g.bossBaseHp),
-              prefilledField('bossPool', 'Boss讨伐奖池（100~1000000）', g.bossRewardPool),
-              prefilledField('chestRange', '宝箱总额范围(min-max)', `${g.chestRewardMin}-${g.chestRewardMax}`, 20),
+              prefilledField('bossPool', 'Boss讨伐奖池（100~1000000000）', g.bossRewardPool),
+              prefilledField('chestRange', '宝箱总额范围(min-max)', `${g.chestRewardMin}-${g.chestRewardMax}`, 24),
             ),
         );
         return true;
@@ -1469,7 +1469,7 @@ export async function tryHandleGamesMenuUserSelect(
         fieldId: 'amount',
         label: `悬赏金额（至少 ${minAmt}）`,
         placeholder: `例如：${minAmt}`,
-        maxLength: 10,
+        maxLength: 12,
       }),
     );
     return true;
@@ -1615,7 +1615,7 @@ export async function tryHandleGamesMenuUserSelect(
         fieldId: 'bet',
         label: '赌注金额（0 = 友谊切磋）',
         placeholder: '例如：200',
-        maxLength: 8,
+        maxLength: 12,
         defaultValue: '200',
       }),
     );
@@ -2104,7 +2104,7 @@ export async function tryHandleGamesMenuModal(
   if (modalType === 'pet_battle' || modalType === 'pet_open_battle') {
     const opponentId = modalType === 'pet_battle' ? (parts[3] ?? null) : null;
     const bet = parseNonNegativeInt(interaction.fields.getTextInputValue('bet'));
-    if (bet === null || bet > 1_000_000) {
+    if (bet === null || bet > 1_000_000_000) {
       await respondFromModal(
         interaction,
         buildMenuMessage(
@@ -2112,7 +2112,7 @@ export async function tryHandleGamesMenuModal(
           guildId,
           actor,
           { page: 'pet_arena' },
-          { type: 'error', text: '赌注必须是 0 ~ 1,000,000 之间的整数（0 为友谊赛）。' },
+          { type: 'error', text: '赌注必须是 0 ~ 1,000,000,000 之间的整数（0 为友谊赛）。' },
         ),
       );
       return true;
@@ -2264,15 +2264,15 @@ export async function tryHandleGamesMenuModal(
       const threshold = parseIntInRange(interaction.fields.getTextInputValue('threshold'), 5, 500);
       const cooldown = parseIntInRange(interaction.fields.getTextInputValue('cooldown'), 60, 86_400);
       const bossHp = parseIntInRange(interaction.fields.getTextInputValue('bossHp'), 100, 100_000);
-      const bossPool = parseIntInRange(interaction.fields.getTextInputValue('bossPool'), 100, 1_000_000);
+      const bossPool = parseIntInRange(interaction.fields.getTextInputValue('bossPool'), 100, 1_000_000_000);
       const rangeParts = interaction.fields
         .getTextInputValue('chestRange')
         .trim()
         .split(/[-~,，\s]+/);
       const chestMin =
-        rangeParts.length === 2 ? parseIntInRange(rangeParts[0] ?? '', 10, 500_000) : null;
+        rangeParts.length === 2 ? parseIntInRange(rangeParts[0] ?? '', 10, 1_000_000_000) : null;
       const chestMax =
-        rangeParts.length === 2 ? parseIntInRange(rangeParts[1] ?? '', 10, 500_000) : null;
+        rangeParts.length === 2 ? parseIntInRange(rangeParts[1] ?? '', 10, 1_000_000_000) : null;
 
       if (
         threshold === null ||

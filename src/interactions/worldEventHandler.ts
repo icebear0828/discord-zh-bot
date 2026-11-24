@@ -10,6 +10,7 @@ import {
 } from 'discord.js';
 import type { BossAttackMode } from '../services/worldEventService.js';
 import { createErrorEmbed, createInfoEmbed, createSuccessEmbed, type AppContext } from '../ui/embeds.js';
+import { truncateText } from '../ui/menuShared.js';
 import {
   buildPredictionCard,
   buildWorldBossCard,
@@ -28,10 +29,10 @@ export function buildPredictionBetModal(
 ): ModalBuilder {
   const input = new TextInputBuilder()
     .setCustomId('amount')
-    .setLabel(`押注「${optionLabel.slice(0, 20)}」的金额（正整数）`)
+    .setLabel(truncateText(`押注「${optionLabel.slice(0, 20)}」的金额（正整数）`, 45))
     .setStyle(TextInputStyle.Short)
     .setMinLength(1)
-    .setMaxLength(10)
+    .setMaxLength(12)
     .setPlaceholder('例如：500')
     .setRequired(true);
 
@@ -75,16 +76,16 @@ export async function handleWorldEventButton(
         if (summary && summary.prediction.status === 'open' && summary.prediction.closesAt <= Date.now()) {
           ctx.services.worldEvent.autoLockDuePredictions();
         }
+        await interaction.reply({
+          embeds: [createErrorEmbed('🔒 无法下注', '该吃瓜盘口已封盘或已结束！')],
+          flags: MessageFlags.Ephemeral,
+        });
         const latest = ctx.services.worldEvent.getPredictionSummary(predId);
         if (latest) {
           await interaction.message
             .edit(buildPredictionCard(latest, cfg.economy))
             .catch(() => undefined);
         }
-        await interaction.reply({
-          embeds: [createErrorEmbed('🔒 无法下注', '该吃瓜盘口已封盘或已结束！')],
-          flags: MessageFlags.Ephemeral,
-        });
         return;
       }
 
@@ -188,12 +189,6 @@ export async function handleWorldEventButton(
     if (res.reason === 'expired') {
       ctx.services.worldEvent.expireDueWorldEvents();
     }
-    const detail = ctx.services.worldEvent.getWorldEventDetail(eventId);
-    if (detail) {
-      await interaction.message
-        .edit(buildWorldChestCard(detail.event, detail.participants, cfg.economy))
-        .catch(() => undefined);
-    }
 
     const msgMap: Record<typeof res.reason, string> = {
       not_found: '宝箱不存在。',
@@ -206,6 +201,15 @@ export async function handleWorldEventButton(
       embeds: [createErrorEmbed('❌ 无法开箱', msgMap[res.reason])],
       flags: MessageFlags.Ephemeral,
     });
+
+    if (res.reason === 'expired' || res.reason === 'not_active') {
+      const detail = ctx.services.worldEvent.getWorldEventDetail(eventId);
+      if (detail && detail.event.status !== 'active') {
+        await interaction.message
+          .edit(buildWorldChestCard(detail.event, detail.participants, cfg.economy))
+          .catch(() => undefined);
+      }
+    }
     return;
   }
 
@@ -228,12 +232,6 @@ export async function handleWorldEventButton(
       if (res.reason === 'expired') {
         ctx.services.worldEvent.expireDueWorldEvents();
       }
-      const detail = ctx.services.worldEvent.getWorldEventDetail(eventId);
-      if (detail) {
-        await interaction.message
-          .edit(buildWorldBossCard(detail.event, detail.participants, cfg.economy))
-          .catch(() => undefined);
-      }
       const msgMap: Record<typeof res.reason, string> = {
         not_found: '找不到这个世界 Boss。',
         not_boss: '该事件不是世界 Boss。',
@@ -245,6 +243,15 @@ export async function handleWorldEventButton(
         embeds: [createErrorEmbed('⏳ 无法出手', msgMap[res.reason])],
         flags: MessageFlags.Ephemeral,
       });
+
+      if (res.reason === 'expired' || res.reason === 'not_active') {
+        const detail = ctx.services.worldEvent.getWorldEventDetail(eventId);
+        if (detail && detail.event.status !== 'active') {
+          await interaction.message
+            .edit(buildWorldBossCard(detail.event, detail.participants, cfg.economy))
+            .catch(() => undefined);
+        }
+      }
       return;
     }
 

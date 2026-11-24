@@ -302,6 +302,16 @@ export class ProfileRepo {
     return rows.map(mapProfile);
   }
 
+  listBankRobTargets(guildId: string, excludeUserId: string, limit = 8): MemberProfile[] {
+    const safeLimit = Math.max(0, Math.floor(limit));
+    const rows = this.db
+      .prepare(
+        'SELECT * FROM member_profiles WHERE guild_id = ? AND user_id != ? AND bank_coins >= 100 ORDER BY bank_coins DESC, coins DESC LIMIT ?',
+      )
+      .all(guildId, excludeUserId, safeLimit) as MemberProfileRow[];
+    return rows.map(mapProfile);
+  }
+
   setLevelReward(guildId: string, level: number, roleId: string): void {
     this.db
       .prepare(

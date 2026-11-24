@@ -43,7 +43,7 @@ describe('multiplayerService - red packets', () => {
         channelId: 'c1',
         senderId: 'sender',
         totalAmount: 100,
-        totalCount: 21,
+        totalCount: 101,
       }),
     ).toEqual({ ok: false, reason: 'invalid_count' });
 
@@ -72,7 +72,7 @@ describe('multiplayerService - red packets', () => {
         guildId: 'g1',
         channelId: 'c1',
         senderId: 'sender',
-        totalAmount: 1_000_001,
+        totalAmount: 1_000_000_001,
         totalCount: 3,
       }),
     ).toEqual({ ok: false, reason: 'invalid_amount' });
@@ -328,7 +328,7 @@ describe('multiplayerService - pvp dice duel', () => {
       ok: false,
       reason: 'invalid_bet',
     });
-    expect(svc.createDuel('g1', 'c1', 'p1', 'p2', 1_000_001)).toEqual({
+    expect(svc.createDuel('g1', 'c1', 'p1', 'p2', 1_000_000_001)).toEqual({
       ok: false,
       reason: 'invalid_bet',
     });
@@ -591,6 +591,58 @@ describe('multiplayerService - pvp dice duel', () => {
       expect(afterSender.lastBankInterestDate).toBe('2026-11-23');
       expect(afterP2.bankCoins).toBe(800);
       expect(afterP2.lastBankInterestDate).toBe('2026-11-22');
+    }
+
+    db.close();
+  });
+
+  it('supports systemFunded red packets (> 1,000,000) and distributeRandomRedPacket', () => {
+    const { db, profileRepo, svc } = setup();
+
+    // System-funded red packet does not require or deduct sender personal coins
+    const sysPacket = svc.createRedPacket({
+      guildId: 'g1',
+      channelId: 'c1',
+      senderId: 'admin-zero-coins',
+      totalAmount: 50_000_000,
+      totalCount: 25,
+      greeting: '全服系统大红包',
+      systemFunded: true,
+    });
+    expect(sysPacket.ok).toBe(true);
+    if (sysPacket.ok) {
+      expect(sysPacket.senderBalance).toBe(0);
+      expect(sysPacket.packet.totalAmount).toBe(50_000_000);
+      expect(sysPacket.packet.totalCount).toBe(25);
+    }
+
+    // Direct admin random distribution
+    expect(
+      svc.distributeRandomRedPacket({
+        guildId: 'g1',
+        candidateUserIds: [],
+        totalAmount: 1000,
+        count: 3,
+      }),
+    ).toEqual({ ok: false, reason: 'no_candidates' });
+
+    const dist = svc.distributeRandomRedPacket({
+      guildId: 'g1',
+      candidateUserIds: ['u1', 'u2', 'u3', 'u4', 'u5'],
+      totalAmount: 10_000_000,
+      count: 3,
+      rng: sequenceRng([0.1, 0.8, 0.4, 0.3, 0.9, 0.2]),
+    });
+    expect(dist.ok).toBe(true);
+    if (dist.ok) {
+      expect(dist.winnerCount).toBe(3);
+      expect(dist.shares).toHaveLength(3);
+      const sum = dist.shares.reduce((acc, s) => acc + s.amount, 0);
+      expect(sum).toBe(10_000_000);
+      expect(dist.bestLuckUserId).not.toBeNull();
+      for (const share of dist.shares) {
+        expect(profileRepo.getOrCreate('g1', share.userId).coins).toBe(share.amount);
+      }
     }
 
     db.close();

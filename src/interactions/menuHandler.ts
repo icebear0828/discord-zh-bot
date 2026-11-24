@@ -21,6 +21,7 @@ import {
   DEFAULT_LEVELING_CONFIG,
   type ModuleKey,
 } from '../config/defaults.js';
+import { MonitorRepo } from '../db/repositories/monitorRepo.js';
 import { buildLeaderboardMessage } from '../commands/leveling/leaderboard.js';
 import type { BlackjackActionResult, BlackjackGame } from '../services/blackjackService.js';
 import type { DiceChoice } from '../services/economyService.js';
@@ -131,7 +132,7 @@ function prefilledField(
   return new ActionRowBuilder<TextInputBuilder>().addComponents(
     new TextInputBuilder()
       .setCustomId(customId)
-      .setLabel(label)
+      .setLabel(truncateText(label, 45))
       .setStyle(TextInputStyle.Short)
       .setMinLength(1)
       .setMaxLength(maxLength)
@@ -190,7 +191,7 @@ function buildAmountModal(
 ): ModalBuilder {
   const input = new TextInputBuilder()
     .setCustomId('amount')
-    .setLabel(label)
+    .setLabel(truncateText(label, 45))
     .setStyle(TextInputStyle.Short)
     .setMinLength(1)
     .setMaxLength(12)
@@ -199,23 +200,23 @@ function buildAmountModal(
 
   return new ModalBuilder()
     .setCustomId(customId)
-    .setTitle(title)
+    .setTitle(truncateText(title, 45))
     .addComponents(new ActionRowBuilder<TextInputBuilder>().addComponents(input));
 }
 
 function buildRedPacketModal(): ModalBuilder {
   const totalAmount = new TextInputBuilder()
     .setCustomId('totalAmount')
-    .setLabel('红包总金额（1 ~ 1,000,000 星币）')
+    .setLabel('红包总金额（1 ~ 1,000,000,000 星币）')
     .setStyle(TextInputStyle.Short)
     .setMinLength(1)
-    .setMaxLength(10)
-    .setPlaceholder('例如：500')
+    .setMaxLength(12)
+    .setPlaceholder('例如：50000')
     .setRequired(true);
 
   const totalCount = new TextInputBuilder()
     .setCustomId('totalCount')
-    .setLabel('红包份数（2 ~ 20 份）')
+    .setLabel('红包份数（2 ~ 100 份）')
     .setStyle(TextInputStyle.Short)
     .setMinLength(1)
     .setMaxLength(4)
@@ -233,6 +234,43 @@ function buildRedPacketModal(): ModalBuilder {
   return new ModalBuilder()
     .setCustomId('menu:modal_sub:redpacket')
     .setTitle('🧧 发拼手气红包')
+    .addComponents(
+      new ActionRowBuilder<TextInputBuilder>().addComponents(totalAmount),
+      new ActionRowBuilder<TextInputBuilder>().addComponents(totalCount),
+      new ActionRowBuilder<TextInputBuilder>().addComponents(greeting),
+    );
+}
+
+function buildAdminRedPacketModal(customId: string, title: string, minCount = 1): ModalBuilder {
+  const totalAmount = new TextInputBuilder()
+    .setCustomId('totalAmount')
+    .setLabel('红包总金额（1 ~ 1,000,000,000 星币）')
+    .setStyle(TextInputStyle.Short)
+    .setMinLength(1)
+    .setMaxLength(12)
+    .setPlaceholder('例如：5000000')
+    .setRequired(true);
+
+  const totalCount = new TextInputBuilder()
+    .setCustomId('totalCount')
+    .setLabel(`红包份数（${minCount} ~ 100 份）`)
+    .setStyle(TextInputStyle.Short)
+    .setMinLength(1)
+    .setMaxLength(4)
+    .setPlaceholder('例如：10')
+    .setRequired(true);
+
+  const greeting = new TextInputBuilder()
+    .setCustomId('greeting')
+    .setLabel('红包祝福语（可选）')
+    .setStyle(TextInputStyle.Short)
+    .setMaxLength(50)
+    .setPlaceholder('管理员天降大红包，见者有份！')
+    .setRequired(false);
+
+  return new ModalBuilder()
+    .setCustomId(customId)
+    .setTitle(truncateText(title, 45))
     .addComponents(
       new ActionRowBuilder<TextInputBuilder>().addComponents(totalAmount),
       new ActionRowBuilder<TextInputBuilder>().addComponents(totalCount),
@@ -570,7 +608,8 @@ export async function handleMenuButton(
       target === 'admin_econ' ||
       target === 'admin_lvl' ||
       target === 'admin_mod' ||
-      target === 'admin_ops'
+      target === 'admin_ops' ||
+      target === 'admin_monitor'
     ) {
       if (!actor.isAdmin) {
         await interaction.update(
@@ -872,6 +911,14 @@ export async function handleMenuButton(
       return;
     }
 
+    const isPageTurn = parts[4] === 'prev' || parts[4] === 'next';
+    if (isPageTurn) {
+      await interaction.update(
+        buildMenuMessage(ctx, guildId, actor, { page: 'leaderboard', lbType, lbPage }),
+      );
+      return;
+    }
+
     const fullCfg = ctx.repos.guildConfig.getOrCreate(guildId);
     const lbNameMap: Record<LeaderboardType, string> = {
       xp: '等级经验排行榜',
@@ -1049,6 +1096,37 @@ export async function handleMenuButton(
     }
   }
 
+  if (section === 'admin_monitor') {
+    if (!actor.isAdmin) {
+      await interaction.update(
+        buildMenuMessage(ctx, guildId, actor, { page: 'home' }, ADMIN_DENIED_FEEDBACK),
+      );
+      return;
+    }
+    const subAction = parts[2];
+    const monitorRepo = ctx.repos.monitor ?? new MonitorRepo(ctx.db);
+    if (subAction === 'filter' || subAction === 'refresh') {
+      const filter: 'issues' | 'all' = parts[3] === 'all' ? 'all' : 'issues';
+      await interaction.update(
+        buildMenuMessage(ctx, guildId, actor, { page: 'admin_monitor', filter }),
+      );
+      return;
+    }
+    if (subAction === 'clear') {
+      const deleted = monitorRepo.clearGuildLogs(guildId);
+      await interaction.update(
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'admin_monitor', filter: 'issues' },
+          { type: 'success', text: `🧹 已清理本服务器 **${deleted}** 条历史交互监控日志。` },
+        ),
+      );
+      return;
+    }
+  }
+
   if (section === 'modal') {
     const modalType = parts[2];
     if (modalType?.startsWith('admin_')) {
@@ -1092,12 +1170,14 @@ export async function handleMenuButton(
 
       if (modalType === 'admin_rob') {
         const pct = Number((cfg.economy.robSuccessRate * 100).toFixed(2));
+        const bankPct = Number((cfg.economy.robBankSuccessRate * 100).toFixed(2));
         await interaction.showModal(
           new ModalBuilder()
             .setCustomId('menu:modal_sub:admin_rob')
-            .setTitle('🥷 修改抢钱与防盗参数')
+            .setTitle('🥷 修改抢钱与劫金库参数')
             .addComponents(
-              prefilledField('robSuccessPct', '抢钱成功率 %（5 ~ 95）', pct),
+              prefilledField('robSuccessPct', '抢口袋现金成功率 %（5 ~ 95）', pct),
+              prefilledField('robBankSuccessPct', '抢银行金库成功率 %（1 ~ 80）', bankPct),
               prefilledField('robCooldownSec', '抢钱攻击冷却秒数（0 ~ 86400）', cfg.economy.robCooldownSec),
               prefilledField('robTargetShieldSec', '被抢后护盾秒数（0 ~ 86400）', cfg.economy.robTargetShieldSec),
             ),
@@ -1113,8 +1193,8 @@ export async function handleMenuButton(
             .setTitle('🏦 修改银行利息参数')
             .addComponents(
               prefilledField('bankInterestPct', '每日利率 %（0.1 ~ 50）', pct),
-              prefilledField('bankInterestMax', '每日利息上限（1 ~ 1000000）', cfg.economy.bankInterestMax),
-              prefilledField('bankInterestMinDeposit', '起息最低存款额（1 ~ 1000000）', cfg.economy.bankInterestMinDeposit),
+              prefilledField('bankInterestMax', '每日利息上限（1 ~ 1000000000）', cfg.economy.bankInterestMax),
+              prefilledField('bankInterestMinDeposit', '起息最低存款额（1 ~ 1000000000）', cfg.economy.bankInterestMinDeposit),
             ),
         );
         return;
@@ -1155,8 +1235,30 @@ export async function handleMenuButton(
           buildAmountModal(
             'menu:modal_sub:admin_grant_all',
             '🎉 全服全员发放星币',
-            '每位真实群友发放数量（1 ~ 1000000）',
-            '例如：10000',
+            '每位真实群友发放数量（1 ~ 1000000000）',
+            '例如：1000000',
+          ),
+        );
+        return;
+      }
+
+      if (modalType === 'admin_random_redpacket') {
+        await interaction.showModal(
+          buildAdminRedPacketModal(
+            'menu:modal_sub:admin_random_redpacket',
+            '🎲 管理员随机派发红包',
+            1,
+          ),
+        );
+        return;
+      }
+
+      if (modalType === 'admin_sys_redpacket') {
+        await interaction.showModal(
+          buildAdminRedPacketModal(
+            'menu:modal_sub:admin_sys_redpacket',
+            '🧧 管理员发系统抢红包',
+            2,
           ),
         );
         return;
@@ -1811,6 +1913,118 @@ export async function handleMenuUserSelect(
     return;
   }
 
+  if (actionType === 'rob_bank') {
+    if (targetUser?.bot) {
+      await interaction.update(
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'rob' },
+          { type: 'error', text: '机器人没有银行金库，换个真实群友试试吧！' },
+        ),
+      );
+      return;
+    }
+    if (targetId === actor.id) {
+      await interaction.update(
+        buildMenuMessage(ctx, guildId, actor, { page: 'rob' }, { type: 'error', text: '不能抢自己的银行金库！' }),
+      );
+      return;
+    }
+
+    const disabledMsg = checkModuleDisabled(ctx, guildId, 'economy', '经济系统');
+    if (disabledMsg) {
+      await interaction.update(
+        buildMenuMessage(ctx, guildId, actor, { page: 'rob' }, { type: 'error', text: disabledMsg }),
+      );
+      return;
+    }
+
+    const cfg = ctx.repos.guildConfig.getOrCreate(guildId).economy;
+    const res = ctx.services.economy.robBank(guildId, actor.id, targetId);
+    if (!res.ok) {
+      const msgMap: Record<typeof res.reason, string> = {
+        self_target: '不能抢自己的银行金库！',
+        cooldown: `打劫冷却中，请等待 **${formatDurationZh((res.retryAfterSec ?? 0) * 1000)}**。`,
+        target_shielded: `<@${targetId}> 防盗护盾生效中，剩余 **${formatDurationZh((res.retryAfterSec ?? 0) * 1000)}**。`,
+        target_bank_too_poor: `<@${targetId}> 银行金库余额不足 100 ${cfg.currencyName}，不值得动手。`,
+        attacker_too_poor: `你的总资产（现金+存款）不足 **100** ${cfg.currencyName}，不够支付劫金库翻车保底罚金！`,
+      };
+      await interaction.update(
+        buildMenuMessage(ctx, guildId, actor, { page: 'rob' }, { type: 'error', text: msgMap[res.reason] }),
+      );
+      return;
+    }
+
+    const targetName = targetUser?.displayName ?? '群友';
+    const hasBounty = Boolean(res.success && res.bountyClaimed && res.bountyClaimed > 0);
+    const fineDetail =
+      !res.success && (res.fineFromBank ?? 0) > 0
+        ? `（扣口袋现金 **${res.fineFromPocket ?? 0}** + 划扣银行存款 **${res.fineFromBank ?? 0}**）`
+        : '';
+
+    const broadcastSent = await sendPublicBroadcast(
+      interaction,
+      res.success
+        ? {
+            allowedMentions: hasBounty ? { users: [targetId] } : { parse: [] },
+            content: hasBounty
+              ? `🏦💥 <@${actor.id}> 潜入银行金库撬开了 <@${targetId}> 的保险柜，劫走 **${res.amount}** ${cfg.currencyName} 并领走悬赏 **+${res.bountyClaimed}**！`
+              : `🏦💥 **${actor.displayName}** 强攻银行金库得手，从 **${targetName}** 的保险柜里撬走了 **${res.amount}** ${cfg.currencyName}！`,
+            embeds: [
+              createSuccessEmbed(
+                '🏦 频道快报：银行金库大劫案！',
+                [
+                  `<@${actor.id}>${res.usedLockpick ? '（🗝️ 使用万能撬锁）' : ''} 突破重重安保，从 <@${targetId}> 的银行金库撬走了 ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}！`,
+                  ...(res.bountyClaimed && res.bountyClaimed > 0
+                    ? [`🎯 **通缉令兑现**：顺手击破通缉目标，额外独吞赏金 **+${res.bountyClaimed}** ${cfg.currencyName}！`]
+                    : []),
+                  `受害者剩余金库：**${res.targetBankBalance}** ｜ 劫匪当前现金：**${res.attackerBalance}**（银行 **${res.attackerBankBalance}**）`,
+                  `🛡️ <@${targetId}> 已触发金库最高级别防盗护盾！`,
+                ].join('\n'),
+              ),
+            ],
+          }
+        : {
+            allowedMentions: { parse: [] },
+            content: res.trapped
+              ? `🪤🏦 **${actor.displayName}** 强闯 **${targetName}** 的银行金库一脚踩中防盗捕兽夹，被重罚 **${res.amount}** ${cfg.currencyName}！`
+              : `🚨🏦 **${actor.displayName}** 强抢 **${targetName}** 的银行金库触发警报被捕，重罚赔偿 **${res.amount}** ${cfg.currencyName}！`,
+            embeds: [
+              createErrorEmbed(
+                res.trapped ? '🪤 频道快报：金库捕兽夹重创劫匪！' : '🚨 频道快报：抢银行金库翻车被捕！',
+                [
+                  res.trapped
+                    ? `<@${actor.id}> 潜入 <@${targetId}> 的银行金库时触发【🪤 捕兽夹】与金库电网，被强制重罚 ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}${fineDetail}！`
+                    : `<@${actor.id}> 企图爆破 <@${targetId}> 的银行金库时被巡逻警卫当场抓获，重罚赔偿 ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}${fineDetail}！`,
+                  `劫匪剩余现金：**${res.attackerBalance}**（银行 **${res.attackerBankBalance}**）｜ 受害者当前金库：**${res.targetBankBalance}**`,
+                ].join('\n'),
+              ),
+            ],
+          },
+    );
+
+    const warnSuffix = broadcastSent
+      ? ''
+      : '\n⚠️ 当前频道未能发出公开快报，请检查机器人发言权限。';
+
+    const feedback: MenuFeedback = res.success
+      ? {
+          type: 'success',
+          text: `🏦 金库劫案得手！${res.usedLockpick ? '（🗝️ 撬锁生效）' : ''}从 <@${targetId}> 银行金库撬走 ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}${res.bountyClaimed ? `，并兑现悬赏 **+${res.bountyClaimed}**` : ''}，你的现金：**${res.attackerBalance}**。${warnSuffix}`,
+        }
+      : {
+          type: 'error',
+          text: res.trapped
+            ? `🪤 金库踩雷！触发对方【捕兽夹】，重罚赔偿 <@${targetId}> ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}${fineDetail}，你的现金：**${res.attackerBalance}**（银行 **${res.attackerBankBalance}**）。${warnSuffix}`
+            : `🚨 抢金库触发警报被抓！向 <@${targetId}> 赔偿了 ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}${fineDetail}，你的现金：**${res.attackerBalance}**（银行 **${res.attackerBankBalance}**）。${warnSuffix}`,
+        };
+
+    await interaction.update(buildMenuMessage(ctx, guildId, actor, { page: 'rob' }, feedback));
+    return;
+  }
+
   if (actionType === 'pay') {
     if (targetUser?.bot) {
       await interaction.update(
@@ -1886,8 +2100,8 @@ export async function handleMenuUserSelect(
       buildAmountModal(
         `menu:modal_sub:duel:${targetId}`,
         '⚔️ 发起骰子决斗',
-        '决斗赌注（1 ~ 1,000,000 星币）',
-        '例如：100',
+        '决斗赌注（1 ~ 1,000,000,000 星币）',
+        '例如：10000',
       ),
     );
     return;
@@ -2161,10 +2375,20 @@ export async function handleMenuModal(
 
     if (modalType === 'admin_rob') {
       const pct = parseNumberInRange(interaction.fields.getTextInputValue('robSuccessPct'), 5, 95);
+      let rawBankPct = '';
+      try {
+        rawBankPct = interaction.fields.getTextInputValue('robBankSuccessPct');
+      } catch {
+        rawBankPct = '';
+      }
+      const bankPct =
+        rawBankPct.trim().length > 0
+          ? parseNumberInRange(rawBankPct, 1, 80)
+          : Number((cfg.economy.robBankSuccessRate * 100).toFixed(2));
       const robCooldownSec = parseIntInRange(interaction.fields.getTextInputValue('robCooldownSec'), 0, 86_400);
       const robTargetShieldSec = parseIntInRange(interaction.fields.getTextInputValue('robTargetShieldSec'), 0, 86_400);
 
-      if (pct === null || robCooldownSec === null || robTargetShieldSec === null) {
+      if (pct === null || bankPct === null || robCooldownSec === null || robTargetShieldSec === null) {
         await respondFromModal(
           interaction,
           buildMenuMessage(
@@ -2172,16 +2396,18 @@ export async function handleMenuModal(
             guildId,
             actor,
             { page: 'admin_econ' },
-            { type: 'error', text: '抢钱参数无效：成功率需为 5~95%，冷却/护盾需为 0~86400 秒。' },
+            { type: 'error', text: '抢钱参数无效：口袋成功率需 5~95%，金库成功率需 1~80%，冷却/护盾需为 0~86400 秒。' },
           ),
         );
         return;
       }
 
       const robSuccessRate = Number((pct / 100).toFixed(4));
+      const robBankSuccessRate = Number((bankPct / 100).toFixed(4));
       ctx.repos.guildConfig.updateEconomy(guildId, {
         ...cfg.economy,
         robSuccessRate,
+        robBankSuccessRate,
         robCooldownSec,
         robTargetShieldSec,
       });
@@ -2192,7 +2418,10 @@ export async function handleMenuModal(
           guildId,
           actor,
           { page: 'admin_econ' },
-          { type: 'success', text: `已更新抢钱参数：成功率 **${pct}%**，冷却 **${robCooldownSec}s**，护盾 **${robTargetShieldSec}s**。` },
+          {
+            type: 'success',
+            text: `已更新抢钱参数：口袋成功率 **${pct}%**，银行金库成功率 **${bankPct}%**，冷却 **${robCooldownSec}s**，护盾 **${robTargetShieldSec}s**。`,
+          },
         ),
       );
       return;
@@ -2200,8 +2429,8 @@ export async function handleMenuModal(
 
     if (modalType === 'admin_bank') {
       const pct = parseNumberInRange(interaction.fields.getTextInputValue('bankInterestPct'), 0.1, 50);
-      const bankInterestMax = parseIntInRange(interaction.fields.getTextInputValue('bankInterestMax'), 1, 1_000_000);
-      const bankInterestMinDeposit = parseIntInRange(interaction.fields.getTextInputValue('bankInterestMinDeposit'), 1, 1_000_000);
+      const bankInterestMax = parseIntInRange(interaction.fields.getTextInputValue('bankInterestMax'), 1, 1_000_000_000);
+      const bankInterestMinDeposit = parseIntInRange(interaction.fields.getTextInputValue('bankInterestMinDeposit'), 1, 1_000_000_000);
 
       if (pct === null || bankInterestMax === null || bankInterestMinDeposit === null) {
         await respondFromModal(
@@ -2211,7 +2440,7 @@ export async function handleMenuModal(
             guildId,
             actor,
             { page: 'admin_econ' },
-            { type: 'error', text: '银行参数无效：日利率需为 0.1~50%，上限/起息额为正整数。' },
+            { type: 'error', text: '银行参数无效：日利率需为 0.1~50%，上限/起息额需为 1 ~ 1,000,000,000。' },
           ),
         );
         return;
@@ -2334,8 +2563,8 @@ export async function handleMenuModal(
       if (!targetId) return;
       const amount = parseIntInRange(
         interaction.fields.getTextInputValue('amount'),
-        -1_000_000,
-        1_000_000,
+        -1_000_000_000,
+        1_000_000_000,
       );
       if (amount === null || amount === 0) {
         await respondFromModal(
@@ -2345,7 +2574,7 @@ export async function handleMenuModal(
             guildId,
             actor,
             { page: 'admin_ops' },
-            { type: 'error', text: '请输入 -1000000 ~ 1000000 之间的非零整数。' },
+            { type: 'error', text: '请输入 -1,000,000,000 ~ 1,000,000,000 之间的非零整数。' },
           ),
         );
         return;
@@ -2422,7 +2651,7 @@ export async function handleMenuModal(
     }
 
     if (modalType === 'admin_grant_all') {
-      const amount = parseIntInRange(interaction.fields.getTextInputValue('amount'), 1, 1_000_000);
+      const amount = parseIntInRange(interaction.fields.getTextInputValue('amount'), 1, 1_000_000_000);
       if (amount === null) {
         await respondFromModal(
           interaction,
@@ -2431,7 +2660,7 @@ export async function handleMenuModal(
             guildId,
             actor,
             { page: 'admin_ops' },
-            { type: 'error', text: '请输入 1 ~ 1,000,000 之间的正整数。' },
+            { type: 'error', text: '请输入 1 ~ 1,000,000,000 之间的正整数。' },
           ),
         );
         return;
@@ -2468,6 +2697,227 @@ export async function handleMenuModal(
           actor,
           { page: 'admin_ops' },
           { type: 'success', text: `🎉 已向全服 **${humanIds.length}** 位群友每人发放 **+${amount}** ${cfg.economy.currencyName}！` },
+        ),
+      );
+      return;
+    }
+
+    if (modalType === 'admin_random_redpacket') {
+      const totalAmount = parseIntInRange(
+        interaction.fields.getTextInputValue('totalAmount'),
+        1,
+        1_000_000_000,
+      );
+      const totalCount = parseIntInRange(
+        interaction.fields.getTextInputValue('totalCount'),
+        1,
+        100,
+      );
+      let greeting = '';
+      try {
+        greeting = interaction.fields.getTextInputValue('greeting').trim();
+      } catch {
+        greeting = '';
+      }
+      if (!greeting) {
+        greeting = '管理员天降随机大红包，见者有份！';
+      }
+
+      if (totalAmount === null || totalCount === null || totalAmount < totalCount) {
+        await respondFromModal(
+          interaction,
+          buildMenuMessage(
+            ctx,
+            guildId,
+            actor,
+            { page: 'admin_ops' },
+            {
+              type: 'error',
+              text: '随机红包参数无效：总金额需在 1 ~ 1,000,000,000 之间，份数 1 ~ 100，且总金额不能小于份数。',
+            },
+          ),
+        );
+        return;
+      }
+
+      if (interaction.isFromMessage()) {
+        await interaction.deferUpdate();
+      } else {
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      }
+
+      let candidateIds: string[] = [];
+      if (interaction.guild?.members?.fetch) {
+        const fetched = await interaction.guild.members.fetch().catch(() => null);
+        if (fetched) {
+          candidateIds = [...fetched.values()].filter((m) => !m.user?.bot).map((m) => m.id);
+        }
+      }
+      if (candidateIds.length === 0) {
+        const rows = ctx.db
+          .prepare('SELECT user_id FROM member_profiles WHERE guild_id = ? LIMIT 200')
+          .all(guildId) as Array<{ user_id: string }>;
+        candidateIds = rows.map((r) => r.user_id);
+      }
+
+      const res = ctx.services.multiplayer.distributeRandomRedPacket({
+        guildId,
+        candidateUserIds: candidateIds,
+        totalAmount,
+        count: totalCount,
+      });
+
+      if (!res.ok) {
+        const errText =
+          res.reason === 'no_candidates'
+            ? '当前没有可派发红包的真实群友。'
+            : '红包金额或份数参数超出有效范围。';
+        await interaction.editReply(
+          buildMenuMessage(
+            ctx,
+            guildId,
+            actor,
+            { page: 'admin_ops' },
+            { type: 'error', text: errText },
+          ),
+        );
+        return;
+      }
+
+      const shareLines = res.shares.slice(0, 30).map((s, idx) => {
+        const crown = res.bestLuckUserId === s.userId ? '👑 ' : `${idx + 1}. `;
+        return `${crown}<@${s.userId}> 随机分得 ${cfg.economy.currencyEmoji} **+${s.amount}** ${cfg.economy.currencyName}（余额 **${s.newBalance}**）`;
+      });
+      if (res.shares.length > 30) {
+        shareLines.push(`*…等共 ${res.shares.length} 位幸运群友*`);
+      }
+
+      await sendPublicBroadcast(interaction, {
+        content: `🧧 管理员 <@${actor.id}> 随机派发了 **${res.totalAmount}** ${cfg.economy.currencyName} 拼手气大红包（共 **${res.winnerCount}** 份）！`,
+        embeds: [
+          createSuccessEmbed(
+            `🧧 ${greeting}`,
+            [
+              `派发管理员：<@${actor.id}>`,
+              `红包总额：${cfg.economy.currencyEmoji} **${res.totalAmount}** ${cfg.economy.currencyName} ｜ 随机抽取：**${res.winnerCount}** 位群友`,
+              `👑 **手气最佳**：<@${res.bestLuckUserId}>（独揽 **+${res.bestLuckAmount}** ${cfg.economy.currencyName}）`,
+              '',
+              '**🎲 随机派发明细：**',
+              ...shareLines,
+            ].join('\n'),
+          ),
+        ],
+      });
+
+      await interaction.editReply(
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'admin_ops' },
+          {
+            type: 'success',
+            text: `🎲 已随机抽取 **${res.winnerCount}** 位群友派发共计 **${res.totalAmount}** ${cfg.economy.currencyName}！手气最佳：<@${res.bestLuckUserId}>（+${res.bestLuckAmount}）。`,
+          },
+        ),
+      );
+      return;
+    }
+
+    if (modalType === 'admin_sys_redpacket') {
+      if (!interaction.channel?.isSendable()) {
+        await respondFromModal(
+          interaction,
+          buildMenuMessage(
+            ctx,
+            guildId,
+            actor,
+            { page: 'admin_ops' },
+            { type: 'error', text: '当前频道不支持发送公开红包卡片，请在普通文字频道操作。' },
+          ),
+        );
+        return;
+      }
+
+      const totalAmount = parsePositiveInt(interaction.fields.getTextInputValue('totalAmount'));
+      const totalCount = parsePositiveInt(interaction.fields.getTextInputValue('totalCount'));
+      let greeting = '';
+      try {
+        greeting = interaction.fields.getTextInputValue('greeting').trim();
+      } catch {
+        greeting = '';
+      }
+
+      if (!totalAmount || !totalCount) {
+        await respondFromModal(
+          interaction,
+          buildMenuMessage(
+            ctx,
+            guildId,
+            actor,
+            { page: 'admin_ops' },
+            { type: 'error', text: '红包总金额与份数必须为正整数（份数 2 ~ 100，金额最高 10 亿）。' },
+          ),
+        );
+        return;
+      }
+
+      const res = ctx.services.multiplayer.createRedPacket({
+        guildId,
+        channelId: interaction.channel.id,
+        senderId: actor.id,
+        totalAmount,
+        totalCount,
+        greeting: greeting || '🎁 管理员福利拼手气大红包！',
+        systemFunded: true,
+      });
+
+      if (!res.ok) {
+        const msgMap: Record<typeof res.reason, string> = {
+          invalid_count: '红包份数必须在 2 ~ 100 份之间。',
+          invalid_amount: '红包总金额必须在 1 ~ 1,000,000,000 之间。',
+          amount_too_small_for_count: '红包总金额不能小于红包份数（每份至少 1 星币）。',
+          insufficient_funds: '余额不足。',
+        };
+        await respondFromModal(
+          interaction,
+          buildMenuMessage(ctx, guildId, actor, { page: 'admin_ops' }, { type: 'error', text: msgMap[res.reason] }),
+        );
+        return;
+      }
+
+      try {
+        const sentMsg = await interaction.channel.send({
+          content: `🧧 管理员 <@${actor.id}> 派发了 **${res.packet.totalAmount}** ${cfg.economy.currencyName} 的系统福利大红包（共 ${res.packet.totalCount} 份），快来抢！`,
+          ...buildRedPacketMessage(res.packet, [], null, cfg.economy),
+        });
+        ctx.services.multiplayer.bindRedPacketMessage(res.packet.id, sentMsg.id);
+      } catch {
+        ctx.repos.redPacket.markExpired(res.packet.id);
+        await respondFromModal(
+          interaction,
+          buildMenuMessage(
+            ctx,
+            guildId,
+            actor,
+            { page: 'admin_ops' },
+            { type: 'error', text: '发送系统红包卡片失败，请检查机器人发言权限。' },
+          ),
+        );
+        return;
+      }
+
+      await respondFromModal(
+        interaction,
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'admin_ops' },
+          {
+            type: 'success',
+            text: `🧧 系统福利抢红包已发出！总额 ${cfg.economy.currencyEmoji} **${res.packet.totalAmount}** ${cfg.economy.currencyName}（${res.packet.totalCount} 份，系统出资不扣个人余额）。`,
+          },
         ),
       );
       return;
@@ -2667,7 +3117,7 @@ export async function handleMenuModal(
     if (!res.ok) {
       const msgMap: Record<typeof res.reason, string> = {
         self_target: '不能向自己发起决斗！',
-        invalid_bet: '决斗赌注必须在 1 ~ 1,000,000 之间。',
+        invalid_bet: '决斗赌注必须在 1 ~ 1,000,000,000 之间。',
         insufficient_funds: `你的口袋现金不足以支付 **${amount}** ${cfg.currencyName} 赌注。`,
       };
       await respondFromModal(
@@ -2749,7 +3199,7 @@ export async function handleMenuModal(
           guildId,
           actor,
           { page: 'multi' },
-          { type: 'error', text: '红包总金额与份数必须为正整数（份数 2 ~ 20）。' },
+          { type: 'error', text: '红包总金额与份数必须为正整数（份数 2 ~ 100）。' },
         ),
       );
       return;
@@ -2767,8 +3217,8 @@ export async function handleMenuModal(
 
     if (!res.ok) {
       const msgMap: Record<typeof res.reason, string> = {
-        invalid_count: '红包份数必须在 2 ~ 20 份之间。',
-        invalid_amount: '红包总金额必须在 1 ~ 1,000,000 之间。',
+        invalid_count: '红包份数必须在 2 ~ 100 份之间。',
+        invalid_amount: '红包总金额必须在 1 ~ 1,000,000,000 之间。',
         amount_too_small_for_count: '红包总金额不能小于红包份数（每份至少 1 星币）。',
         insufficient_funds: `你的口袋现金不足以包出 **${totalAmount}** ${cfg.currencyName} 的红包。`,
       };

@@ -19,6 +19,7 @@ import type { AcceptDuelResult, DuelChallenge } from '../services/multiplayerSer
 import { PET_SPECIES_MAP } from '../services/socialPetService.js';
 import {
   buildAdminLvlRewardsView,
+  buildAdminMonitorView,
   buildAdminRolesView,
   buildAdminShopView,
   buildSelfRolesView,
@@ -498,7 +499,7 @@ function buildBankView(
   const description = [
     `• 日利率：**${formatRatePercent(cfg.bankInterestRate)}**（每日上限 **${cfg.bankInterestMax}** ${cfg.currencyName}，起息门槛 **${cfg.bankInterestMinDeposit}**）`,
     `• 利息状态：${interestStatus}`,
-    '• 银行存款**绝对防偷**；游玩游戏、发红包、决斗、转账均使用**口袋现金**。',
+    `• 银行金库有重兵把守（强抢成功率仅 **${formatRatePercent(cfg.robBankSuccessRate)}** 且每次最多被刮走少量零头，翻车高额重罚）；游玩游戏、发红包、决斗、转账均使用**口袋现金**。`,
   ].join('\n');
 
   const embed = new EmbedBuilder()
@@ -508,12 +509,12 @@ function buildBankView(
     .setDescription(withFeedback(description, feedback))
     .addFields(
       {
-        name: `${cfg.currencyEmoji} 口袋现金 (可被偷)`,
+        name: `${cfg.currencyEmoji} 口袋现金 (易被偷)`,
         value: `**${profile.coins}** ${cfg.currencyName}`,
         inline: true,
       },
       {
-        name: '🏦 银行存款 (防偷安全)',
+        name: '🏦 银行金库 (低概率被劫)',
         value: `**${profile.bankCoins}** ${cfg.currencyName}`,
         inline: true,
       },
@@ -571,10 +572,10 @@ function buildMultiView(
     '',
     '📢 **本页操作均为全群公开互动，结果将在当前频道播报，大家都能看到！**',
     '',
-    '• **🥷 偷钱**：查看肥羊榜并选择群友偷取口袋现金（银行存款安全不可偷）',
+    '• **🥷 偷钱 / 劫金库**：既可顺走群友口袋现金，也能高风险强抢银行金库',
     '• **💸 群友转账**：选中群友输入金额直接转账',
-    '• **⚔️ 骰子决斗**：在当前频道发起公开 3 骰押注对战',
-    '• **🧧 发拼手气红包**：在当前频道派发 2~20 份随机金额红包',
+    '• **⚔️ 骰子决斗**：在当前频道发起公开 3 骰押注对战（最高 10 亿）',
+    '• **🧧 发拼手气红包**：在当前频道派发 2~100 份随机金额红包（最高 10 亿）',
     '• **💕 趣味互动**：摸头、抱抱、贴贴、戳一戳、投喂、丢雪球',
     '• **🧰 黑市道具**：捕兽夹反抓小偷、万能撬锁、防盗盾、衰神符、改昵称卡',
     '• **🎯 悬赏通缉**：多人叠加悬赏，成功偷钱或决斗胜出即独吞全额赏金',
@@ -623,7 +624,8 @@ function buildRobView(
 ): BuiltMenuMessage {
   const cfg = ctx.repos.guildConfig.getOrCreate(guildId).economy;
   const profile = ctx.repos.profile.getOrCreate(guildId, actor.id);
-  const targets = ctx.repos.profile.listRobTargets(guildId, actor.id, 8);
+  const targets = ctx.repos.profile.listRobTargets(guildId, actor.id, 6);
+  const bankTargets = ctx.repos.profile.listBankRobTargets(guildId, actor.id, 6);
   const robRemainMs =
     profile.lastRobAt > 0
       ? Math.max(0, profile.lastRobAt + cfg.robCooldownSec * 1000 - nowMs)
@@ -639,27 +641,48 @@ function buildRobView(
         })
       : ['当前暂无口袋现金 ≥ 100 的可下手目标。'];
 
+  const bankTargetLines =
+    bankTargets.length > 0
+      ? bankTargets.map((t, idx) => {
+          const shieldMs = Math.max(0, t.robShieldUntil - nowMs);
+          const shieldText =
+            shieldMs > 0 ? `🛡️ 护盾剩余 ${formatDurationZh(shieldMs)}` : '🏦 可强攻';
+          return `${idx + 1}. <@${t.userId}> — 🏦 **${t.bankCoins}** ${cfg.currencyName}（${shieldText}）`;
+        })
+      : ['当前暂无银行存款 ≥ 500 的金库目标。'];
+
   const description = [
-    `${cfg.currencyEmoji} 你的口袋现金：**${profile.coins}** ${cfg.currencyName} ｜ 冷却状态：${robRemainMs > 0 ? `⏳ ${formatDurationZh(robRemainMs)}` : '✅ 可下手'}`,
-    '💡 *仅可偷取对方「口袋现金」，存在银行保险柜中的存款绝对安全！*',
-    '📢 *选中群友出手后，将在当前频道公开播报「谁抢了谁多少钱 / 翻车赔款」！*',
+    `${cfg.currencyEmoji} 你的口袋现金：**${profile.coins}** ｜ 🏦 银行存款：**${profile.bankCoins}** ｜ 冷却：${robRemainMs > 0 ? `⏳ ${formatDurationZh(robRemainMs)}` : '✅ 可下手'}`,
+    `• **🥷 偷口袋现金**：成功率 **${formatRatePercent(cfg.robSuccessRate)}**（可偷 15%~45%，上限 2,500）`,
+    `• **🏦 强抢银行金库**：成功率仅 **${formatRatePercent(cfg.robBankSuccessRate)}**（需自身总资产≥200，得手仅刮走 5%~12% 封顶 500；失败重罚 30%~50% 最高 4,000，现金不够直接扣你银行存款！）`,
     '',
-    '**🎯 肥羊榜（口袋现金前 8 名）：**',
+    '**🎯 口袋肥羊榜（现金前 6 名）：**',
     ...targetLines,
+    '',
+    '**🏦 银行金库榜（存款前 6 名）：**',
+    ...bankTargetLines,
   ].join('\n');
 
   const embed = new EmbedBuilder()
     .setColor(resolveColor(COLORS.ERROR, feedback))
-    .setAuthor({ name: `${actor.displayName} · 偷钱打劫`, iconURL: actor.avatarUrl })
-    .setTitle('🥷 偷钱与肥羊榜')
+    .setAuthor({ name: `${actor.displayName} · 偷钱与劫金库`, iconURL: actor.avatarUrl })
+    .setTitle('🥷 偷口袋现金 & 🏦 强抢银行金库')
     .setDescription(withFeedback(description, feedback))
-    .setFooter({ text: '📢 公开互动：抢钱得手或翻车被抓都会在当前频道全群播报！' })
+    .setFooter({ text: '📢 公开互动：无论偷口袋还是抢银行金库，得手或翻车被抓都会在当前频道全群播报！' })
     .setTimestamp();
 
   const userSelectRow = new ActionRowBuilder<UserSelectMenuBuilder>().addComponents(
     new UserSelectMenuBuilder()
       .setCustomId('menu:user:rob')
-      .setPlaceholder('选择要偷钱的群友（选中即出手）...')
+      .setPlaceholder(`🥷 选择群友偷取「口袋现金」（成功率 ${formatRatePercent(cfg.robSuccessRate)}）...`)
+      .setMinValues(1)
+      .setMaxValues(1),
+  );
+
+  const bankSelectRow = new ActionRowBuilder<UserSelectMenuBuilder>().addComponents(
+    new UserSelectMenuBuilder()
+      .setCustomId('menu:user:rob_bank')
+      .setPlaceholder(`🏦 选择群友强抢「银行金库」（成功率 ${formatRatePercent(cfg.robBankSuccessRate)} · 高风险高赔款）...`)
       .setMinValues(1)
       .setMaxValues(1),
   );
@@ -668,9 +691,10 @@ function buildRobView(
     embeds: [embed],
     components: [
       userSelectRow,
+      bankSelectRow,
       buttonRow(
-        makeButton('menu:nav:rob', '🔄 刷新肥羊榜', ButtonStyle.Primary),
-        makeButton('menu:nav:bank', '🏦 去存钱', ButtonStyle.Success),
+        makeButton('menu:nav:rob', '🔄 刷新榜单', ButtonStyle.Primary),
+        makeButton('menu:nav:bank', '🏦 银行存取', ButtonStyle.Success),
         makeButton('menu:nav:multi', '⬅️ 多人互动', ButtonStyle.Secondary),
         makeButton('menu:nav:home', '🏠 主菜单', ButtonStyle.Secondary),
       ),
@@ -734,7 +758,7 @@ function buildDuelView(
     `${cfg.currencyEmoji} 你的口袋现金：**${profile.coins}** ${cfg.currencyName}`,
     '',
     '**⚔️ 骰子决斗规则：**',
-    '1. 选择一名群友并在弹窗中输入赌注金额（1 ~ 1,000,000）。',
+    '1. 选择一名群友并在弹窗中输入赌注金额（1 ~ 1,000,000,000）。',
     '2. 系统将在当前频道发送公开挑战卡片，对方需在 3 分钟内应战。',
     '3. 双方各掷 3 颗骰子比拼总点数，大者赢走全部赌注，平局不扣款！',
   ].join('\n');
@@ -1268,7 +1292,7 @@ function buildAdminOverviewView(
     '欢迎进入可视化调参管理后台，所有修改将实时保存至 SQLite 并立即生效。',
     '',
     `🧩 **模块状态**：${modLine}`,
-    `💰 **经济 / 抢钱 / 银行**：每日签到 ${cfg.economy.dailyBase}（连签+${cfg.economy.dailyStreakBonus}/天，封顶+${cfg.economy.dailyMaxStreakBonus}）｜ 打工 ${cfg.economy.workMin}~${cfg.economy.workMax}（冷却 ${cfg.economy.workCooldownSec}s）｜ 抢钱成功率 ${formatRatePercent(cfg.economy.robSuccessRate)}（冷却 ${cfg.economy.robCooldownSec}s / 盾 ${cfg.economy.robTargetShieldSec}s）｜ 银行日息 ${formatRatePercent(cfg.economy.bankInterestRate)}（上限 ${cfg.economy.bankInterestMax}）`,
+    `💰 **经济 / 抢钱 / 银行**：每日签到 ${cfg.economy.dailyBase}（连签+${cfg.economy.dailyStreakBonus}/天，封顶+${cfg.economy.dailyMaxStreakBonus}）｜ 打工 ${cfg.economy.workMin}~${cfg.economy.workMax}（冷却 ${cfg.economy.workCooldownSec}s）｜ 抢口袋 ${formatRatePercent(cfg.economy.robSuccessRate)} / 抢银行 ${formatRatePercent(cfg.economy.robBankSuccessRate)}（冷却 ${cfg.economy.robCooldownSec}s / 盾 ${cfg.economy.robTargetShieldSec}s）｜ 银行日息 ${formatRatePercent(cfg.economy.bankInterestRate)}（上限 ${cfg.economy.bankInterestMax}）`,
     `📈 **等级 / 热度 / 语音**：基础 XP ${cfg.leveling.baseMinXp}~${cfg.leveling.baseMaxXp}（冷却 ${cfg.leveling.cooldownSec}s）｜ 热度上限 ${cfg.leveling.heatMaxMultiplier}x（窗口 ${cfg.leveling.heatWindowSec}s）｜ 语音 ${cfg.leveling.voiceEnabled ? `${cfg.leveling.voiceXpPerMin} XP/分` : '关闭'} ｜ 升级奖励 +${cfg.leveling.levelUpCoinReward}`,
     `👑 **Bot 管理员用户**：${adminUsersText}`,
     `🛡️ **Bot 管理员身份组**：${adminRolesText}`,
@@ -1291,12 +1315,13 @@ function buildAdminOverviewView(
         makeButton('menu:nav:admin_lvl', '📈 等级/热度/语音', ButtonStyle.Primary),
         makeButton('menu:nav:admin_games', '🎮 玩法与事件调参', ButtonStyle.Primary),
         makeButton('menu:nav:admin_mod', '🧩 模块开关', ButtonStyle.Secondary),
-        makeButton('menu:nav:admin_ops', '👥 发币/数值/管理', ButtonStyle.Secondary),
+        makeButton('menu:nav:admin_ops', '👥 发币/红包/管理', ButtonStyle.Secondary),
       ),
       buttonRow(
         makeButton('menu:nav:admin_roles', '🎭 自助身份组', ButtonStyle.Primary),
         makeButton('menu:nav:admin_shop', '🛒 商店管理', ButtonStyle.Primary),
         makeButton('menu:nav:admin_ai', '🤖 AI 对话配置', ButtonStyle.Primary),
+        makeButton('menu:nav:admin_monitor', '📊 运行监控与日志', ButtonStyle.Danger),
         makeButton('menu:admin:send_lobby', '📌 发送频道大厅入口', ButtonStyle.Success),
       ),
       buttonRow(
@@ -1320,7 +1345,7 @@ function buildAdminEconView(
     '',
     `📅 **货币与签到**：名称 **${e.currencyName}**（${e.currencyEmoji}）｜ 基础 **${e.dailyBase}** ｜ 每日连签 +**${e.dailyStreakBonus}** ｜ 连签加成上限 **${e.dailyMaxStreakBonus}**`,
     `💼 **打工参数**：每次收益 **${e.workMin} ~ ${e.workMax}** ${e.currencyName} ｜ 冷却 **${e.workCooldownSec}** 秒`,
-    `🥷 **偷钱 / 抢钱参数**：成功率 **${formatRatePercent(e.robSuccessRate)}** ｜ 攻击冷却 **${e.robCooldownSec}** 秒 ｜ 被抢护盾 **${e.robTargetShieldSec}** 秒`,
+    `🥷 **偷钱 / 劫金库参数**：口袋成功率 **${formatRatePercent(e.robSuccessRate)}** ｜ 银行金库成功率 **${formatRatePercent(e.robBankSuccessRate)}** ｜ 攻击冷却 **${e.robCooldownSec}** 秒 ｜ 被抢护盾 **${e.robTargetShieldSec}** 秒`,
     `🏦 **银行利息参数**：日利率 **${formatRatePercent(e.bankInterestRate)}** ｜ 每日利息上限 **${e.bankInterestMax}** ｜ 起息门槛 **${e.bankInterestMinDeposit}**`,
   ].join('\n');
 
@@ -1496,23 +1521,25 @@ function buildAdminOpsView(
     `👑 **当前授权 Bot 管理员用户**：${adminUsersText}`,
     `🛡️ **当前授权管理员身份组**：${adminRolesText}`,
     '',
-    '• 第一个选人框：给指定群友**发放或扣除口袋星币**（正数公开喜报，负数私密扣除）',
+    '• 第一个选人框：给指定群友**发放或扣除口袋星币**（支持最高 **10 亿 `1,000,000,000`**；正数公开喜报，负数私密扣除）',
     '• 第二个选人框：**添加或移除 Bot 管理员用户**（被授权群友也可打开「⚙️ 管理后台」调参）',
     `• 第三个选人框：自由设置指定群友的 **${cfg.leveling.statName}**（单位：${cfg.leveling.statUnit}）`,
-    '• 点击下方「🎉 全服全员发币」可统一为服务器全部真实成员发放福利！',
+    '• **🎉 全服全员发币**：向全服所有真实成员统一发放固定星币（最高 10 亿）',
+    '• **🎲 随机派发红包**：管理员设定份数与总金额，系统自动抽取群友直接随机分钱并播报手气最佳',
+    '• **🧧 发系统抢红包**：管理员设定份数与总金额，由系统出资在当前频道发出拼手气红包卡片供大家点击抢领',
   ].join('\n');
 
   const embed = new EmbedBuilder()
     .setColor(resolveColor(COLORS.GOLD, feedback))
-    .setAuthor({ name: `${actor.displayName} · 发币 / 数值 / 管理员`, iconURL: actor.avatarUrl })
-    .setTitle('👥 发币 / 成员数值 / 管理员管理')
+    .setAuthor({ name: `${actor.displayName} · 发币 / 红包 / 管理员`, iconURL: actor.avatarUrl })
+    .setTitle('👥 发币 / 随机红包 / 成员数值 / 管理员管理')
     .setDescription(withFeedback(description, feedback))
     .setTimestamp();
 
   const grantUserRow = new ActionRowBuilder<UserSelectMenuBuilder>().addComponents(
     new UserSelectMenuBuilder()
       .setCustomId('menu:user:admin_grant')
-      .setPlaceholder('💸 选择一位群友发放/扣除星币...')
+      .setPlaceholder('💸 选择一位群友发放/扣除星币（最高 10 亿）...')
       .setMinValues(1)
       .setMaxValues(1),
   );
@@ -1543,6 +1570,8 @@ function buildAdminOpsView(
       setStatUserRow,
       buttonRow(
         makeButton('menu:modal:admin_grant_all', '🎉 全服全员发币', ButtonStyle.Success),
+        makeButton('menu:modal:admin_random_redpacket', '🎲 随机派发红包', ButtonStyle.Danger),
+        makeButton('menu:modal:admin_sys_redpacket', '🧧 发系统抢红包', ButtonStyle.Primary),
         makeButton('menu:nav:admin', '⬅️ 管理后台', ButtonStyle.Secondary),
         makeButton('menu:nav:home', '🏠 主菜单', ButtonStyle.Secondary),
       ),
@@ -1697,6 +1726,8 @@ export function buildMenuMessage(
       return buildAdminOpsView(ctx, guildId, actor, feedback);
     case 'admin_ai':
       return buildAdminAiView(ctx, guildId, actor, feedback);
+    case 'admin_monitor':
+      return buildAdminMonitorView(ctx, guildId, actor, view.filter ?? 'issues', feedback, nowMs);
   }
 }
 

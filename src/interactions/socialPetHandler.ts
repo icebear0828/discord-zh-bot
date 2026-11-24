@@ -45,11 +45,6 @@ export async function handleSocialPetButton(
         return;
       }
 
-      const latest = ctx.services.socialPet.getProposal(targetId);
-      if (latest && latest.status !== 'pending') {
-        await interaction.message.edit(buildProposalCard(latest, cfg.economy)).catch(() => undefined);
-      }
-
       const msgMap: Record<typeof res.reason, string> = {
         not_found: '找不到这个仪式邀请记录。',
         not_target: '只有被邀请人本人才能点答应哦！',
@@ -61,6 +56,11 @@ export async function handleSocialPetButton(
         embeds: [createErrorEmbed('❌ 无法答应', msgMap[res.reason])],
         flags: MessageFlags.Ephemeral,
       });
+
+      const latest = ctx.services.socialPet.getProposal(targetId);
+      if (latest && latest.status !== 'pending') {
+        await interaction.message.edit(buildProposalCard(latest, cfg.economy)).catch(() => undefined);
+      }
       return;
     }
 
@@ -69,10 +69,6 @@ export async function handleSocialPetButton(
       if (res.ok) {
         await interaction.update(buildProposalCard(res.proposal, cfg.economy));
         return;
-      }
-      const latest = ctx.services.socialPet.getProposal(targetId);
-      if (latest && latest.status !== 'pending') {
-        await interaction.message.edit(buildProposalCard(latest, cfg.economy)).catch(() => undefined);
       }
       const msgMap: Record<typeof res.reason, string> = {
         not_found: '找不到这个仪式邀请。',
@@ -84,6 +80,10 @@ export async function handleSocialPetButton(
         embeds: [createErrorEmbed('❌ 无法拒绝', msgMap[res.reason])],
         flags: MessageFlags.Ephemeral,
       });
+      const latest = ctx.services.socialPet.getProposal(targetId);
+      if (latest && latest.status !== 'pending') {
+        await interaction.message.edit(buildProposalCard(latest, cfg.economy)).catch(() => undefined);
+      }
       return;
     }
   }
@@ -106,17 +106,6 @@ export async function handleSocialPetButton(
         return;
       }
 
-      const latest = ctx.services.socialPet.getPetBattle(targetId);
-      if (latest && latest.status !== 'pending') {
-        const cPet = ctx.services.socialPet.getPetById(latest.challengerPetId);
-        const oPet = latest.opponentPetId
-          ? ctx.services.socialPet.getPetById(latest.opponentPetId)
-          : null;
-        await interaction.message
-          .edit(buildPetBattleCard(latest, cPet, oPet, cfg.economy))
-          .catch(() => undefined);
-      }
-
       const msgMap: Record<typeof res.reason, string> = {
         not_found: '找不到这场宠物斗兽场对决。',
         already_resolved: '这场对决已经分出胜负或关闭啦！',
@@ -132,6 +121,17 @@ export async function handleSocialPetButton(
         embeds: [createErrorEmbed('❌ 无法出战', msgMap[res.reason])],
         flags: MessageFlags.Ephemeral,
       });
+
+      const latest = ctx.services.socialPet.getPetBattle(targetId);
+      if (latest && latest.status !== 'pending') {
+        const cPet = ctx.services.socialPet.getPetById(latest.challengerPetId);
+        const oPet = latest.opponentPetId
+          ? ctx.services.socialPet.getPetById(latest.opponentPetId)
+          : null;
+        await interaction.message
+          .edit(buildPetBattleCard(latest, cPet, oPet, cfg.economy))
+          .catch(() => undefined);
+      }
       return;
     }
 

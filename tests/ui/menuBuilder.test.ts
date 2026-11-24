@@ -375,6 +375,8 @@ describe('menuBuilder Discord component constraints & schema integration', () =>
       { page: 'admin_mod' },
       { page: 'admin_ops' },
       { page: 'admin_ai' },
+      { page: 'admin_monitor', filter: 'issues' },
+      { page: 'admin_monitor', filter: 'all' },
     ];
 
     for (const view of views) {

@@ -41,6 +41,31 @@ export type RobResult =
       retryAfterSec?: number;
     };
 
+export type BankRobResult =
+  | {
+      ok: true;
+      success: boolean;
+      amount: number;
+      fineFromPocket: number;
+      fineFromBank: number;
+      attackerBalance: number;
+      attackerBankBalance: number;
+      targetBankBalance: number;
+      trapped?: boolean;
+      usedLockpick?: boolean;
+      bountyClaimed?: number;
+    }
+  | {
+      ok: false;
+      reason:
+        | 'self_target'
+        | 'cooldown'
+        | 'target_shielded'
+        | 'target_bank_too_poor'
+        | 'attacker_too_poor';
+      retryAfterSec?: number;
+    };
+
 export type TransferResult =
   | { ok: true; amount: number; fromBalance: number; toBalance: number }
   | { ok: false; reason: 'self_target' | 'invalid_amount' | 'insufficient_funds' };
@@ -323,6 +348,174 @@ export class EconomyService {
         amount: actualFine,
         attackerBalance: nextAttacker,
         targetBalance: nextTarget,
+        ...(usedLockpick ? { usedLockpick: true } : {}),
+      };
+    })();
+  }
+
+  robBank(
+    guildId: string,
+    attackerId: string,
+    targetId: string,
+    nowMs = Date.now(),
+    rng: () => number = Math.random,
+  ): BankRobResult {
+    if (attackerId === targetId) {
+      return { ok: false, reason: 'self_target' };
+    }
+    const cfg = this.configRepo.getOrCreate(guildId).economy;
+
+    return this.db.transaction((): BankRobResult => {
+      const attacker = this.profileRepo.getOrCreate(guildId, attackerId);
+      const target = this.profileRepo.getOrCreate(guildId, targetId);
+
+      const cooldownMs = cfg.robCooldownSec * 1000;
+      const elapsed = nowMs - attacker.lastRobAt;
+      if (attacker.lastRobAt > 0 && elapsed < cooldownMs) {
+        return {
+          ok: false,
+          reason: 'cooldown',
+          retryAfterSec: Math.ceil((cooldownMs - elapsed) / 1000),
+        };
+      }
+
+      if (target.robShieldUntil > nowMs) {
+        return {
+          ok: false,
+          reason: 'target_shielded',
+          retryAfterSec: Math.ceil((target.robShieldUntil - nowMs) / 1000),
+        };
+      }
+
+      if (target.bankCoins < 100) {
+        return { ok: false, reason: 'target_bank_too_poor' };
+      }
+
+      const attackerTotal = attacker.coins + attacker.bankCoins;
+      if (attackerTotal < 100) {
+        return { ok: false, reason: 'attacker_too_poor' };
+      }
+
+      const usedLockpick = Boolean(
+        this.chaosRepo?.consumeEffect(guildId, attackerId, 'lockpick_ready', nowMs),
+      );
+      const trappedEffect = this.chaosRepo?.consumeEffect(guildId, targetId, 'trap_armed', nowMs);
+
+      const applyFine = (rawFine: number): {
+        actualFine: number;
+        fineFromPocket: number;
+        fineFromBank: number;
+        nextAttackerCoins: number;
+        nextAttackerBank: number;
+      } => {
+        const actualFine = Math.min(rawFine, attackerTotal);
+        const fineFromPocket = Math.min(attacker.coins, actualFine);
+        const fineFromBank = actualFine - fineFromPocket;
+        return {
+          actualFine,
+          fineFromPocket,
+          fineFromBank,
+          nextAttackerCoins: attacker.coins - fineFromPocket,
+          nextAttackerBank: attacker.bankCoins - fineFromBank,
+        };
+      };
+
+      if (trappedEffect) {
+        const rawTrapFine = Math.max(300, Math.min(4000, Math.floor(attackerTotal * 0.5)));
+        const fine = applyFine(rawTrapFine);
+        const nextTargetBank = target.bankCoins + fine.actualFine;
+
+        this.profileRepo.save({
+          ...attacker,
+          coins: fine.nextAttackerCoins,
+          bankCoins: fine.nextAttackerBank,
+          lastRobAt: nowMs,
+        });
+        this.profileRepo.save({
+          ...target,
+          bankCoins: nextTargetBank,
+        });
+
+        return {
+          ok: true,
+          success: false,
+          amount: fine.actualFine,
+          fineFromPocket: fine.fineFromPocket,
+          fineFromBank: fine.fineFromBank,
+          attackerBalance: fine.nextAttackerCoins,
+          attackerBankBalance: fine.nextAttackerBank,
+          targetBankBalance: nextTargetBank,
+          trapped: true,
+          ...(usedLockpick ? { usedLockpick: true } : {}),
+        };
+      }
+
+      const baseBankRate = Number.isFinite(cfg.robBankSuccessRate)
+        ? cfg.robBankSuccessRate
+        : 0.2;
+      const effectiveRate = usedLockpick
+        ? Math.min(0.5, baseBankRate + 0.1)
+        : baseBankRate;
+      const succeeded = rng() < effectiveRate;
+
+      if (succeeded) {
+        const pct = 0.05 + rng() * 0.07;
+        const stolen = Math.max(10, Math.min(500, Math.floor(target.bankCoins * pct)));
+        const actualStolen = Math.min(stolen, target.bankCoins);
+        const bountyClaimed =
+          this.chaosRepo?.claimOpenBounties(guildId, targetId, attackerId, nowMs) ?? 0;
+        const nextAttackerCoins = attacker.coins + actualStolen + bountyClaimed;
+        const nextTargetBank = target.bankCoins - actualStolen;
+
+        this.profileRepo.save({
+          ...attacker,
+          coins: nextAttackerCoins,
+          lastRobAt: nowMs,
+        });
+        this.profileRepo.save({
+          ...target,
+          bankCoins: nextTargetBank,
+          robShieldUntil: nowMs + cfg.robTargetShieldSec * 1000,
+        });
+
+        return {
+          ok: true,
+          success: true,
+          amount: actualStolen,
+          fineFromPocket: 0,
+          fineFromBank: 0,
+          attackerBalance: nextAttackerCoins,
+          attackerBankBalance: attacker.bankCoins,
+          targetBankBalance: nextTargetBank,
+          ...(usedLockpick ? { usedLockpick: true } : {}),
+          ...(bountyClaimed > 0 ? { bountyClaimed } : {}),
+        };
+      }
+
+      const rawFine = Math.max(200, Math.min(2000, Math.floor(attackerTotal * 0.3)));
+      const fine = applyFine(rawFine);
+      const nextTargetBank = target.bankCoins + fine.actualFine;
+
+      this.profileRepo.save({
+        ...attacker,
+        coins: fine.nextAttackerCoins,
+        bankCoins: fine.nextAttackerBank,
+        lastRobAt: nowMs,
+      });
+      this.profileRepo.save({
+        ...target,
+        bankCoins: nextTargetBank,
+      });
+
+      return {
+        ok: true,
+        success: false,
+        amount: fine.actualFine,
+        fineFromPocket: fine.fineFromPocket,
+        fineFromBank: fine.fineFromBank,
+        attackerBalance: fine.nextAttackerCoins,
+        attackerBankBalance: fine.nextAttackerBank,
+        targetBankBalance: nextTargetBank,
         ...(usedLockpick ? { usedLockpick: true } : {}),
       };
     })();

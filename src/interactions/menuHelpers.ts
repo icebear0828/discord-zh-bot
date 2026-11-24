@@ -17,7 +17,7 @@ import {
 import type { ModuleKey } from '../config/defaults.js';
 import { checkMemberIsBotAdmin } from '../commands/guards.js';
 import type { AppContext } from '../ui/embeds.js';
-import type { BuiltMenuMessage, MenuActor, MenuFeedback } from '../ui/menuShared.js';
+import { truncateText, type BuiltMenuMessage, type MenuActor, type MenuFeedback } from '../ui/menuShared.js';
 
 export type MenuSupportedInteraction =
   | ButtonInteraction
@@ -102,7 +102,7 @@ export function prefilledField(
   return new ActionRowBuilder<TextInputBuilder>().addComponents(
     new TextInputBuilder()
       .setCustomId(customId)
-      .setLabel(label)
+      .setLabel(truncateText(label, 45))
       .setStyle(TextInputStyle.Short)
       .setMinLength(1)
       .setMaxLength(maxLength)

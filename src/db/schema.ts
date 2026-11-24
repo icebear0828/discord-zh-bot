@@ -1,6 +1,7 @@
 import type Database from 'better-sqlite3';
 import { initAiSchema } from './repositories/aiMemoryRepo.js';
 import { initChaosSchema } from './repositories/chaosRepo.js';
+import { initMonitorSchema } from './repositories/monitorRepo.js';
 import { initRedPacketSchema } from './repositories/redPacketRepo.js';
 import { initSocialPetSchema } from './repositories/socialPetRepo.js';
 import { initWorldEventSchema } from './repositories/worldEventRepo.js';
@@ -211,6 +212,7 @@ export function initSchema(db: Database.Database): void {
   initWorldEventSchema(db);
   initSocialPetSchema(db);
   initAiSchema(db);
+  initMonitorSchema(db);
 
   const configCols = db.pragma('table_info(guild_configs)') as Array<{ name: string }>;
   const configColNames = new Set(configCols.map((col) => col.name));

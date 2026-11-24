@@ -73,7 +73,8 @@ export type MenuView =
   | { page: 'admin_games' }
   | { page: 'admin_mod' }
   | { page: 'admin_ops' }
-  | { page: 'admin_ai' };
+  | { page: 'admin_ai' }
+  | { page: 'admin_monitor'; filter?: 'issues' | 'all' };
 
 export type MenuComponentRow =
   | ActionRowBuilder<ButtonBuilder>
