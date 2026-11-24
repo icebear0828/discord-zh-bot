@@ -4,6 +4,7 @@ import {
   TextInputBuilder,
   TextInputStyle,
   type ButtonInteraction,
+  type ChannelSelectMenuInteraction,
   type Client,
   type Guild,
   type MessageCreateOptions,
@@ -20,6 +21,7 @@ import type { BuiltMenuMessage, MenuActor, MenuFeedback } from '../ui/menuShared
 
 export type MenuSupportedInteraction =
   | ButtonInteraction
+  | ChannelSelectMenuInteraction
   | RoleSelectMenuInteraction
   | StringSelectMenuInteraction
   | UserSelectMenuInteraction

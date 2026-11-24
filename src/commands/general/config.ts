@@ -27,6 +27,7 @@ const MODULE_LABELS: Record<ModuleKey, string> = {
   socialGames: '整蛊与博弈',
   worldEvents: '吃瓜与世界事件',
   petsAndCp: '关系与宠物',
+  ai: 'AI 对话',
 };
 
 const MODULE_CHOICES: ReadonlyArray<{ name: string; value: ModuleKey }> = [
@@ -41,6 +42,7 @@ const MODULE_CHOICES: ReadonlyArray<{ name: string; value: ModuleKey }> = [
   { name: '整蛊与博弈 (socialGames)', value: 'socialGames' },
   { name: '吃瓜与世界事件 (worldEvents)', value: 'worldEvents' },
   { name: '关系与宠物 (petsAndCp)', value: 'petsAndCp' },
+  { name: 'AI 对话 (ai)', value: 'ai' },
 ];
 
 export const configCommand: CommandDefinition = {

@@ -12,6 +12,7 @@ import type { RedPacketRepo } from '../db/repositories/redPacketRepo.js';
 import type { ChaosRepo } from '../db/repositories/chaosRepo.js';
 import type { WorldEventRepo } from '../db/repositories/worldEventRepo.js';
 import type { SocialPetRepo } from '../db/repositories/socialPetRepo.js';
+import type { AiMemoryRepo } from '../db/repositories/aiMemoryRepo.js';
 import type { LevelingService } from '../services/levelingService.js';
 import type { EconomyService } from '../services/economyService.js';
 import type { BlackjackManager } from '../services/blackjackService.js';
@@ -25,6 +26,7 @@ import type { MultiplayerService } from '../services/multiplayerService.js';
 import type { ChaosService } from '../services/chaosService.js';
 import type { WorldEventService } from '../services/worldEventService.js';
 import type { SocialPetService } from '../services/socialPetService.js';
+import type { AiService } from '../services/aiService.js';
 
 export interface AppContext {
   db: Database.Database;
@@ -42,6 +44,7 @@ export interface AppContext {
     chaos: ChaosRepo;
     worldEvent: WorldEventRepo;
     socialPet: SocialPetRepo;
+    aiMemory: AiMemoryRepo;
   };
   services: {
     leveling: LevelingService;
@@ -57,6 +60,7 @@ export interface AppContext {
     chaos: ChaosService;
     worldEvent: WorldEventService;
     socialPet: SocialPetService;
+    ai: AiService;
   };
 }
 

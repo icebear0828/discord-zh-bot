@@ -30,6 +30,21 @@ describe('env & database schema', () => {
       dbPath: './custom.db',
       timezone: 'Asia/Shanghai',
     });
+
+    const withLlm = parseEnv({
+      DISCORD_TOKEN: 'tok-123',
+      DISCORD_CLIENT_ID: 'app-456',
+      LLM_BASE_URL: 'https://example.com/v1///',
+      LLM_API_KEY: 'sk-test',
+      LLM_MODEL: 'gemini-test',
+      LLM_TIMEOUT_MS: '45000',
+    });
+    expect(withLlm.llm).toEqual({
+      baseUrl: 'https://example.com/v1',
+      apiKey: 'sk-test',
+      model: 'gemini-test',
+      timeoutMs: 45_000,
+    });
   });
 
   it('initializes schema idempotently, enables foreign keys, and configures WAL for file DBs', () => {
@@ -78,6 +93,8 @@ describe('env & database schema', () => {
           'relationship_proposals',
           'user_pets',
           'pet_battles',
+          'ai_memories',
+          'ai_channel_resets',
         ]),
       );
 
@@ -257,11 +274,14 @@ describe('env & database schema', () => {
     const colNames = cols.map((c) => c.name);
     expect(colNames).toContain('admin_user_ids_json');
     expect(colNames).toContain('games_config_json');
+    expect(colNames).toContain('ai_config_json');
 
     const repo = new GuildConfigRepo(db);
     expect(repo.getOrCreate('g1').adminUserIds).toEqual([]);
     expect(repo.getOrCreate('g1').games.petGachaPrice).toBe(500);
     expect(repo.getOrCreate('g1').modules.socialGames).toBe(true);
+    expect(repo.getOrCreate('g1').modules.ai).toBe(true);
+    expect(repo.getOrCreate('g1').ai.preset).toBe('community');
     repo.updateAdminUsers('g1', ['u100', 'u200']);
     expect(repo.getOrCreate('g1').adminUserIds).toEqual(['u100', 'u200']);
 

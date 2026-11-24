@@ -13,6 +13,7 @@ import { RedPacketRepo } from './db/repositories/redPacketRepo.js';
 import { ChaosRepo } from './db/repositories/chaosRepo.js';
 import { WorldEventRepo } from './db/repositories/worldEventRepo.js';
 import { SocialPetRepo } from './db/repositories/socialPetRepo.js';
+import { AiMemoryRepo } from './db/repositories/aiMemoryRepo.js';
 import { LevelingService } from './services/levelingService.js';
 import { EconomyService } from './services/economyService.js';
 import { BlackjackManager } from './services/blackjackService.js';
@@ -26,6 +27,8 @@ import { MultiplayerService } from './services/multiplayerService.js';
 import { ChaosService } from './services/chaosService.js';
 import { WorldEventService } from './services/worldEventService.js';
 import { SocialPetService } from './services/socialPetService.js';
+import { LlmClient } from './services/llmClient.js';
+import { AiService } from './services/aiService.js';
 import type { AppContext } from './ui/embeds.js';
 import { registerReadyEvent } from './events/ready.js';
 import { registerMessageCreateEvent } from './events/messageCreate.js';
@@ -50,6 +53,8 @@ function main(): void {
   const chaosRepo = new ChaosRepo(db);
   const worldEventRepo = new WorldEventRepo(db);
   const socialPetRepo = new SocialPetRepo(db);
+  const aiMemoryRepo = new AiMemoryRepo(db);
+  const llmClient = new LlmClient(env.llm);
 
   const ctx: AppContext = {
     db,
@@ -67,6 +72,7 @@ function main(): void {
       chaos: chaosRepo,
       worldEvent: worldEventRepo,
       socialPet: socialPetRepo,
+      aiMemory: aiMemoryRepo,
     },
     services: {
       leveling: new LevelingService(guildConfigRepo, profileRepo, inviteRepo),
@@ -100,6 +106,7 @@ function main(): void {
         socialPetRepo,
         env.timezone,
       ),
+      ai: new AiService(guildConfigRepo, aiMemoryRepo, llmClient),
     },
   };
 

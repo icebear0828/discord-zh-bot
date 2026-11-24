@@ -1,12 +1,14 @@
 import type Database from 'better-sqlite3';
 import {
   createDefaultGuildConfig,
+  DEFAULT_AI_CONFIG,
   DEFAULT_ECONOMY_CONFIG,
   DEFAULT_GAMES_CONFIG,
   DEFAULT_LEVELING_CONFIG,
   DEFAULT_MODULES,
   DEFAULT_TICKET_CONFIG,
   DEFAULT_WELCOME_CONFIG,
+  type AiConfig,
   type EconomyConfig,
   type GamesConfig,
   type GuildConfig,
@@ -26,6 +28,7 @@ interface GuildConfigRow {
   welcome_config_json: string;
   ticket_config_json: string;
   games_config_json?: string;
+  ai_config_json?: string;
   updated_at: number;
 }
 
@@ -98,6 +101,26 @@ export class GuildConfigRepo {
         games: parseRecord<GamesConfig>(row.games_config_json ?? '{}', {
           ...DEFAULT_GAMES_CONFIG,
         }),
+        ai: (() => {
+          const aiRaw = parseRecord<AiConfig>(row.ai_config_json ?? '{}', {
+            ...DEFAULT_AI_CONFIG,
+            freeChatChannelIds: [],
+            allowedChannelIds: [],
+            ignoredChannelIds: [],
+          });
+          return {
+            ...aiRaw,
+            freeChatChannelIds: Array.isArray(aiRaw.freeChatChannelIds)
+              ? aiRaw.freeChatChannelIds.filter((id): id is string => typeof id === 'string')
+              : [],
+            allowedChannelIds: Array.isArray(aiRaw.allowedChannelIds)
+              ? aiRaw.allowedChannelIds.filter((id): id is string => typeof id === 'string')
+              : [],
+            ignoredChannelIds: Array.isArray(aiRaw.ignoredChannelIds)
+              ? aiRaw.ignoredChannelIds.filter((id): id is string => typeof id === 'string')
+              : [],
+          };
+        })(),
         updatedAt: row.updated_at,
       };
     }
@@ -108,8 +131,8 @@ export class GuildConfigRepo {
         `INSERT INTO guild_configs (
           guild_id, modules_json, admin_role_ids_json, admin_user_ids_json,
           leveling_config_json, economy_config_json,
-          welcome_config_json, ticket_config_json, games_config_json, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          welcome_config_json, ticket_config_json, games_config_json, ai_config_json, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         created.guildId,
@@ -121,6 +144,7 @@ export class GuildConfigRepo {
         JSON.stringify(created.welcome),
         JSON.stringify(created.ticket),
         JSON.stringify(created.games),
+        JSON.stringify(created.ai),
         created.updatedAt,
       );
     return created;
@@ -194,6 +218,15 @@ export class GuildConfigRepo {
         'UPDATE guild_configs SET games_config_json = ?, updated_at = ? WHERE guild_id = ?',
       )
       .run(JSON.stringify(games), Date.now(), guildId);
+  }
+
+  updateAi(guildId: string, ai: AiConfig): void {
+    this.getOrCreate(guildId);
+    this.db
+      .prepare(
+        'UPDATE guild_configs SET ai_config_json = ?, updated_at = ? WHERE guild_id = ?',
+      )
+      .run(JSON.stringify(ai), Date.now(), guildId);
   }
 
   incrementTicketCounter(guildId: string): number {

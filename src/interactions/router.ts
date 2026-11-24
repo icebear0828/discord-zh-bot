@@ -9,6 +9,7 @@ import { handleGiveawayButton } from './giveawayHandler.js';
 import { handleRolePanelButton, handleRolePanelSelect } from './rolePanelHandler.js';
 import {
   handleMenuButton,
+  handleMenuChannelSelect,
   handleMenuModal,
   handleMenuRoleSelect,
   handleMenuStringSelect,
@@ -100,6 +101,14 @@ export async function routeInteraction(
       const prefix = interaction.customId.split(':')[0];
       if (prefix === 'menu') {
         await handleMenuRoleSelect(interaction, ctx);
+      }
+      return;
+    }
+
+    if (interaction.isChannelSelectMenu()) {
+      const prefix = interaction.customId.split(':')[0];
+      if (prefix === 'menu') {
+        await handleMenuChannelSelect(interaction, ctx);
       }
       return;
     }

@@ -23,6 +23,7 @@ import {
   buildAdminShopView,
   buildSelfRolesView,
 } from './adminConfigMenuBuilder.js';
+import { buildAdminAiView } from './aiAdminMenuBuilder.js';
 import {
   buildBountyView,
   buildBombView,
@@ -1241,6 +1242,7 @@ const MODULE_META: ReadonlyArray<{ key: ModuleKey; label: string; emoji: string 
   { key: 'socialGames', label: '整蛊与博弈', emoji: '💣' },
   { key: 'worldEvents', label: '吃瓜与事件', emoji: '🎯' },
   { key: 'petsAndCp', label: '关系与宠物', emoji: '💞' },
+  { key: 'ai', label: 'AI 对话', emoji: '🤖' },
 ];
 
 function buildAdminOverviewView(
@@ -1294,7 +1296,10 @@ function buildAdminOverviewView(
       buttonRow(
         makeButton('menu:nav:admin_roles', '🎭 自助身份组', ButtonStyle.Primary),
         makeButton('menu:nav:admin_shop', '🛒 商店管理', ButtonStyle.Primary),
+        makeButton('menu:nav:admin_ai', '🤖 AI 对话配置', ButtonStyle.Primary),
         makeButton('menu:admin:send_lobby', '📌 发送频道大厅入口', ButtonStyle.Success),
+      ),
+      buttonRow(
         makeButton('menu:nav:admin', '🔄 刷新配置', ButtonStyle.Secondary),
         makeButton('menu:nav:home', '🏠 主菜单', ButtonStyle.Secondary),
       ),
@@ -1690,6 +1695,8 @@ export function buildMenuMessage(
       return buildAdminModView(ctx, guildId, actor, feedback);
     case 'admin_ops':
       return buildAdminOpsView(ctx, guildId, actor, feedback);
+    case 'admin_ai':
+      return buildAdminAiView(ctx, guildId, actor, feedback);
   }
 }
 

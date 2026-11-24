@@ -13,6 +13,7 @@ import { ShopRepo } from '../../src/db/repositories/shopRepo.js';
 import { SocialPetRepo } from '../../src/db/repositories/socialPetRepo.js';
 import { TicketRepo } from '../../src/db/repositories/ticketRepo.js';
 import { WorldEventRepo } from '../../src/db/repositories/worldEventRepo.js';
+import { AiMemoryRepo } from '../../src/db/repositories/aiMemoryRepo.js';
 import { BlackjackManager, type Card } from '../../src/services/blackjackService.js';
 import { ChaosService } from '../../src/services/chaosService.js';
 import { EconomyService } from '../../src/services/economyService.js';
@@ -26,6 +27,8 @@ import { ShopService } from '../../src/services/shopService.js';
 import { SocialPetService } from '../../src/services/socialPetService.js';
 import { TicketService } from '../../src/services/ticketService.js';
 import { WorldEventService } from '../../src/services/worldEventService.js';
+import { LlmClient } from '../../src/services/llmClient.js';
+import { AiService } from '../../src/services/aiService.js';
 import { buildLeaderboardMessage } from '../../src/commands/leveling/leaderboard.js';
 import { buildNumberBombCard, buildRouletteCard } from '../../src/ui/chaosMenuBuilder.js';
 import type { AppContext } from '../../src/ui/embeds.js';
@@ -59,6 +62,8 @@ function createTestCtx(): AppContext {
   const chaos = new ChaosRepo(db);
   const worldEvent = new WorldEventRepo(db);
   const socialPet = new SocialPetRepo(db);
+  const aiMemory = new AiMemoryRepo(db);
+  const llmClient = new LlmClient(undefined);
 
   return {
     db,
@@ -76,6 +81,7 @@ function createTestCtx(): AppContext {
       chaos,
       worldEvent,
       socialPet,
+      aiMemory,
     },
     services: {
       leveling: new LevelingService(guildConfig, profile, invite),
@@ -96,6 +102,7 @@ function createTestCtx(): AppContext {
       chaos: new ChaosService(db, guildConfig, profile, chaos),
       worldEvent: new WorldEventService(db, guildConfig, profile, worldEvent, socialPet),
       socialPet: new SocialPetService(db, guildConfig, profile, shop, socialPet, 'Asia/Shanghai'),
+      ai: new AiService(guildConfig, aiMemory, llmClient),
     },
   };
 }
@@ -367,6 +374,7 @@ describe('menuBuilder Discord component constraints & schema integration', () =>
       { page: 'admin_games' },
       { page: 'admin_mod' },
       { page: 'admin_ops' },
+      { page: 'admin_ai' },
     ];
 
     for (const view of views) {

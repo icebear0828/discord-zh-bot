@@ -24,6 +24,7 @@ import { ticketCommand } from './tickets/ticket.js';
 import { giveawayCommand } from './giveaways/giveaway.js';
 import { invitesCommand } from './invites/invites.js';
 import { rolePanelCommand } from './roles/rolePanel.js';
+import { aiCommand } from './ai/ai.js';
 
 export const commands: readonly CommandDefinition[] = [
   helpCommand,
@@ -51,6 +52,7 @@ export const commands: readonly CommandDefinition[] = [
   giveawayCommand,
   invitesCommand,
   rolePanelCommand,
+  aiCommand,
 ];
 
 export const commandMap: ReadonlyMap<string, CommandDefinition> = new Map(

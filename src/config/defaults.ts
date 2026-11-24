@@ -10,6 +10,7 @@ export interface ModuleToggles {
   socialGames: boolean;
   worldEvents: boolean;
   petsAndCp: boolean;
+  ai: boolean;
 }
 
 export type ModuleKey = keyof ModuleToggles;
@@ -99,6 +100,35 @@ export interface GamesConfig {
   cpMaxSworn: number;
 }
 
+export type AiPersonaPresetKey = 'community' | 'roast' | 'assistant' | 'custom';
+
+export interface AiPersonaPreset {
+  key: Exclude<AiPersonaPresetKey, 'custom'>;
+  label: string;
+  description: string;
+  personaName: string;
+  identityPrompt: string;
+  soulPrompt: string;
+}
+
+export interface AiConfig {
+  preset: AiPersonaPresetKey;
+  personaName: string;
+  identityPrompt: string;
+  soulPrompt: string;
+  worldbook: string;
+  modelOverride: string | null;
+  temperature: number;
+  maxTokens: number;
+  contextWindowMessages: number;
+  maxMemoriesPerScope: number;
+  memoryEnabled: boolean;
+  visionEnabled: boolean;
+  freeChatChannelIds: string[];
+  allowedChannelIds: string[];
+  ignoredChannelIds: string[];
+}
+
 export interface GuildConfig {
   guildId: string;
   modules: ModuleToggles;
@@ -109,6 +139,7 @@ export interface GuildConfig {
   welcome: WelcomeConfig;
   ticket: TicketConfig;
   games: GamesConfig;
+  ai: AiConfig;
   updatedAt: number;
 }
 
@@ -124,6 +155,7 @@ export const DEFAULT_MODULES: ModuleToggles = {
   socialGames: true,
   worldEvents: true,
   petsAndCp: true,
+  ai: true,
 };
 
 export const DEFAULT_LEVELING_CONFIG: LevelingConfig = {
@@ -211,6 +243,57 @@ export const DEFAULT_GAMES_CONFIG: GamesConfig = {
   cpMaxSworn: 3,
 };
 
+export const AI_PERSONA_PRESETS: Readonly<Record<Exclude<AiPersonaPresetKey, 'custom'>, AiPersonaPreset>> = {
+  community: {
+    key: 'community',
+    label: '🎭 群聊活宝（默认）',
+    description: '接梗快、有烟火气、像群里的老熟人一样陪聊',
+    personaName: '黑吊使者',
+    identityPrompt:
+      '你是本 Discord 社群的常驻 AI 伙伴，熟悉群友日常吹水、游戏开黑与社群文化。',
+    soulPrompt:
+      '用自然口语化的中文回复，像真实群友一样简短接梗、风趣有温度；日常闲聊控制在 1~4 句话内，只有遇到正经提问或复杂问题时才展开分点说明。',
+  },
+  roast: {
+    key: 'roast',
+    label: '🔥 毒舌吐槽役',
+    description: '嘴硬心软、锐评一切，适合热闹吐槽氛围',
+    personaName: '毒舌使者',
+    identityPrompt:
+      '你是本群嘴最毒但心最软的锐评选手，擅长一针见血地吐槽群友的离谱发言与下饭操作。',
+    soulPrompt:
+      '用中文犀利但不过线的幽默口吻回复，多用短句和反问，不人身攻击、不恶意引战；遇到真求助时先嘴硬吐槽半句再给出靠谱答案。',
+  },
+  assistant: {
+    key: 'assistant',
+    label: '🧠 冷静技术助手',
+    description: '务实克制、直奔重点，少废话多给可执行结论',
+    personaName: '冷静助手',
+    identityPrompt:
+      '你是严谨务实的多面手技术与知识助手，擅长排查问题、总结信息、给出清晰建议。',
+    soulPrompt:
+      '用简洁直接的中文回复，优先给结论与关键步骤；不确定时明确说明边界和验证方法，不胡编、不水字数。',
+  },
+};
+
+export const DEFAULT_AI_CONFIG: AiConfig = {
+  preset: 'community',
+  personaName: AI_PERSONA_PRESETS.community.personaName,
+  identityPrompt: AI_PERSONA_PRESETS.community.identityPrompt,
+  soulPrompt: AI_PERSONA_PRESETS.community.soulPrompt,
+  worldbook: '',
+  modelOverride: null,
+  temperature: 0.8,
+  maxTokens: 1024,
+  contextWindowMessages: 12,
+  maxMemoriesPerScope: 30,
+  memoryEnabled: true,
+  visionEnabled: true,
+  freeChatChannelIds: [],
+  allowedChannelIds: [],
+  ignoredChannelIds: [],
+};
+
 export function createDefaultGuildConfig(guildId: string, nowMs = Date.now()): GuildConfig {
   return {
     guildId,
@@ -233,6 +316,12 @@ export function createDefaultGuildConfig(guildId: string, nowMs = Date.now()): G
       staffRoleIds: [],
     },
     games: { ...DEFAULT_GAMES_CONFIG },
+    ai: {
+      ...DEFAULT_AI_CONFIG,
+      freeChatChannelIds: [],
+      allowedChannelIds: [],
+      ignoredChannelIds: [],
+    },
     updatedAt: nowMs,
   };
 }

@@ -2,6 +2,7 @@ import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  ChannelSelectMenuBuilder,
   type EmbedBuilder,
   RoleSelectMenuBuilder,
   StringSelectMenuBuilder,
@@ -71,10 +72,12 @@ export type MenuView =
   | { page: 'admin_shop' }
   | { page: 'admin_games' }
   | { page: 'admin_mod' }
-  | { page: 'admin_ops' };
+  | { page: 'admin_ops' }
+  | { page: 'admin_ai' };
 
 export type MenuComponentRow =
   | ActionRowBuilder<ButtonBuilder>
+  | ActionRowBuilder<ChannelSelectMenuBuilder>
   | ActionRowBuilder<RoleSelectMenuBuilder>
   | ActionRowBuilder<StringSelectMenuBuilder>
   | ActionRowBuilder<UserSelectMenuBuilder>;

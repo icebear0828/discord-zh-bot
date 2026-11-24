@@ -6,6 +6,7 @@ import {
   type APIEmbed,
   type APIMessageActionRowComponent,
   type ButtonInteraction,
+  type ChannelSelectMenuInteraction,
   type ChatInputCommandInteraction,
   type Interaction,
   type ModalSubmitInteraction,
@@ -29,6 +30,7 @@ import { ShopRepo } from '../../src/db/repositories/shopRepo.js';
 import { SocialPetRepo } from '../../src/db/repositories/socialPetRepo.js';
 import { TicketRepo } from '../../src/db/repositories/ticketRepo.js';
 import { WorldEventRepo } from '../../src/db/repositories/worldEventRepo.js';
+import { AiMemoryRepo } from '../../src/db/repositories/aiMemoryRepo.js';
 import { routeInteraction } from '../../src/interactions/router.js';
 import { BlackjackManager } from '../../src/services/blackjackService.js';
 import { ChaosService } from '../../src/services/chaosService.js';
@@ -43,6 +45,8 @@ import { ShopService } from '../../src/services/shopService.js';
 import { SocialPetService } from '../../src/services/socialPetService.js';
 import { TicketService } from '../../src/services/ticketService.js';
 import { WorldEventService } from '../../src/services/worldEventService.js';
+import { LlmClient } from '../../src/services/llmClient.js';
+import { AiService } from '../../src/services/aiService.js';
 import type { AppContext } from '../../src/ui/embeds.js';
 
 function createTestCtx(): AppContext {
@@ -59,6 +63,8 @@ function createTestCtx(): AppContext {
   const chaos = new ChaosRepo(db);
   const worldEvent = new WorldEventRepo(db);
   const socialPet = new SocialPetRepo(db);
+  const aiMemory = new AiMemoryRepo(db);
+  const llmClient = new LlmClient(undefined);
 
   return {
     db,
@@ -76,6 +82,7 @@ function createTestCtx(): AppContext {
       chaos,
       worldEvent,
       socialPet,
+      aiMemory,
     },
     services: {
       leveling: new LevelingService(guildConfig, profile, invite),
@@ -96,6 +103,7 @@ function createTestCtx(): AppContext {
       chaos: new ChaosService(db, guildConfig, profile, chaos),
       worldEvent: new WorldEventService(db, guildConfig, profile, worldEvent, socialPet),
       socialPet: new SocialPetService(db, guildConfig, profile, shop, socialPet, 'Asia/Shanghai'),
+      ai: new AiService(guildConfig, aiMemory, llmClient),
     },
   };
 }
@@ -176,6 +184,10 @@ function createChatCommandMock(opts: {
   mode?: string | null;
   isAdmin?: boolean;
   channel?: MockChannel;
+  subcommand?: string;
+  subcommandGroup?: string | null;
+  strings?: Record<string, string>;
+  integers?: Record<string, number>;
 }) {
   const reply = vi.fn(async (_payload: MockPayload) => undefined);
   const followUp = vi.fn(async (_payload: MockPayload) => undefined);
@@ -193,7 +205,19 @@ function createChatCommandMock(opts: {
     replied: false,
     deferred: false,
     options: {
-      getString: (name: string) => (name === 'mode' ? (opts.mode ?? null) : null),
+      getString: (name: string, required?: boolean) => {
+        if (name === 'mode') return opts.mode ?? null;
+        const val = opts.strings?.[name] ?? null;
+        if (required && val === null) throw new Error(`Missing string option: ${name}`);
+        return val;
+      },
+      getInteger: (name: string, required?: boolean) => {
+        const val = opts.integers?.[name] ?? null;
+        if (required && val === null) throw new Error(`Missing integer option: ${name}`);
+        return val;
+      },
+      getSubcommandGroup: () => opts.subcommandGroup ?? null,
+      getSubcommand: () => opts.subcommand ?? '',
     },
     inCachedGuild: () => true,
     isChatInputCommand: () => true,
@@ -201,6 +225,7 @@ function createChatCommandMock(opts: {
     isStringSelectMenu: () => false,
     isUserSelectMenu: () => false,
     isRoleSelectMenu: () => false,
+    isChannelSelectMenu: () => false,
     isModalSubmit: () => false,
     isRepliable: () => true,
     reply,
@@ -266,6 +291,7 @@ function createButtonMock(opts: {
     isStringSelectMenu: () => false,
     isUserSelectMenu: () => false,
     isRoleSelectMenu: () => false,
+    isChannelSelectMenu: () => false,
     isModalSubmit: () => false,
     isRepliable: () => true,
     reply,
@@ -329,6 +355,7 @@ function createStringSelectMock(opts: {
     isStringSelectMenu: () => true,
     isUserSelectMenu: () => false,
     isRoleSelectMenu: () => false,
+    isChannelSelectMenu: () => false,
     isModalSubmit: () => false,
     isRepliable: () => true,
     reply,
@@ -390,6 +417,7 @@ function createUserSelectMock(opts: {
     isStringSelectMenu: () => false,
     isUserSelectMenu: () => true,
     isRoleSelectMenu: () => false,
+    isChannelSelectMenu: () => false,
     isModalSubmit: () => false,
     isRepliable: () => true,
     reply,
@@ -458,6 +486,7 @@ function createModalMock(opts: {
     isStringSelectMenu: () => false,
     isUserSelectMenu: () => false,
     isRoleSelectMenu: () => false,
+    isChannelSelectMenu: () => false,
     isModalSubmit: () => true,
     isRepliable: () => true,
     reply,
@@ -524,6 +553,7 @@ function createRoleSelectMock(opts: {
     isStringSelectMenu: () => false,
     isUserSelectMenu: () => false,
     isRoleSelectMenu: () => true,
+    isChannelSelectMenu: () => false,
     isModalSubmit: () => false,
     isRepliable: () => true,
     reply,
@@ -536,6 +566,51 @@ function createRoleSelectMock(opts: {
     reply,
     update,
     showModal,
+  };
+}
+
+function createChannelSelectMock(opts: {
+  customId: string;
+  userId: string;
+  values: string[];
+}) {
+  const reply = vi.fn(async (_payload: MockPayload) => undefined);
+  const update = vi.fn(async (_payload: MockPayload) => undefined);
+  const channel = makeMockChannel(true);
+
+  const mock = {
+    customId: opts.customId,
+    guildId: 'g1',
+    guild: { id: 'g1', name: '测试服务器' },
+    channelId: channel.id,
+    channel,
+    client: {
+      channels: {
+        fetch: vi.fn(async () => null),
+      },
+    },
+    values: opts.values,
+    user: makeMockUser({ id: opts.userId }),
+    member: makeMockMember(opts.userId),
+    replied: false,
+    deferred: false,
+    inCachedGuild: () => true,
+    isChatInputCommand: () => false,
+    isButton: () => false,
+    isStringSelectMenu: () => false,
+    isUserSelectMenu: () => false,
+    isRoleSelectMenu: () => false,
+    isChannelSelectMenu: () => true,
+    isModalSubmit: () => false,
+    isRepliable: () => true,
+    reply,
+    update,
+  };
+
+  return {
+    interaction: mock as unknown as ChannelSelectMenuInteraction & Interaction,
+    reply,
+    update,
   };
 }
 
@@ -2112,6 +2187,157 @@ describe('menu router & multiplayer interaction flows', () => {
     });
     await routeInteraction(delShopSelect.interaction, ctx);
     expect(ctx.services.shop.listItems('g1').some((i) => i.id === statShopItem!.id)).toBe(false);
+
+    ctx.db.close();
+  });
+
+  it('handles admin_ai panel navigation, preset switch, channel select, modal edits, and /ai commands', async () => {
+    const ctx = createTestCtx();
+    ctx.repos.guildConfig.updateAdminUsers('g1', ['admin1']);
+
+    // Non-admin blocked from admin_ai
+    const deniedNav = createButtonMock({ customId: 'menu:nav:admin_ai', userId: 'member1' });
+    await routeInteraction(deniedNav.interaction, ctx);
+    expect(deniedNav.update.mock.calls[0]![0].embeds?.[0]?.toJSON().description).toContain('权限不足');
+
+    // Admin opens admin_ai
+    const adminNav = createButtonMock({ customId: 'menu:nav:admin_ai', userId: 'admin1' });
+    await routeInteraction(adminNav.interaction, ctx);
+    expect(adminNav.update.mock.calls[0]![0].embeds?.[0]?.toJSON().title).toContain('AI 对话与人格记忆管理');
+
+    // Switch persona preset
+    const presetSelect = createStringSelectMock({
+      customId: 'menu:admin_ai_preset',
+      userId: 'admin1',
+      values: ['roast'],
+    });
+    await routeInteraction(presetSelect.interaction, ctx);
+    expect(ctx.repos.guildConfig.getOrCreate('g1').ai.preset).toBe('roast');
+    expect(ctx.repos.guildConfig.getOrCreate('g1').ai.personaName).toBe('毒舌使者');
+
+    // Configure free-chat channels & ignored channels via ChannelSelect
+    const freeChan = createChannelSelectMock({
+      customId: 'menu:chan:admin_ai_free',
+      userId: 'admin1',
+      values: ['c_free_1', 'c_free_2'],
+    });
+    await routeInteraction(freeChan.interaction, ctx);
+    expect(ctx.repos.guildConfig.getOrCreate('g1').ai.freeChatChannelIds).toEqual([
+      'c_free_1',
+      'c_free_2',
+    ]);
+
+    const ignoreChan = createChannelSelectMock({
+      customId: 'menu:chan:admin_ai_ignore',
+      userId: 'admin1',
+      values: ['c_bad'],
+    });
+    await routeInteraction(ignoreChan.interaction, ctx);
+    expect(ctx.repos.guildConfig.getOrCreate('g1').ai.ignoredChannelIds).toEqual(['c_bad']);
+
+    // Edit persona & worldbook via Modal
+    const personaModal = createModalMock({
+      customId: 'menu:modal_sub:admin_ai_persona',
+      userId: 'admin1',
+      fields: {
+        personaName: '夜猫使者',
+        identityPrompt: '你是深夜陪聊的群友。',
+        soulPrompt: '说话简短幽默。',
+        worldbook: '本群叫黑吊国，大家爱打游戏。',
+      },
+    });
+    await routeInteraction(personaModal.interaction, ctx);
+    const afterPersona = ctx.repos.guildConfig.getOrCreate('g1').ai;
+    expect(afterPersona.preset).toBe('custom');
+    expect(afterPersona.personaName).toBe('夜猫使者');
+    expect(afterPersona.worldbook).toBe('本群叫黑吊国，大家爱打游戏。');
+
+    // Edit model & parameters via Modal
+    const paramsModal = createModalMock({
+      customId: 'menu:modal_sub:admin_ai_params',
+      userId: 'admin1',
+      fields: {
+        modelOverride: 'gemini-custom',
+        temperature: '0.65',
+        maxTokens: '2048',
+        contextWindowMessages: '16',
+        maxMemoriesPerScope: '40',
+      },
+    });
+    await routeInteraction(paramsModal.interaction, ctx);
+    const afterParams = ctx.repos.guildConfig.getOrCreate('g1').ai;
+    expect(afterParams.modelOverride).toBe('gemini-custom');
+    expect(afterParams.temperature).toBe(0.65);
+    expect(afterParams.maxTokens).toBe(2048);
+    expect(afterParams.contextWindowMessages).toBe(16);
+    expect(afterParams.maxMemoriesPerScope).toBe(40);
+
+    // Toggle memory & vision
+    const toggleMem = createButtonMock({
+      customId: 'menu:admin:ai_toggle_memory',
+      userId: 'admin1',
+    });
+    await routeInteraction(toggleMem.interaction, ctx);
+    expect(ctx.repos.guildConfig.getOrCreate('g1').ai.memoryEnabled).toBe(false);
+
+    const toggleVis = createButtonMock({
+      customId: 'menu:admin:ai_toggle_vision',
+      userId: 'admin1',
+    });
+    await routeInteraction(toggleVis.interaction, ctx);
+    expect(ctx.repos.guildConfig.getOrCreate('g1').ai.visionEnabled).toBe(false);
+
+    // /ai reset command
+    const aiResetCmd = createChatCommandMock({
+      commandName: 'ai',
+      userId: 'member1',
+      subcommand: 'reset',
+    });
+    await routeInteraction(aiResetCmd.interaction, ctx);
+    expect(ctx.services.ai.getChannelResetAt('g1', 'c1')).toBeGreaterThan(0);
+
+    // /ai memory add -> list -> delete (non-admin cannot add guild memory, can manage own user memory)
+    const aiMemAddDenied = createChatCommandMock({
+      commandName: 'ai',
+      userId: 'member1',
+      subcommandGroup: 'memory',
+      subcommand: 'add',
+      strings: { content: '越权记忆', scope: 'guild' },
+    });
+    await routeInteraction(aiMemAddDenied.interaction, ctx);
+    expect(aiMemAddDenied.reply.mock.calls[0]![0].embeds?.[0]?.toJSON().title).toContain('权限不足');
+
+    const aiMemAddUser = createChatCommandMock({
+      commandName: 'ai',
+      userId: 'member1',
+      subcommandGroup: 'memory',
+      subcommand: 'add',
+      strings: { content: '喜欢打黑神话', category: 'hobby', scope: 'user' },
+    });
+    await routeInteraction(aiMemAddUser.interaction, ctx);
+    const saved = ctx.services.ai.listMemories('g1', 'user', 'member1');
+    expect(saved).toHaveLength(1);
+    expect(saved[0]?.content).toBe('喜欢打黑神话');
+
+    const aiMemList = createChatCommandMock({
+      commandName: 'ai',
+      userId: 'member1',
+      subcommandGroup: 'memory',
+      subcommand: 'list',
+      strings: { scope: 'user' },
+    });
+    await routeInteraction(aiMemList.interaction, ctx);
+    expect(aiMemList.reply.mock.calls[0]![0].embeds?.[0]?.toJSON().description).toContain('喜欢打黑神话');
+
+    const aiMemDel = createChatCommandMock({
+      commandName: 'ai',
+      userId: 'member1',
+      subcommandGroup: 'memory',
+      subcommand: 'delete',
+      integers: { id: saved[0]!.id },
+    });
+    await routeInteraction(aiMemDel.interaction, ctx);
+    expect(ctx.services.ai.listMemories('g1', 'user', 'member1')).toHaveLength(0);
 
     ctx.db.close();
   });

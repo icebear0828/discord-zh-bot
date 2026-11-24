@@ -8,6 +8,7 @@ import {
   TextInputBuilder,
   TextInputStyle,
   type ButtonInteraction,
+  type ChannelSelectMenuInteraction,
   type GuildMember,
   type MessageCreateOptions,
   type ModalSubmitInteraction,
@@ -55,6 +56,12 @@ import {
   tryHandleConfigMenuStringSelect,
 } from './configMenuHandler.js';
 import {
+  tryHandleAiMenuButton,
+  tryHandleAiMenuChannelSelect,
+  tryHandleAiMenuModal,
+  tryHandleAiMenuStringSelect,
+} from './aiMenuHandler.js';
+import {
   tryHandleGamesMenuButton,
   tryHandleGamesMenuModal,
   tryHandleGamesMenuStringSelect,
@@ -83,6 +90,7 @@ const VALID_MODULE_KEYS: ReadonlySet<string> = new Set([
   'socialGames',
   'worldEvents',
   'petsAndCp',
+  'ai',
 ]);
 
 const ADMIN_DENIED_FEEDBACK: MenuFeedback = {
@@ -548,6 +556,10 @@ export async function handleMenuButton(
   }
 
   if (await tryHandleConfigMenuButton(interaction, ctx, guildId, actor, parts)) {
+    return;
+  }
+
+  if (await tryHandleAiMenuButton(interaction, ctx, guildId, actor, parts)) {
     return;
   }
 
@@ -1239,6 +1251,10 @@ export async function handleMenuStringSelect(
   }
 
   if (await tryHandleConfigMenuStringSelect(interaction, ctx, guildId, actor, parts)) {
+    return;
+  }
+
+  if (await tryHandleAiMenuStringSelect(interaction, ctx, guildId, actor, parts)) {
     return;
   }
 
@@ -1959,6 +1975,10 @@ export async function handleMenuModal(
   }
 
   if (await tryHandleConfigMenuModal(interaction, ctx, guildId, actor, parts)) {
+    return;
+  }
+
+  if (await tryHandleAiMenuModal(interaction, ctx, guildId, actor, parts)) {
     return;
   }
 
@@ -2810,4 +2830,15 @@ export async function handleMenuRoleSelect(
   const actor = getActor(interaction, ctx, guildId);
   const parts = interaction.customId.split(':');
   await tryHandleConfigMenuRoleSelect(interaction, ctx, guildId, actor, parts);
+}
+
+export async function handleMenuChannelSelect(
+  interaction: ChannelSelectMenuInteraction,
+  ctx: AppContext,
+): Promise<void> {
+  if (!interaction.guildId) return;
+  const guildId = interaction.guildId;
+  const actor = getActor(interaction, ctx, guildId);
+  const parts = interaction.customId.split(':');
+  await tryHandleAiMenuChannelSelect(interaction, ctx, guildId, actor, parts);
 }
