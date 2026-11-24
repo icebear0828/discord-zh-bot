@@ -1,29 +1,67 @@
 import {
   ActionRowBuilder,
+  MessageFlags,
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
   type ButtonInteraction,
+  type ChannelSelectMenuInteraction,
   type ModalSubmitInteraction,
   type RoleSelectMenuInteraction,
   type StringSelectMenuInteraction,
 } from 'discord.js';
 import { buildRolePanelMessage } from '../commands/roles/rolePanel.js';
 import { DEFAULT_LEVELING_CONFIG } from '../config/defaults.js';
+import { SHOP_MYSTERY_BOX_MIN_PRICE } from '../config/economyConstants.js';
 import { parseCardColor, renderLevelUpTemplate } from '../services/levelingService.js';
-import { computeRoleDiff } from '../services/rolePanelService.js';
-import type { AppContext } from '../ui/embeds.js';
+import { computeRoleDiff, isValidDiscordEmoji } from '../services/rolePanelService.js';
+import { createInfoEmbed, type AppContext } from '../ui/embeds.js';
 import { buildMenuMessage } from '../ui/menuBuilder.js';
 import { truncateText, type MenuActor, type MenuFeedback } from '../ui/menuShared.js';
 import {
   ADMIN_DENIED_FEEDBACK,
   checkModuleDisabled,
+  editChannelMessage,
   parseIntInRange,
   parsePositiveInt,
   prefilledField,
   respondFromModal,
+  safeEditOrFollowUp,
   sendPublicBroadcast,
+  type MenuSupportedInteraction,
 } from './menuHelpers.js';
+
+async function syncPublishedRolePanel(
+  interaction: MenuSupportedInteraction,
+  ctx: AppContext,
+  guildId: string,
+  panelId: number,
+): Promise<boolean> {
+  const data = ctx.services.rolePanel.getPanelWithOptions(guildId, panelId);
+  if (!data || !data.panel.channelId || !data.panel.messageId) {
+    return false;
+  }
+  await editChannelMessage(
+    interaction.client,
+    data.panel.channelId,
+    data.panel.messageId,
+    buildRolePanelMessage(data.panel, data.options),
+    interaction.guild,
+  );
+  return true;
+}
+
+const SELECTION_MODE_SINGLE: ReadonlySet<string> = new Set(['single', '单选', '单选互斥']);
+const SELECTION_MODE_MULTI: ReadonlySet<string> = new Set(['multi', '多选', '自由多选']);
+const DISPLAY_MODE_BUTTON: ReadonlySet<string> = new Set(['button', '按钮', '按钮点击']);
+const DISPLAY_MODE_SELECT: ReadonlySet<string> = new Set(['select', '菜单', '下拉', '下拉菜单']);
+const SPECIAL_KIND_BOX: ReadonlySet<string> = new Set(['盲盒', '神秘盲盒', 'mystery_box', 'box']);
+const SPECIAL_KIND_TITLE: ReadonlySet<string> = new Set([
+  '称号券',
+  '自定义称号券',
+  'custom_title',
+  'title',
+]);
 
 function optionalInput(input: {
   customId: string;
@@ -326,7 +364,11 @@ export async function tryHandleConfigMenuButton(
         );
         return true;
       }
-      await interaction.update(buildMenuMessage(ctx, guildId, actor, { page: 'self_roles' }));
+      const panelId = parsePositiveInt(parts[3] ?? '') ?? undefined;
+      const panelPage = parsePositiveInt(parts[4] ?? '') ?? undefined;
+      await interaction.update(
+        buildMenuMessage(ctx, guildId, actor, { page: 'self_roles', panelId, panelPage }),
+      );
       return true;
     }
 
@@ -341,7 +383,31 @@ export async function tryHandleConfigMenuButton(
         );
         return true;
       }
-      await interaction.update(buildMenuMessage(ctx, guildId, actor, { page: target }));
+      if (target === 'admin_lvl_rewards') {
+        const listPage = parsePositiveInt(parts[3] ?? '') ?? 1;
+        await interaction.update(
+          buildMenuMessage(ctx, guildId, actor, { page: 'admin_lvl_rewards', listPage }),
+        );
+        return true;
+      }
+      if (target === 'admin_roles') {
+        const panelId = parsePositiveInt(parts[3] ?? '') ?? undefined;
+        const panelPage = parsePositiveInt(parts[4] ?? '') ?? undefined;
+        const optPage = parsePositiveInt(parts[5] ?? '') ?? undefined;
+        await interaction.update(
+          buildMenuMessage(ctx, guildId, actor, {
+            page: 'admin_roles',
+            panelId,
+            panelPage,
+            optPage,
+          }),
+        );
+        return true;
+      }
+      const listPage = parsePositiveInt(parts[3] ?? '') ?? 1;
+      await interaction.update(
+        buildMenuMessage(ctx, guildId, actor, { page: 'admin_shop', listPage }),
+      );
       return true;
     }
     return false;
@@ -357,6 +423,7 @@ export async function tryHandleConfigMenuButton(
       'rp_toggle_display',
       'rp_toggle_mode',
       'rp_delete',
+      'shop_del_confirm',
     ]);
     if (!action || !handledActions.has(action)) {
       return false;
@@ -365,6 +432,36 @@ export async function tryHandleConfigMenuButton(
     if (!actor.isAdmin) {
       await interaction.update(
         buildMenuMessage(ctx, guildId, actor, { page: 'home' }, ADMIN_DENIED_FEEDBACK),
+      );
+      return true;
+    }
+
+    if (action === 'shop_del_confirm') {
+      const itemId = parsePositiveInt(parts[3] ?? '');
+      const listPage = parsePositiveInt(parts[4] ?? '') ?? 1;
+      if (!itemId) {
+        await interaction.update(
+          buildMenuMessage(
+            ctx,
+            guildId,
+            actor,
+            { page: 'admin_shop', listPage },
+            { type: 'error', text: '无效的商品编号。' },
+          ),
+        );
+        return true;
+      }
+      const removed = ctx.services.shop.removeItem(guildId, itemId);
+      await interaction.update(
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'admin_shop', listPage },
+          removed
+            ? { type: 'success', text: `🗑️ 已下架商店商品 **#${itemId}**。` }
+            : { type: 'error', text: `未找到商品 **#${itemId}**。` },
+        ),
       );
       return true;
     }
@@ -457,10 +554,12 @@ export async function tryHandleConfigMenuButton(
         return true;
       }
 
+      await interaction.deferUpdate();
       const payload = buildRolePanelMessage(data.panel, data.options);
       const sent = await sendPublicBroadcast(interaction, payload);
       if (!sent.sent || !sent.messageId) {
-        await interaction.update(
+        await safeEditOrFollowUp(
+          interaction,
           buildMenuMessage(
             ctx,
             guildId,
@@ -475,7 +574,8 @@ export async function tryHandleConfigMenuButton(
       if (interaction.channelId) {
         ctx.services.rolePanel.setPanelMessage(panelId, interaction.channelId, sent.messageId);
       }
-      await interaction.update(
+      await safeEditOrFollowUp(
+        interaction,
         buildMenuMessage(
           ctx,
           guildId,
@@ -502,6 +602,7 @@ export async function tryHandleConfigMenuButton(
         return true;
       }
 
+      await interaction.deferUpdate();
       const nextDisplay =
         action === 'rp_toggle_display'
           ? data.panel.displayMode === 'button'
@@ -516,12 +617,15 @@ export async function tryHandleConfigMenuButton(
           : data.panel.selectionMode;
 
       ctx.services.rolePanel.updatePanelModes(guildId, panelId, nextDisplay, nextSelection);
-      const feedbackText =
+      const synced = await syncPublishedRolePanel(interaction, ctx, guildId, panelId);
+      const baseText =
         action === 'rp_toggle_display'
           ? `频道展示样式已切换为：**${nextDisplay === 'button' ? '按钮点击' : '下拉菜单'}**。`
           : `选择模式已切换为：**${nextSelection === 'single' ? '单选互斥' : '自由多选'}**。`;
+      const feedbackText = synced ? `${baseText}（已自动同步更新频道卡片）` : baseText;
 
-      await interaction.update(
+      await safeEditOrFollowUp(
+        interaction,
         buildMenuMessage(
           ctx,
           guildId,
@@ -534,15 +638,69 @@ export async function tryHandleConfigMenuButton(
     }
 
     if (action === 'rp_delete') {
+      const confirmed = parts[4] === 'confirm';
+      const existing = ctx.services.rolePanel.getPanelWithOptions(guildId, panelId);
+      if (!existing) {
+        await interaction.update(
+          buildMenuMessage(
+            ctx,
+            guildId,
+            actor,
+            { page: 'admin_roles' },
+            { type: 'error', text: `未找到面板 **#${panelId}**。` },
+          ),
+        );
+        return true;
+      }
+
+      if (!confirmed) {
+        await interaction.update(
+          buildMenuMessage(
+            ctx,
+            guildId,
+            actor,
+            { page: 'admin_roles', panelId, confirmDeletePanelId: panelId },
+            {
+              type: 'info',
+              text: `⚠️ 确认删除自助身份组面板 **#${panelId}「${existing.panel.title}」**？此操作不可撤销，已发布的频道卡片按钮将被停用。`,
+            },
+          ),
+        );
+        return true;
+      }
+
+      await interaction.deferUpdate();
       const deleted = ctx.services.rolePanel.deletePanel(guildId, panelId);
-      await interaction.update(
+      if (deleted && existing.panel.channelId && existing.panel.messageId) {
+        await editChannelMessage(
+          interaction.client,
+          existing.panel.channelId,
+          existing.panel.messageId,
+          {
+            embeds: [
+              createInfoEmbed(
+                `⛔ ${existing.panel.title}（已停用）`,
+                '该自助身份组面板已被管理员删除，自助领取已停止。',
+              ),
+            ],
+            components: [],
+          },
+          interaction.guild,
+        );
+      }
+
+      await safeEditOrFollowUp(
+        interaction,
         buildMenuMessage(
           ctx,
           guildId,
           actor,
           { page: 'admin_roles' },
           deleted
-            ? { type: 'success', text: `已删除身份组面板 **#${panelId}**。` }
+            ? {
+                type: 'success',
+                text: `已删除身份组面板 **#${panelId}**${existing.panel.messageId ? '（原频道卡片已清空按钮并标记停用）' : ''}。`,
+              }
             : { type: 'error', text: `未找到面板 **#${panelId}**。` },
         ),
       );
@@ -554,6 +712,13 @@ export async function tryHandleConfigMenuButton(
     const modalType = parts[2];
 
     if (modalType === 'edit_card') {
+      const disabledMsg = checkModuleDisabled(ctx, guildId, 'leveling', '等级与热度');
+      if (disabledMsg) {
+        await interaction.update(
+          buildMenuMessage(ctx, guildId, actor, { page: 'home' }, { type: 'error', text: disabledMsg }),
+        );
+        return true;
+      }
       const profile = ctx.repos.profile.getOrCreate(guildId, actor.id);
       await interaction.showModal(buildEditCardModal(profile));
       return true;
@@ -618,6 +783,7 @@ export async function tryHandleConfigMenuStringSelect(
       );
       return true;
     }
+    const listPage = parsePositiveInt(parts[2] ?? '') ?? 1;
     const itemId = parsePositiveInt(selected ?? '');
     if (!itemId) {
       await interaction.update(
@@ -625,22 +791,35 @@ export async function tryHandleConfigMenuStringSelect(
           ctx,
           guildId,
           actor,
-          { page: 'admin_shop' },
+          { page: 'admin_shop', listPage },
           { type: 'error', text: '无效的商品编号。' },
         ),
       );
       return true;
     }
-    const removed = ctx.services.shop.removeItem(guildId, itemId);
+    const targetItem = ctx.repos.shop.getItemById(guildId, itemId);
+    if (!targetItem) {
+      await interaction.update(
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'admin_shop', listPage },
+          { type: 'error', text: `未找到商品 **#${itemId}**。` },
+        ),
+      );
+      return true;
+    }
     await interaction.update(
       buildMenuMessage(
         ctx,
         guildId,
         actor,
-        { page: 'admin_shop' },
-        removed
-          ? { type: 'success', text: `🗑️ 已下架商店商品 **#${itemId}**。` }
-          : { type: 'error', text: `未找到商品 **#${itemId}**。` },
+        { page: 'admin_shop', listPage, confirmDeleteItemId: itemId },
+        {
+          type: 'info',
+          text: `⚠️ 确认下架商店商品 **#${targetItem.id}「${targetItem.name}」**？点击下方「✅ 确认下架」完成操作。`,
+        },
       ),
     );
     return true;
@@ -653,6 +832,7 @@ export async function tryHandleConfigMenuStringSelect(
       );
       return true;
     }
+    const listPage = parsePositiveInt(parts[2] ?? '') ?? 1;
     const level = parsePositiveInt(selected ?? '');
     if (!level) {
       await interaction.update(
@@ -660,7 +840,7 @@ export async function tryHandleConfigMenuStringSelect(
           ctx,
           guildId,
           actor,
-          { page: 'admin_lvl_rewards' },
+          { page: 'admin_lvl_rewards', listPage },
           { type: 'error', text: '无效的等级参数。' },
         ),
       );
@@ -672,7 +852,7 @@ export async function tryHandleConfigMenuStringSelect(
         ctx,
         guildId,
         actor,
-        { page: 'admin_lvl_rewards' },
+        { page: 'admin_lvl_rewards', listPage },
         removed
           ? { type: 'success', text: `已移除 **Lv.${level}** 的升级身份组奖励。` }
           : { type: 'error', text: `未找到 Lv.${level} 的奖励记录。` },
@@ -688,9 +868,14 @@ export async function tryHandleConfigMenuStringSelect(
       );
       return true;
     }
+    const panelPage = parsePositiveInt(parts[2] ?? '') ?? undefined;
     const panelId = parsePositiveInt(selected ?? '');
     await interaction.update(
-      buildMenuMessage(ctx, guildId, actor, { page: 'admin_roles', panelId: panelId ?? undefined }),
+      buildMenuMessage(ctx, guildId, actor, {
+        page: 'admin_roles',
+        panelId: panelId ?? undefined,
+        panelPage,
+      }),
     );
     return true;
   }
@@ -703,6 +888,7 @@ export async function tryHandleConfigMenuStringSelect(
       return true;
     }
     const panelId = parsePositiveInt(parts[2] ?? '');
+    const optPage = parsePositiveInt(parts[3] ?? '') ?? 1;
     if (!panelId || !selected) {
       await interaction.update(
         buildMenuMessage(
@@ -715,15 +901,21 @@ export async function tryHandleConfigMenuStringSelect(
       );
       return true;
     }
+    await interaction.deferUpdate();
     const removed = ctx.services.rolePanel.removeOption(guildId, panelId, selected);
-    await interaction.update(
+    const synced = removed ? await syncPublishedRolePanel(interaction, ctx, guildId, panelId) : false;
+    await safeEditOrFollowUp(
+      interaction,
       buildMenuMessage(
         ctx,
         guildId,
         actor,
-        { page: 'admin_roles', panelId },
+        { page: 'admin_roles', panelId, optPage },
         removed
-          ? { type: 'success', text: `已从面板 **#${panelId}** 移除 <@&${selected}>。` }
+          ? {
+              type: 'success',
+              text: `已从面板 **#${panelId}** 移除 <@&${selected}>${synced ? '（已同步刷新频道卡片）' : ''}。`,
+            }
           : { type: 'error', text: `面板 **#${panelId}** 中未找到该身份组选项。` },
       ),
     );
@@ -738,9 +930,14 @@ export async function tryHandleConfigMenuStringSelect(
       );
       return true;
     }
+    const panelPage = parsePositiveInt(parts[2] ?? '') ?? undefined;
     const panelId = parsePositiveInt(selected ?? '');
     await interaction.update(
-      buildMenuMessage(ctx, guildId, actor, { page: 'self_roles', panelId: panelId ?? undefined }),
+      buildMenuMessage(ctx, guildId, actor, {
+        page: 'self_roles',
+        panelId: panelId ?? undefined,
+        panelPage,
+      }),
     );
     return true;
   }
@@ -755,14 +952,14 @@ export async function tryHandleConfigMenuStringSelect(
     }
 
     const panelId = parsePositiveInt(parts[2] ?? '');
-    if (!panelId || !interaction.inCachedGuild()) {
+    if (!panelId) {
       await interaction.update(
         buildMenuMessage(
           ctx,
           guildId,
           actor,
           { page: 'self_roles' },
-          { type: 'error', text: '无法识别身份组面板或服务器成员上下文。' },
+          { type: 'error', text: '无法识别身份组面板编号。' },
         ),
       );
       return true;
@@ -782,8 +979,26 @@ export async function tryHandleConfigMenuStringSelect(
       return true;
     }
 
+    await interaction.deferUpdate();
+    const member = interaction.inCachedGuild()
+      ? interaction.member
+      : ((await interaction.guild?.members?.fetch(actor.id).catch(() => null)) ?? null);
+    if (!member) {
+      await safeEditOrFollowUp(
+        interaction,
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'self_roles', panelId },
+          { type: 'error', text: '无法识别服务器成员上下文，请稍后重试。' },
+        ),
+      );
+      return true;
+    }
+
     const panelRoleIds = data.options.map((o) => o.roleId);
-    const currentRoles = [...interaction.member.roles.cache.keys()];
+    const currentRoles = [...member.roles.cache.keys()];
     const diff = computeRoleDiff(
       panelRoleIds,
       currentRoles,
@@ -794,13 +1009,14 @@ export async function tryHandleConfigMenuStringSelect(
 
     try {
       if (diff.toRemove.length > 0) {
-        await interaction.member.roles.remove(diff.toRemove, `菜单自助身份组 #${panelId}`);
+        await member.roles.remove(diff.toRemove, `菜单自助身份组 #${panelId}`);
       }
       if (diff.toAdd.length > 0) {
-        await interaction.member.roles.add(diff.toAdd, `菜单自助身份组 #${panelId}`);
+        await member.roles.add(diff.toAdd, `菜单自助身份组 #${panelId}`);
       }
     } catch {
-      await interaction.update(
+      await safeEditOrFollowUp(
+        interaction,
         buildMenuMessage(
           ctx,
           guildId,
@@ -833,13 +1049,82 @@ export async function tryHandleConfigMenuStringSelect(
         ? { type: 'success', text: changeParts.join('\n') }
         : { type: 'info', text: '你的身份组配置未发生变更。' };
 
-    await interaction.update(
+    await safeEditOrFollowUp(
+      interaction,
       buildMenuMessage(ctx, guildId, nextActor, { page: 'self_roles', panelId }, feedback),
     );
     return true;
   }
 
   return false;
+}
+
+export async function tryHandleConfigMenuChannelSelect(
+  interaction: ChannelSelectMenuInteraction,
+  ctx: AppContext,
+  guildId: string,
+  actor: MenuActor,
+  parts: readonly string[],
+): Promise<boolean> {
+  if (parts[1] !== 'chan') {
+    return false;
+  }
+  const target = parts[2];
+  if (target !== 'admin_lvl_announce' && target !== 'admin_games_event') {
+    return false;
+  }
+
+  if (!actor.isAdmin) {
+    await interaction.update(
+      buildMenuMessage(ctx, guildId, actor, { page: 'home' }, ADMIN_DENIED_FEEDBACK),
+    );
+    return true;
+  }
+
+  const channelId = interaction.values[0] ?? null;
+  const cfg = ctx.repos.guildConfig.getOrCreate(guildId);
+
+  if (target === 'admin_lvl_announce') {
+    ctx.repos.guildConfig.updateLeveling(guildId, {
+      ...cfg.leveling,
+      announceChannelId: channelId,
+    });
+    await interaction.update(
+      buildMenuMessage(
+        ctx,
+        guildId,
+        actor,
+        { page: 'admin_lvl' },
+        {
+          type: 'success',
+          text: channelId
+            ? `已将升级播报频道设为 <#${channelId}>。`
+            : '已清空固定升级播报频道，将在成员当前发言频道发送通知。',
+        },
+      ),
+    );
+    return true;
+  }
+
+  ctx.repos.guildConfig.updateGames(guildId, {
+    ...cfg.games,
+    eventChannelId: channelId,
+  });
+  await interaction.update(
+    buildMenuMessage(
+      ctx,
+      guildId,
+      actor,
+      { page: 'admin_games' },
+      {
+        type: 'success',
+        text: channelId
+          ? `已将世界事件指定频道设为 <#${channelId}>。`
+          : '已清空世界事件指定频道，将在当前活跃频道自动刷出。',
+      },
+    ),
+  );
+  return true;
 }
 
 export async function tryHandleConfigMenuRoleSelect(
@@ -1020,6 +1305,14 @@ export async function tryHandleConfigMenuModal(
   const modalType = parts[2];
 
   if (modalType === 'edit_card') {
+    const disabledMsg = checkModuleDisabled(ctx, guildId, 'leveling', '等级与热度');
+    if (disabledMsg) {
+      await respondFromModal(
+        interaction,
+        buildMenuMessage(ctx, guildId, actor, { page: 'home' }, { type: 'error', text: disabledMsg }),
+      );
+      return true;
+    }
     const rawNickname = interaction.fields.getTextInputValue('cardNickname').trim();
     const rawTag = interaction.fields.getTextInputValue('cardTag').trim();
     const rawBio = interaction.fields.getTextInputValue('cardBio').trim();
@@ -1208,12 +1501,44 @@ export async function tryHandleConfigMenuModal(
       return true;
     }
 
-    const selectionMode =
-      rawSelection === 'single' || rawSelection.includes('单选') ? 'single' : 'multi';
-    const displayMode =
-      rawDisplay === 'select' || rawDisplay.includes('菜单') || rawDisplay.includes('下拉')
-        ? 'select'
-        : 'button';
+    const selectionMode = SELECTION_MODE_SINGLE.has(rawSelection)
+      ? 'single'
+      : SELECTION_MODE_MULTI.has(rawSelection)
+        ? 'multi'
+        : null;
+    if (!selectionMode) {
+      await respondFromModal(
+        interaction,
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'admin_roles' },
+          { type: 'error', text: '选择模式无效：请填写「多选」或「单选」（或 multi / single）。' },
+        ),
+      );
+      return true;
+    }
+
+    const displayMode = DISPLAY_MODE_SELECT.has(rawDisplay)
+      ? 'select'
+      : DISPLAY_MODE_BUTTON.has(rawDisplay)
+        ? 'button'
+        : null;
+    if (!displayMode) {
+      await respondFromModal(
+        interaction,
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'admin_roles' },
+          { type: 'error', text: '频道展示样式无效：请填写「按钮」或「菜单」（或 button / select）。' },
+        ),
+      );
+      return true;
+    }
+
     const description =
       rawDesc || '点击下方选项即可自助领取或取消对应身份组。';
 
@@ -1262,6 +1587,35 @@ export async function tryHandleConfigMenuModal(
       return true;
     }
 
+    if (emoji !== null && !isValidDiscordEmoji(emoji)) {
+      await respondFromModal(
+        interaction,
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'admin_roles', panelId },
+          {
+            type: 'error',
+            text: '图标 Emoji 格式无效：请输入标准 Unicode 表情（如 🎮）或服务器自定义表情（如 `<:name:123456789012345678>`），也可留空。',
+          },
+        ),
+      );
+      return true;
+    }
+
+    const existingPanel = ctx.services.rolePanel.getPanelWithOptions(guildId, panelId);
+    const shouldSyncChannel = Boolean(
+      existingPanel?.panel.channelId && existingPanel.panel.messageId,
+    );
+    if (shouldSyncChannel) {
+      if (interaction.isFromMessage()) {
+        await interaction.deferUpdate();
+      } else {
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      }
+    }
+
     const res = ctx.services.rolePanel.addOption(guildId, panelId, {
       roleId,
       label,
@@ -1274,32 +1628,39 @@ export async function tryHandleConfigMenuModal(
         limit_reached: '单个面板最多支持 25 个身份组选项。',
         duplicate_role: `面板中已存在 <@&${roleId}>。`,
       };
-      await respondFromModal(
-        interaction,
-        buildMenuMessage(
-          ctx,
-          guildId,
-          actor,
-          { page: 'admin_roles', panelId },
-          { type: 'error', text: msgMap[res.reason] },
-        ),
-      );
-      return true;
-    }
-
-    await respondFromModal(
-      interaction,
-      buildMenuMessage(
+      const errMsg = buildMenuMessage(
         ctx,
         guildId,
         actor,
         { page: 'admin_roles', panelId },
-        {
-          type: 'success',
-          text: `✅ 已将 <@&${roleId}>（${emoji ? `${emoji} ` : ''}${label}）添加到面板 **#${panelId}**！`,
-        },
-      ),
+        { type: 'error', text: msgMap[res.reason] },
+      );
+      if (shouldSyncChannel) {
+        await safeEditOrFollowUp(interaction, errMsg);
+      } else {
+        await respondFromModal(interaction, errMsg);
+      }
+      return true;
+    }
+
+    const synced = shouldSyncChannel
+      ? await syncPublishedRolePanel(interaction, ctx, guildId, panelId)
+      : false;
+    const okMsg = buildMenuMessage(
+      ctx,
+      guildId,
+      actor,
+      { page: 'admin_roles', panelId },
+      {
+        type: 'success',
+        text: `✅ 已将 <@&${roleId}>（${emoji ? `${emoji} ` : ''}${label}）添加到面板 **#${panelId}**${synced ? '（已自动同步刷新频道卡片）' : ''}！`,
+      },
     );
+    if (shouldSyncChannel) {
+      await safeEditOrFollowUp(interaction, okMsg);
+    } else {
+      await respondFromModal(interaction, okMsg);
+    }
     return true;
   }
 
@@ -1507,8 +1868,14 @@ async function handleAdminShopModal(
   }
 
   const rawKind = interaction.fields.getTextInputValue('kind').trim().toLowerCase();
-  const isCustomTitle =
-    rawKind.includes('称号') || rawKind === 'custom_title' || rawKind === 'title';
+  const isCustomTitle = SPECIAL_KIND_TITLE.has(rawKind);
+  const isMysteryBox = SPECIAL_KIND_BOX.has(rawKind);
+  if (!isCustomTitle && !isMysteryBox) {
+    return fail('商品类型无效：请填写「盲盒」或「称号券」（或 mystery_box / custom_title）。');
+  }
+  if (isMysteryBox && price < SHOP_MYSTERY_BOX_MIN_PRICE) {
+    return fail(`神秘盲盒售价不能低于 **${SHOP_MYSTERY_BOX_MIN_PRICE}** ${econCfg.currencyName}。`);
+  }
 
   const created = isCustomTitle
     ? ctx.services.shop.createCustomTitleItem({ guildId, name, description, price, stock })

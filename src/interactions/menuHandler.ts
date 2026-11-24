@@ -1,10 +1,8 @@
 import {
   ActionRowBuilder,
-  ComponentType,
   EmbedBuilder,
   MessageFlags,
   ModalBuilder,
-  PermissionFlagsBits,
   TextInputBuilder,
   TextInputStyle,
   type ButtonInteraction,
@@ -21,8 +19,15 @@ import {
   DEFAULT_LEVELING_CONFIG,
   type ModuleKey,
 } from '../config/defaults.js';
+import {
+  BANK_ROB_ATTACKER_MIN_ASSETS,
+  BANK_ROB_TARGET_MIN,
+  MAX_COIN_AMOUNT,
+  MAX_SOLO_GAMBLE_BET,
+  ROB_ATTACKER_MIN_ASSETS,
+  ROB_TARGET_MIN_COINS,
+} from '../config/economyConstants.js';
 import { MonitorRepo } from '../db/repositories/monitorRepo.js';
-import { buildLeaderboardMessage } from '../commands/leveling/leaderboard.js';
 import type { BlackjackActionResult, BlackjackGame } from '../services/blackjackService.js';
 import type { DiceChoice } from '../services/economyService.js';
 import type { InteractionAction } from '../services/funService.js';
@@ -52,6 +57,7 @@ import {
 } from '../ui/menuShared.js';
 import {
   tryHandleConfigMenuButton,
+  tryHandleConfigMenuChannelSelect,
   tryHandleConfigMenuModal,
   tryHandleConfigMenuRoleSelect,
   tryHandleConfigMenuStringSelect,
@@ -68,7 +74,20 @@ import {
   tryHandleGamesMenuStringSelect,
   tryHandleGamesMenuUserSelect,
 } from './gamesMenuHandler.js';
-import { getActor } from './menuHelpers.js';
+import {
+  ADMIN_DENIED_FEEDBACK,
+  SUPER_ADMIN_DENIED_FEEDBACK,
+  checkModuleDisabled,
+  isGuildSuperAdmin,
+  parseIntInRange,
+  parseNumberInRange,
+  parsePositiveInt,
+  prefilledField,
+  resolveActor,
+  respondFromModal,
+  safeEditOrFollowUp,
+  sendPublicBroadcast,
+} from './menuHelpers.js';
 
 const VALID_SOCIAL_ACTIONS: ReadonlySet<string> = new Set([
   'pat',
@@ -94,53 +113,6 @@ const VALID_MODULE_KEYS: ReadonlySet<string> = new Set([
   'ai',
 ]);
 
-const ADMIN_DENIED_FEEDBACK: MenuFeedback = {
-  type: 'error',
-  text: '🔒 权限不足：仅服务器管理员或已授权的 Bot 管理员可进入管理后台。',
-};
-
-function parsePositiveInt(raw: string): number | null {
-  const trimmed = raw.trim();
-  if (!/^\d+$/.test(trimmed)) return null;
-  const num = Number(trimmed);
-  if (!Number.isSafeInteger(num) || num <= 0) return null;
-  return num;
-}
-
-function parseIntInRange(raw: string, min: number, max: number): number | null {
-  const trimmed = raw.trim();
-  if (!/^-?\d+$/.test(trimmed)) return null;
-  const num = Number(trimmed);
-  if (!Number.isSafeInteger(num) || num < min || num > max) return null;
-  return num;
-}
-
-function parseNumberInRange(raw: string, min: number, max: number): number | null {
-  const trimmed = raw.trim();
-  if (!/^\d+(\.\d+)?$/.test(trimmed)) return null;
-  const num = Number(trimmed);
-  if (!Number.isFinite(num) || num < min || num > max) return null;
-  return num;
-}
-
-function prefilledField(
-  customId: string,
-  label: string,
-  value: string | number,
-  maxLength = 12,
-): ActionRowBuilder<TextInputBuilder> {
-  return new ActionRowBuilder<TextInputBuilder>().addComponents(
-    new TextInputBuilder()
-      .setCustomId(customId)
-      .setLabel(truncateText(label, 45))
-      .setStyle(TextInputStyle.Short)
-      .setMinLength(1)
-      .setMaxLength(maxLength)
-      .setValue(String(value))
-      .setRequired(true),
-  );
-}
-
 function parseDiceChoice(raw: string | undefined): DiceChoice {
   if (raw === 'small' || raw === 'triple') return raw;
   return 'big';
@@ -156,31 +128,6 @@ function parseSocialAction(raw: string | undefined): InteractionAction {
 function parseLeaderboardType(raw: string | undefined): LeaderboardType {
   if (raw === 'coins' || raw === 'invites' || raw === 'stat') return raw;
   return 'xp';
-}
-
-function checkModuleDisabled(
-  ctx: AppContext,
-  guildId: string,
-  key: ModuleKey,
-  displayName: string,
-): string | null {
-  const cfg = ctx.repos.guildConfig.getOrCreate(guildId);
-  if (!cfg.modules[key]) {
-    return `当前服务器已关闭「${displayName}」模块，请联系管理员通过 \`/设置 开关模块\` 开启。`;
-  }
-  return null;
-}
-
-function detectHomeOrSolo(interaction: ButtonInteraction): 'home' | 'solo' {
-  for (const row of interaction.message.components) {
-    if (row.type !== ComponentType.ActionRow) continue;
-    for (const comp of row.components) {
-      if (comp.customId === 'menu:nav:slots') {
-        return 'solo';
-      }
-    }
-  }
-  return 'home';
 }
 
 function buildAmountModal(
@@ -204,10 +151,10 @@ function buildAmountModal(
     .addComponents(new ActionRowBuilder<TextInputBuilder>().addComponents(input));
 }
 
-function buildRedPacketModal(): ModalBuilder {
+function buildRedPacketModal(currencyName: string): ModalBuilder {
   const totalAmount = new TextInputBuilder()
     .setCustomId('totalAmount')
-    .setLabel('红包总金额（1 ~ 1,000,000,000 星币）')
+    .setLabel(truncateText(`红包总金额（1 ~ 1,000,000,000 ${currencyName}）`, 45))
     .setStyle(TextInputStyle.Short)
     .setMinLength(1)
     .setMaxLength(12)
@@ -241,10 +188,15 @@ function buildRedPacketModal(): ModalBuilder {
     );
 }
 
-function buildAdminRedPacketModal(customId: string, title: string, minCount = 1): ModalBuilder {
+function buildAdminRedPacketModal(
+  customId: string,
+  title: string,
+  minCount: number,
+  currencyName: string,
+): ModalBuilder {
   const totalAmount = new TextInputBuilder()
     .setCustomId('totalAmount')
-    .setLabel('红包总金额（1 ~ 1,000,000,000 星币）')
+    .setLabel(truncateText(`红包总金额（1 ~ 1,000,000,000 ${currencyName}）`, 45))
     .setStyle(TextInputStyle.Short)
     .setMinLength(1)
     .setMaxLength(12)
@@ -278,56 +230,17 @@ function buildAdminRedPacketModal(customId: string, title: string, minCount = 1)
     );
 }
 
-async function respondFromModal(
-  interaction: ModalSubmitInteraction,
-  msg: BuiltMenuMessage,
-): Promise<void> {
+async function deferModalForWrite(interaction: ModalSubmitInteraction): Promise<void> {
   if (interaction.isFromMessage()) {
-    await interaction.update(msg);
+    await interaction.deferUpdate();
   } else {
-    await interaction.reply({ ...msg, flags: MessageFlags.Ephemeral });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   }
 }
-
-type MenuSupportedInteraction =
-  | ButtonInteraction
-  | StringSelectMenuInteraction
-  | UserSelectMenuInteraction
-  | ModalSubmitInteraction;
 
 interface ActionWithHighlight {
   msg: BuiltMenuMessage;
   highlight?: MessageCreateOptions;
-}
-
-async function sendPublicBroadcast(
-  interaction: MenuSupportedInteraction,
-  payload: MessageCreateOptions,
-): Promise<boolean> {
-  const safePayload: MessageCreateOptions = {
-    allowedMentions: { parse: [] },
-    ...payload,
-  };
-  try {
-    const direct = interaction.channel;
-    if (direct && direct.isSendable()) {
-      await direct.send(safePayload);
-      return true;
-    }
-    if (interaction.channelId) {
-      const fetched = await interaction.client.channels
-        .fetch(interaction.channelId)
-        .catch(() => null);
-      if (fetched && fetched.isSendable()) {
-        await fetched.send(safePayload);
-        return true;
-      }
-    }
-    return false;
-  } catch (err) {
-    console.error('[menu] 发送频道公开播报失败:', err);
-    return false;
-  }
 }
 
 function buildBlackjackOutcomeFeedback(
@@ -387,10 +300,12 @@ function runSlotsAction(
   const cfg = ctx.repos.guildConfig.getOrCreate(guildId).economy;
   const res = ctx.services.economy.playSlots(guildId, actor.id, bet);
   if (!res.ok) {
-    const text =
-      res.reason === 'insufficient_funds'
-        ? `口袋现金不足，无法下注 **${bet}** ${cfg.currencyName}。`
-        : '下注金额无效，请输入大于 0 的整数。';
+    const reasonMap: Record<string, string> = {
+      insufficient_funds: `口袋现金不足，无法下注 **${bet}** ${cfg.currencyName}。`,
+      bet_too_large: `单局下注不能超过 **${MAX_SOLO_GAMBLE_BET.toLocaleString('en-US')}** ${cfg.currencyName}。`,
+      invalid_bet: '下注金额无效，请输入大于 0 的整数。',
+    };
+    const text = reasonMap[res.reason] ?? '下注金额无效，请输入大于 0 的整数。';
     return {
       msg: buildMenuMessage(ctx, guildId, actor, { page: 'slots' }, { type: 'error', text }),
     };
@@ -438,10 +353,12 @@ function runDiceAction(
   const cfg = ctx.repos.guildConfig.getOrCreate(guildId).economy;
   const res = ctx.services.economy.playDice(guildId, actor.id, bet, choice);
   if (!res.ok) {
-    const text =
-      res.reason === 'insufficient_funds'
-        ? `口袋现金不足，无法下注 **${bet}** ${cfg.currencyName}。`
-        : '下注金额无效，请输入大于 0 的整数。';
+    const reasonMap: Record<string, string> = {
+      insufficient_funds: `口袋现金不足，无法下注 **${bet}** ${cfg.currencyName}。`,
+      bet_too_large: `单局下注不能超过 **${MAX_SOLO_GAMBLE_BET.toLocaleString('en-US')}** ${cfg.currencyName}。`,
+      invalid_bet: '下注金额无效，请输入大于 0 的整数。',
+    };
+    const text = reasonMap[res.reason] ?? '下注金额无效，请输入大于 0 的整数。';
     return {
       msg: buildMenuMessage(ctx, guildId, actor, { page: 'dice', choice }, { type: 'error', text }),
     };
@@ -483,9 +400,10 @@ function buildBlackjackResponse(
 ): ActionWithHighlight {
   const cfg = ctx.repos.guildConfig.getOrCreate(guildId).economy;
   if (!res.ok) {
-    const msgMap: Record<typeof res.reason, string> = {
+    const msgMap: Record<string, string> = {
       invalid_bet: '下注金额无效，请输入大于 0 的整数。',
-      insufficient_funds: `口袋现金不足！`,
+      bet_too_large: `单局下注不能超过 **${MAX_SOLO_GAMBLE_BET.toLocaleString('en-US')}** ${cfg.currencyName}。`,
+      insufficient_funds: '口袋现金不足！',
       game_already_active: '你还有一局未结束的二十一点，请先完成当前对局。',
       no_active_game: '当前没有进行中的牌局，请先下注开局。',
       cannot_double: '只能在首轮两张牌时双倍下注。',
@@ -496,7 +414,7 @@ function buildBlackjackResponse(
         guildId,
         actor,
         { page: 'bj' },
-        { type: 'error', text: msgMap[res.reason] },
+        { type: 'error', text: msgMap[res.reason] ?? '当前牌局操作失败，请重试。' },
       ),
     };
   }
@@ -577,7 +495,7 @@ export async function handleMenuButton(
 ): Promise<void> {
   if (!interaction.guildId) return;
   const guildId = interaction.guildId;
-  const actor = getActor(interaction, ctx, guildId);
+  const actor = await resolveActor(interaction, ctx, guildId);
   const parts = interaction.customId.split(':');
   const section = parts[1];
 
@@ -633,6 +551,66 @@ export async function handleMenuButton(
       return;
     }
 
+    const econPages = new Set(['slots', 'dice', 'bj', 'bank', 'rob', 'pay', 'duel', 'shop', 'bag']);
+    if (target && econPages.has(target)) {
+      const disabledMsg = checkModuleDisabled(ctx, guildId, 'economy', '经济系统');
+      if (disabledMsg) {
+        await interaction.update(
+          buildMenuMessage(ctx, guildId, actor, { page: 'home' }, { type: 'error', text: disabledMsg }),
+        );
+        return;
+      }
+    }
+
+    if (target === 'social') {
+      const disabledMsg = checkModuleDisabled(ctx, guildId, 'fun', '娱乐互动');
+      if (disabledMsg) {
+        await interaction.update(
+          buildMenuMessage(ctx, guildId, actor, { page: 'home' }, { type: 'error', text: disabledMsg }),
+        );
+        return;
+      }
+    }
+
+    if (target === 'solo') {
+      const cfg = ctx.repos.guildConfig.getOrCreate(guildId);
+      if (!cfg.modules.economy && !cfg.modules.fun) {
+        await interaction.update(
+          buildMenuMessage(
+            ctx,
+            guildId,
+            actor,
+            { page: 'home' },
+            {
+              type: 'error',
+              text: '当前服务器已关闭「经济系统」与「娱乐互动」模块，暂无法进入独立游玩页面。',
+            },
+          ),
+        );
+        return;
+      }
+    }
+
+    if (target === 'multi') {
+      const cfg = ctx.repos.guildConfig.getOrCreate(guildId);
+      if (!cfg.modules.economy && !cfg.modules.fun && !cfg.modules.socialGames) {
+        await interaction.update(
+          buildMenuMessage(
+            ctx,
+            guildId,
+            actor,
+            { page: 'home' },
+            {
+              type: 'error',
+              text: '当前服务器已关闭「经济系统」「娱乐互动」与「整蛊与博弈」模块，暂无法进入多人博弈大厅。',
+            },
+          ),
+        );
+        return;
+      }
+    }
+
+    const listPage = parsePositiveInt(parts[3] ?? '') ?? undefined;
     const viewMap: Record<string, MenuView> = {
       home: { page: 'home' },
       solo: { page: 'solo' },
@@ -644,8 +622,8 @@ export async function handleMenuButton(
       rob: { page: 'rob' },
       pay: { page: 'pay' },
       duel: { page: 'duel' },
-      shop: { page: 'shop' },
-      bag: { page: 'bag' },
+      shop: { page: 'shop', listPage },
+      bag: { page: 'bag', listPage },
     };
 
     const view: MenuView =
@@ -659,7 +637,7 @@ export async function handleMenuButton(
 
   if (section === 'act') {
     const action = parts[2];
-    const sourcePage = detectHomeOrSolo(interaction);
+    const sourcePage: 'home' | 'solo' = parts[3] === 'solo' ? 'solo' : 'home';
     const view: MenuView = { page: sourcePage };
 
     if (action === 'daily') {
@@ -718,6 +696,14 @@ export async function handleMenuButton(
       }
       const cfg = ctx.repos.guildConfig.getOrCreate(guildId).economy;
       const res = ctx.services.fun.drawDailyFortune(guildId, actor.id);
+      const feedback: MenuFeedback = {
+        type: res.alreadyDrawn ? 'info' : 'success',
+        text: [
+          `🎋 今日运势：**【${res.record.luckTier}】**${res.alreadyDrawn ? '（今日已抽签）' : ` · 首抽获赠 ${cfg.currencyEmoji} **+${res.record.bonusCoins}** ${cfg.currencyName}！`}`,
+          `🟢 宜：${res.record.goodFor} ｜ 🔴 忌：${res.record.avoid} ｜ 🔢 幸运数字：**${res.record.luckyNumber}**`,
+        ].join('\n'),
+      };
+      await interaction.update(buildMenuMessage(ctx, guildId, actor, view, feedback));
       if (!res.alreadyDrawn && res.record.luckTier === '大吉') {
         await sendPublicBroadcast(interaction, {
           content: `🎋 欧皇抽签！<@${actor.id}> 今日抽到【大吉】，获赠 **+${res.record.bonusCoins}** ${cfg.currencyName}！`,
@@ -729,14 +715,6 @@ export async function handleMenuButton(
           ],
         });
       }
-      const feedback: MenuFeedback = {
-        type: res.alreadyDrawn ? 'info' : 'success',
-        text: [
-          `🎋 今日运势：**【${res.record.luckTier}】**${res.alreadyDrawn ? '（今日已抽签）' : ` · 首抽获赠 ${cfg.currencyEmoji} **+${res.record.bonusCoins}** ${cfg.currencyName}！`}`,
-          `🟢 宜：${res.record.goodFor} ｜ 🔴 忌：${res.record.avoid} ｜ 🔢 幸运数字：**${res.record.luckyNumber}**`,
-        ].join('\n'),
-      };
-      await interaction.update(buildMenuMessage(ctx, guildId, actor, view, feedback));
       return;
     }
   }
@@ -744,14 +722,21 @@ export async function handleMenuButton(
   if (section === 'slots') {
     const bet = parsePositiveInt(parts[2] ?? '') ?? 0;
     const out = runSlotsAction(ctx, guildId, actor, bet);
+    await interaction.update(out.msg);
     if (out.highlight) {
       await sendPublicBroadcast(interaction, out.highlight);
     }
-    await interaction.update(out.msg);
     return;
   }
 
   if (section === 'dice_pick') {
+    const disabledMsg = checkModuleDisabled(ctx, guildId, 'economy', '经济系统');
+    if (disabledMsg) {
+      await interaction.update(
+        buildMenuMessage(ctx, guildId, actor, { page: 'home' }, { type: 'error', text: disabledMsg }),
+      );
+      return;
+    }
     const choice = parseDiceChoice(parts[2]);
     await interaction.update(buildMenuMessage(ctx, guildId, actor, { page: 'dice', choice }));
     return;
@@ -761,10 +746,10 @@ export async function handleMenuButton(
     const choice = parseDiceChoice(parts[2]);
     const bet = parsePositiveInt(parts[3] ?? '') ?? 0;
     const out = runDiceAction(ctx, guildId, actor, choice, bet);
+    await interaction.update(out.msg);
     if (out.highlight) {
       await sendPublicBroadcast(interaction, out.highlight);
     }
-    await interaction.update(out.msg);
     return;
   }
 
@@ -779,10 +764,10 @@ export async function handleMenuButton(
     const bet = parsePositiveInt(parts[2] ?? '') ?? 0;
     const res = ctx.services.blackjack.startGame(guildId, actor.id, bet);
     const out = buildBlackjackResponse(ctx, guildId, actor, res);
+    await interaction.update(out.msg);
     if (out.highlight) {
       await sendPublicBroadcast(interaction, out.highlight);
     }
-    await interaction.update(out.msg);
     return;
   }
 
@@ -802,10 +787,10 @@ export async function handleMenuButton(
           ? ctx.services.blackjack.doubleDown(guildId, actor.id)
           : ctx.services.blackjack.stand(guildId, actor.id);
     const out = buildBlackjackResponse(ctx, guildId, actor, res);
+    await interaction.update(out.msg);
     if (out.highlight) {
       await sendPublicBroadcast(interaction, out.highlight);
     }
-    await interaction.update(out.msg);
     return;
   }
 
@@ -844,6 +829,7 @@ export async function handleMenuButton(
         );
         return;
       }
+      const cfg = ctx.repos.guildConfig.getOrCreate(guildId).economy;
       const profile = ctx.repos.profile.getOrCreate(guildId, actor.id);
       const source = sub === 'dep' ? profile.coins : profile.bankCoins;
       const mode = parts[3];
@@ -857,8 +843,8 @@ export async function handleMenuButton(
       if (amount < 1) {
         const text =
           sub === 'dep'
-            ? '口袋现金不足，按比例计算不足 1 星币，无法存入。'
-            : '银行存款不足，按比例计算不足 1 星币，无法取出。';
+            ? `口袋现金不足，按比例计算不足 1 ${cfg.currencyName}，无法存入。`
+            : `银行存款不足，按比例计算不足 1 ${cfg.currencyName}，无法取出。`;
         await interaction.update(
           buildMenuMessage(ctx, guildId, actor, { page: 'bank' }, { type: 'error', text }),
         );
@@ -873,6 +859,13 @@ export async function handleMenuButton(
   }
 
   if (section === 'bag' && parts[2] === 'clear_title') {
+    const disabledMsg = checkModuleDisabled(ctx, guildId, 'economy', '经济系统');
+    if (disabledMsg) {
+      await interaction.update(
+        buildMenuMessage(ctx, guildId, actor, { page: 'home' }, { type: 'error', text: disabledMsg }),
+      );
+      return;
+    }
     ctx.services.fun.clearTitle(guildId, actor.id);
     await interaction.update(
       buildMenuMessage(
@@ -911,31 +904,8 @@ export async function handleMenuButton(
       return;
     }
 
-    const isPageTurn = parts[4] === 'prev' || parts[4] === 'next';
-    if (isPageTurn) {
-      await interaction.update(
-        buildMenuMessage(ctx, guildId, actor, { page: 'leaderboard', lbType, lbPage }),
-      );
-      return;
-    }
-
-    const fullCfg = ctx.repos.guildConfig.getOrCreate(guildId);
-    const lbNameMap: Record<LeaderboardType, string> = {
-      xp: '等级经验排行榜',
-      coins: `${fullCfg.economy.currencyName}富豪榜`,
-      invites: '邀请贡献排行榜',
-      stat: `${fullCfg.leveling.statName}排行榜`,
-    };
-    const sent = await sendPublicBroadcast(interaction, {
-      content: `🏆 <@${actor.id}> 查看了服务器「${lbNameMap[lbType]}」：`,
-      ...buildLeaderboardMessage(ctx, guildId, lbType, lbPage),
-    });
-    const feedback: MenuFeedback = sent
-      ? { type: 'success', text: '📢 已在当前频道公开展示该排行榜，所有人均可见并可翻页切换！' }
-      : { type: 'error', text: '无法在当前频道发送公开排行榜，请检查机器人发言权限。' };
-
     await interaction.update(
-      buildMenuMessage(ctx, guildId, actor, { page: 'leaderboard', lbType, lbPage }, feedback),
+      buildMenuMessage(ctx, guildId, actor, { page: 'leaderboard', lbType, lbPage }),
     );
     return;
   }
@@ -950,15 +920,19 @@ export async function handleMenuButton(
         );
         return;
       }
+      await interaction.deferUpdate();
       const publicEmbed = buildPublicRankEmbed(ctx, guildId, actor);
       const sent = await sendPublicBroadcast(interaction, {
         content: `📢 <@${actor.id}> 晒出了个人等级名片：`,
         embeds: [publicEmbed],
       });
-      const feedback: MenuFeedback = sent
+      const feedback: MenuFeedback = sent.sent
         ? { type: 'success', text: '已将你的等级名片晒出到当前频道！' }
         : { type: 'error', text: '无法在当前频道发送公开消息，请检查机器人发言权限。' };
-      await interaction.update(buildMenuMessage(ctx, guildId, actor, { page: 'rank' }, feedback));
+      await safeEditOrFollowUp(
+        interaction,
+        buildMenuMessage(ctx, guildId, actor, { page: 'rank' }, feedback),
+      );
       return;
     }
 
@@ -985,6 +959,7 @@ export async function handleMenuButton(
         );
         return;
       }
+      await interaction.deferUpdate();
       const fullCfg = ctx.repos.guildConfig.getOrCreate(guildId);
       const cfg = fullCfg.economy;
       const lbNameMap: Record<LeaderboardType, string> = {
@@ -998,10 +973,11 @@ export async function handleMenuButton(
         content: `📢 <@${actor.id}> 晒出了服务器「${lbNameMap[lbType]}」：`,
         embeds: [publicEmbed],
       });
-      const feedback: MenuFeedback = sent
+      const feedback: MenuFeedback = sent.sent
         ? { type: 'success', text: `已将${lbNameMap[lbType]}晒出到当前频道！` }
         : { type: 'error', text: '无法在当前频道发送公开消息，请检查机器人发言权限。' };
-      await interaction.update(
+      await safeEditOrFollowUp(
+        interaction,
         buildMenuMessage(ctx, guildId, actor, { page: 'leaderboard', lbType, lbPage }, feedback),
       );
       return;
@@ -1018,34 +994,88 @@ export async function handleMenuButton(
 
     const adminAction = parts[2];
     const cfg = ctx.repos.guildConfig.getOrCreate(guildId);
+    const superAdmin = Boolean(actor.isSuperAdmin || isGuildSuperAdmin(interaction, ctx, guildId));
 
     if (adminAction === 'send_lobby') {
+      await interaction.deferUpdate();
       const sent = await sendPublicBroadcast(
         interaction,
         buildLobbyMessage(interaction.guild?.name),
       );
-      const feedback: MenuFeedback = sent
+      const feedback: MenuFeedback = sent.sent
         ? { type: 'success', text: '✅ 已在当前频道发送永久「打开我的互动菜单」大厅卡片！' }
         : { type: 'error', text: '无法在当前频道发送大厅消息，请检查机器人发言与嵌入链接权限。' };
-      await interaction.update(buildMenuMessage(ctx, guildId, actor, { page: 'admin' }, feedback));
+      await safeEditOrFollowUp(
+        interaction,
+        buildMenuMessage(ctx, guildId, actor, { page: 'admin' }, feedback),
+      );
       return;
     }
 
     if (adminAction === 'reset_econ') {
-      ctx.repos.guildConfig.updateEconomy(guildId, { ...DEFAULT_ECONOMY_CONFIG });
+      if (!superAdmin) {
+        await interaction.update(
+          buildMenuMessage(ctx, guildId, actor, { page: 'admin_econ' }, SUPER_ADMIN_DENIED_FEEDBACK),
+        );
+        return;
+      }
+      if (parts[3] !== 'confirm') {
+        await interaction.update(
+          buildMenuMessage(
+            ctx,
+            guildId,
+            actor,
+            { page: 'admin_econ', confirmReset: true },
+            {
+              type: 'info',
+              text: '⚠️ 确认将签到、打工、抢钱与银行利息参数恢复为默认值？（自定义货币名称与图标将被保留）',
+            },
+          ),
+        );
+        return;
+      }
+      ctx.repos.guildConfig.updateEconomy(guildId, {
+        ...DEFAULT_ECONOMY_CONFIG,
+        currencyName: cfg.economy.currencyName,
+        currencyEmoji: cfg.economy.currencyEmoji,
+      });
       await interaction.update(
         buildMenuMessage(
           ctx,
           guildId,
           actor,
           { page: 'admin_econ' },
-          { type: 'success', text: '♻️ 已将货币、签到、打工、抢钱与银行利息参数全部恢复为默认值。' },
+          {
+            type: 'success',
+            text: `♻️ 已将签到、打工、抢钱与银行利息参数恢复默认值（保留货币 **${cfg.economy.currencyName}** ${cfg.economy.currencyEmoji}）。`,
+          },
         ),
       );
       return;
     }
 
     if (adminAction === 'reset_lvl') {
+      if (!superAdmin) {
+        await interaction.update(
+          buildMenuMessage(ctx, guildId, actor, { page: 'admin_lvl' }, SUPER_ADMIN_DENIED_FEEDBACK),
+        );
+        return;
+      }
+      if (parts[3] !== 'confirm') {
+        await interaction.update(
+          buildMenuMessage(
+            ctx,
+            guildId,
+            actor,
+            { page: 'admin_lvl', confirmReset: true },
+            {
+              type: 'info',
+              text: '⚠️ 确认将等级经验、热度连击、语音与升级奖励参数恢复为默认值？（频道配置将被保留）',
+            },
+          ),
+        );
+        return;
+      }
       ctx.repos.guildConfig.updateLeveling(guildId, {
         ...DEFAULT_LEVELING_CONFIG,
         announceChannelId: cfg.leveling.announceChannelId,
@@ -1113,6 +1143,34 @@ export async function handleMenuButton(
       return;
     }
     if (subAction === 'clear') {
+      const superAdmin = Boolean(actor.isSuperAdmin || isGuildSuperAdmin(interaction, ctx, guildId));
+      if (!superAdmin) {
+        await interaction.update(
+          buildMenuMessage(
+            ctx,
+            guildId,
+            actor,
+            { page: 'admin_monitor', filter: 'issues' },
+            SUPER_ADMIN_DENIED_FEEDBACK,
+          ),
+        );
+        return;
+      }
+      if (parts[3] !== 'confirm') {
+        await interaction.update(
+          buildMenuMessage(
+            ctx,
+            guildId,
+            actor,
+            { page: 'admin_monitor', filter: 'issues', confirmClear: true },
+            {
+              type: 'info',
+              text: '⚠️ 确认清空本服务器全部交互监控日志？此操作不可撤销。',
+            },
+          ),
+        );
+        return;
+      }
       const deleted = monitorRepo.clearGuildLogs(guildId);
       await interaction.update(
         buildMenuMessage(
@@ -1138,6 +1196,9 @@ export async function handleMenuButton(
       }
 
       const cfg = ctx.repos.guildConfig.getOrCreate(guildId);
+      const currencyName = cfg.economy.currencyName;
+      const superAdmin = Boolean(actor.isSuperAdmin || isGuildSuperAdmin(interaction, ctx, guildId));
+
       if (modalType === 'admin_daily') {
         await interaction.showModal(
           new ModalBuilder()
@@ -1224,17 +1285,27 @@ export async function handleMenuButton(
               prefilledField('heatWindowSec', '热度连击窗口秒数（10 ~ 3600）', cfg.leveling.heatWindowSec),
               prefilledField('heatMaxMultiplier', '热度倍率上限（1.0 ~ 5.0）', cfg.leveling.heatMaxMultiplier),
               prefilledField('voiceXpPerMin', '语音每分钟经验（0 ~ 1000）', cfg.leveling.voiceXpPerMin),
-              prefilledField('levelUpCoinReward', '每次升级奖励星币（0 ~ 100000）', cfg.leveling.levelUpCoinReward),
+              prefilledField(
+                'levelUpCoinReward',
+                `每次升级奖励${currencyName}（0 ~ 100000）`,
+                cfg.leveling.levelUpCoinReward,
+              ),
             ),
         );
         return;
       }
 
       if (modalType === 'admin_grant_all') {
+        if (!superAdmin) {
+          await interaction.update(
+            buildMenuMessage(ctx, guildId, actor, { page: 'admin_ops' }, SUPER_ADMIN_DENIED_FEEDBACK),
+          );
+          return;
+        }
         await interaction.showModal(
           buildAmountModal(
             'menu:modal_sub:admin_grant_all',
-            '🎉 全服全员发放星币',
+            `🎉 全服全员发放${currencyName}`,
             '每位真实群友发放数量（1 ~ 1000000000）',
             '例如：1000000',
           ),
@@ -1243,11 +1314,18 @@ export async function handleMenuButton(
       }
 
       if (modalType === 'admin_random_redpacket') {
+        if (!superAdmin) {
+          await interaction.update(
+            buildMenuMessage(ctx, guildId, actor, { page: 'admin_ops' }, SUPER_ADMIN_DENIED_FEEDBACK),
+          );
+          return;
+        }
         await interaction.showModal(
           buildAdminRedPacketModal(
             'menu:modal_sub:admin_random_redpacket',
             '🎲 管理员随机派发红包',
             1,
+            currencyName,
           ),
         );
         return;
@@ -1259,6 +1337,7 @@ export async function handleMenuButton(
             'menu:modal_sub:admin_sys_redpacket',
             '🧧 管理员发系统抢红包',
             2,
+            currencyName,
           ),
         );
         return;
@@ -1332,7 +1411,8 @@ export async function handleMenuButton(
         );
         return;
       }
-      await interaction.showModal(buildRedPacketModal());
+      const cfg = ctx.repos.guildConfig.getOrCreate(guildId).economy;
+      await interaction.showModal(buildRedPacketModal(cfg.currencyName));
     }
   }
 }
@@ -1343,7 +1423,7 @@ export async function handleMenuStringSelect(
 ): Promise<void> {
   if (!interaction.guildId) return;
   const guildId = interaction.guildId;
-  const actor = getActor(interaction, ctx, guildId);
+  const actor = await resolveActor(interaction, ctx, guildId);
   const parts = interaction.customId.split(':');
   const section = parts[1];
   const selected = interaction.values[0];
@@ -1396,16 +1476,30 @@ export async function handleMenuStringSelect(
   }
 
   if (section === 'social_act') {
+    const disabledMsg = checkModuleDisabled(ctx, guildId, 'fun', '娱乐互动');
+    if (disabledMsg) {
+      await interaction.update(
+        buildMenuMessage(ctx, guildId, actor, { page: 'home' }, { type: 'error', text: disabledMsg }),
+      );
+      return;
+    }
     const action = parseSocialAction(selected);
     await interaction.update(buildMenuMessage(ctx, guildId, actor, { page: 'social', action }));
     return;
   }
 
   if (section === 'shop_buy') {
+    const listPage = parsePositiveInt(parts[2] ?? '') ?? 1;
     const disabledMsg = checkModuleDisabled(ctx, guildId, 'economy', '经济系统');
     if (disabledMsg) {
       await interaction.update(
-        buildMenuMessage(ctx, guildId, actor, { page: 'shop' }, { type: 'error', text: disabledMsg }),
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'shop', listPage },
+          { type: 'error', text: disabledMsg },
+        ),
       );
       return;
     }
@@ -1413,7 +1507,13 @@ export async function handleMenuStringSelect(
     const itemId = parsePositiveInt(selected ?? '');
     if (!itemId) {
       await interaction.update(
-        buildMenuMessage(ctx, guildId, actor, { page: 'shop' }, { type: 'error', text: '无效的商品编号。' }),
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'shop', listPage },
+          { type: 'error', text: '无效的商品编号。' },
+        ),
       );
       return;
     }
@@ -1430,7 +1530,7 @@ export async function handleMenuStringSelect(
             ctx,
             guildId,
             actor,
-            { page: 'shop' },
+            { page: 'shop', listPage },
             { type: 'error', text: formatShopBuyError('out_of_stock', cfg.currencyName) },
           ),
         );
@@ -1443,7 +1543,7 @@ export async function handleMenuStringSelect(
             ctx,
             guildId,
             actor,
-            { page: 'shop' },
+            { page: 'shop', listPage },
             { type: 'error', text: formatShopBuyError('insufficient_funds', cfg.currencyName) },
           ),
         );
@@ -1469,17 +1569,38 @@ export async function handleMenuStringSelect(
       return;
     }
 
-    const res = ctx.services.shop.buyItem(guildId, actor.id, itemId);
-    if (!res.ok) {
+    const isRoleItem = item?.type === 'role' && Boolean(item.roleId);
+    if (isRoleItem && item.roleId && actor.roleIds?.includes(item.roleId)) {
       await interaction.update(
         buildMenuMessage(
           ctx,
           guildId,
           actor,
-          { page: 'shop' },
-          { type: 'error', text: formatShopBuyError(res.reason, cfg.currencyName, res.dailyLimit) },
+          { page: 'shop', listPage },
+          { type: 'error', text: formatShopBuyError('already_owned', cfg.currencyName) },
         ),
       );
+      return;
+    }
+
+    if (isRoleItem) {
+      await interaction.deferUpdate();
+    }
+
+    const res = ctx.services.shop.buyItem(guildId, actor.id, itemId);
+    if (!res.ok) {
+      const errMsg = buildMenuMessage(
+        ctx,
+        guildId,
+        actor,
+        { page: 'shop', listPage },
+        { type: 'error', text: formatShopBuyError(res.reason, cfg.currencyName, res.dailyLimit) },
+      );
+      if (isRoleItem) {
+        await safeEditOrFollowUp(interaction, errMsg);
+      } else {
+        await interaction.update(errMsg);
+      }
       return;
     }
 
@@ -1493,13 +1614,29 @@ export async function handleMenuStringSelect(
 
       if (!member) {
         ctx.services.shop.refundRolePurchase(guildId, actor.id, res.item.id, res.item.price);
-        await interaction.update(
+        await safeEditOrFollowUp(
+          interaction,
           buildMenuMessage(
             ctx,
             guildId,
             actor,
-            { page: 'shop' },
+            { page: 'shop', listPage },
             { type: 'error', text: '无法获取成员身份信息，已自动全额退款。' },
+          ),
+        );
+        return;
+      }
+
+      if (member.roles.cache.has(res.grantRoleId)) {
+        ctx.services.shop.refundRolePurchase(guildId, actor.id, res.item.id, res.item.price);
+        await safeEditOrFollowUp(
+          interaction,
+          buildMenuMessage(
+            ctx,
+            guildId,
+            actor,
+            { page: 'shop', listPage },
+            { type: 'error', text: formatShopBuyError('already_owned', cfg.currencyName) },
           ),
         );
         return;
@@ -1509,15 +1646,16 @@ export async function handleMenuStringSelect(
         await member.roles.add(res.grantRoleId, `购买商店商品 #${res.item.id}`);
       } catch {
         ctx.services.shop.refundRolePurchase(guildId, actor.id, res.item.id, res.item.price);
-        await interaction.update(
+        await safeEditOrFollowUp(
+          interaction,
           buildMenuMessage(
             ctx,
             guildId,
             actor,
-            { page: 'shop' },
+            { page: 'shop', listPage },
             {
               type: 'error',
-              text: '身份组发放失败（机器人权限不足或身份组层级过低），已自动全额退还星币与库存。',
+              text: `身份组发放失败（机器人权限不足或身份组层级过低），已自动全额退还${cfg.currencyName}与库存。`,
             },
           ),
         );
@@ -1526,6 +1664,7 @@ export async function handleMenuStringSelect(
     }
 
     let detail: string;
+    let highlightBroadcast: MessageCreateOptions | undefined;
     if (res.grantRoleId) {
       detail = `已自动发放身份组 <@&${res.grantRoleId}>。`;
     } else if (res.equippedTitle) {
@@ -1540,14 +1679,14 @@ export async function handleMenuStringSelect(
             : `✨ **效果生效！** ${lvlCfg.statName} **+${s.delta}** ${lvlCfg.statUnit}`;
       detail = `${header}（当前 **${s.newStatValue}** ${lvlCfg.statUnit}，今日剩余 **${s.dailyLimit - s.usedToday}/${s.dailyLimit}** 次）`;
       if (s.outcome === 'crit') {
-        await sendPublicBroadcast(interaction, {
+        highlightBroadcast = {
           embeds: [
             createSuccessEmbed(
               '💥 商店道具大暴击！',
               `**${actor.displayName}** 使用了【**${res.item.name}**】触发 **2x 暴击**，${lvlCfg.statName}暴增 **+${s.delta}** ${lvlCfg.statUnit}（现已达 **${s.newStatValue}** ${lvlCfg.statUnit}）！`,
             ),
           ],
-        });
+        };
       }
     } else if (res.petXpResult) {
       const p = res.petXpResult;
@@ -1555,39 +1694,52 @@ export async function handleMenuStringSelect(
     } else if (res.mysteryBoxResult) {
       detail = `🎁 **盲盒开启**：${res.mysteryBoxResult.summary}`;
       if (res.mysteryBoxResult.isJackpot) {
-        await sendPublicBroadcast(interaction, {
+        highlightBroadcast = {
           embeds: [
             createSuccessEmbed(
               '🎁 神秘盲盒欧皇降临！',
               `**${actor.displayName}** 开启【**${res.item.name}**】开出大奖！\n${res.mysteryBoxResult.summary}`,
             ),
           ],
-        });
+        };
       }
     } else {
       detail = '道具已放入你的背包，随时可切换到「🎒 背包与称号」激活使用！';
     }
 
-    await interaction.update(
-      buildMenuMessage(
-        ctx,
-        guildId,
-        actor,
-        { page: 'shop' },
-        {
-          type: 'success',
-          text: `购买成功：**${res.item.name}**（花费 ${cfg.currencyEmoji} ${res.item.price}）\n${detail}\n剩余现金：**${res.balance}**。`,
-        },
-      ),
+    const okMsg = buildMenuMessage(
+      ctx,
+      guildId,
+      actor,
+      { page: 'shop', listPage },
+      {
+        type: 'success',
+        text: `购买成功：**${res.item.name}**（花费 ${cfg.currencyEmoji} ${res.item.price}）\n${detail}\n剩余现金：**${res.balance}**。`,
+      },
     );
+    if (isRoleItem) {
+      await safeEditOrFollowUp(interaction, okMsg);
+    } else {
+      await interaction.update(okMsg);
+    }
+    if (highlightBroadcast) {
+      await sendPublicBroadcast(interaction, highlightBroadcast);
+    }
     return;
   }
 
   if (section === 'bag_use') {
+    const listPage = parsePositiveInt(parts[2] ?? '') ?? 1;
     const disabledMsg = checkModuleDisabled(ctx, guildId, 'economy', '经济系统');
     if (disabledMsg) {
       await interaction.update(
-        buildMenuMessage(ctx, guildId, actor, { page: 'bag' }, { type: 'error', text: disabledMsg }),
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'bag', listPage },
+          { type: 'error', text: disabledMsg },
+        ),
       );
       return;
     }
@@ -1595,7 +1747,13 @@ export async function handleMenuStringSelect(
     const invId = parsePositiveInt(selected ?? '');
     if (!invId) {
       await interaction.update(
-        buildMenuMessage(ctx, guildId, actor, { page: 'bag' }, { type: 'error', text: '无效的背包道具编号。' }),
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'bag', listPage },
+          { type: 'error', text: '无效的背包道具编号。' },
+        ),
       );
       return;
     }
@@ -1624,13 +1782,19 @@ export async function handleMenuStringSelect(
 
     const res = ctx.services.shop.useInventoryItem(guildId, actor.id, invId);
     if (!res.ok) {
+      const errMap: Record<string, string> = {
+        not_found: '未找到该道具或数量不足。',
+        unsupported: '该道具暂不支持在此直接使用。',
+        boost_multiplier_conflict:
+          '当前已有不同倍率的经验加成卡生效中，需等待当前经验卡到期后再使用其他倍率卡（未消耗）。',
+      };
       await interaction.update(
         buildMenuMessage(
           ctx,
           guildId,
           actor,
-          { page: 'bag' },
-          { type: 'error', text: '未找到该道具或数量不足。' },
+          { page: 'bag', listPage },
+          { type: 'error', text: errMap[res.reason] ?? '未找到该道具或数量不足。' },
         ),
       );
       return;
@@ -1644,7 +1808,7 @@ export async function handleMenuStringSelect(
           : '道具使用成功！';
 
     await interaction.update(
-      buildMenuMessage(ctx, guildId, actor, { page: 'bag' }, { type: 'success', text }),
+      buildMenuMessage(ctx, guildId, actor, { page: 'bag', listPage }, { type: 'success', text }),
     );
   }
 }
@@ -1655,7 +1819,7 @@ export async function handleMenuUserSelect(
 ): Promise<void> {
   if (!interaction.guildId) return;
   const guildId = interaction.guildId;
-  const actor = getActor(interaction, ctx, guildId);
+  const actor = await resolveActor(interaction, ctx, guildId);
   const parts = interaction.customId.split(':');
   const actionType = parts[2];
 
@@ -1686,6 +1850,7 @@ export async function handleMenuUserSelect(
       );
       return;
     }
+    const currencyName = ctx.repos.guildConfig.getOrCreate(guildId).economy.currencyName;
     if (targetUser?.bot) {
       await interaction.update(
         buildMenuMessage(
@@ -1693,7 +1858,7 @@ export async function handleMenuUserSelect(
           guildId,
           actor,
           { page: 'admin_ops' },
-          { type: 'error', text: '不能给机器人发放或扣除星币。' },
+          { type: 'error', text: `不能给机器人发放或扣除${currencyName}。` },
         ),
       );
       return;
@@ -1701,8 +1866,8 @@ export async function handleMenuUserSelect(
     await interaction.showModal(
       buildAmountModal(
         `menu:modal_sub:admin_grant:${targetId}`,
-        '💸 发放或扣除群友星币',
-        '增减星币（正数加币，负数扣币）',
+        `💸 发放或扣除群友${currencyName}`,
+        `增减${currencyName}（正数加币，负数扣币）`,
         '例如：10000 或 -500',
       ),
     );
@@ -1753,6 +1918,13 @@ export async function handleMenuUserSelect(
       );
       return;
     }
+    const superAdmin = Boolean(actor.isSuperAdmin || isGuildSuperAdmin(interaction, ctx, guildId));
+    if (!superAdmin) {
+      await interaction.update(
+        buildMenuMessage(ctx, guildId, actor, { page: 'admin_ops' }, SUPER_ADMIN_DENIED_FEEDBACK),
+      );
+      return;
+    }
     if (targetUser?.bot) {
       await interaction.update(
         buildMenuMessage(
@@ -1767,24 +1939,6 @@ export async function handleMenuUserSelect(
     }
     const cfg = ctx.repos.guildConfig.getOrCreate(guildId);
     const exists = cfg.adminUserIds.includes(targetId);
-    const isDiscordServerAdmin =
-      interaction.inCachedGuild() &&
-      (interaction.member.permissions.has(PermissionFlagsBits.Administrator) ||
-        interaction.member.permissions.has(PermissionFlagsBits.ManageGuild) ||
-        cfg.adminRoleIds.some((r) => interaction.member.roles.cache.has(r)));
-
-    if (exists && targetId === actor.id && !isDiscordServerAdmin) {
-      await interaction.update(
-        buildMenuMessage(
-          ctx,
-          guildId,
-          actor,
-          { page: 'admin_ops' },
-          { type: 'error', text: '⚠️ 为防误锁权限，不能在此移除自己的授权管理员身份。' },
-        ),
-      );
-      return;
-    }
 
     const next = exists
       ? cfg.adminUserIds.filter((id) => id !== targetId)
@@ -1835,24 +1989,33 @@ export async function handleMenuUserSelect(
       return;
     }
 
+    await interaction.deferUpdate();
     const cfg = ctx.repos.guildConfig.getOrCreate(guildId).economy;
     const res = ctx.services.economy.rob(guildId, actor.id, targetId);
     if (!res.ok) {
-      const msgMap: Record<typeof res.reason, string> = {
+      const msgMap: Record<string, string> = {
         self_target: '不能打劫自己！',
         cooldown: `打劫冷却中，请等待 **${formatDurationZh((res.retryAfterSec ?? 0) * 1000)}**。`,
         target_shielded: `<@${targetId}> 防盗护盾生效中，剩余 **${formatDurationZh((res.retryAfterSec ?? 0) * 1000)}**。`,
-        target_too_poor: `<@${targetId}> 口袋现金不足 100 ${cfg.currencyName}，放过 TA 吧。`,
+        target_too_poor: `<@${targetId}> 口袋现金不足 ${ROB_TARGET_MIN_COINS} ${cfg.currencyName}，放过 TA 吧。`,
+        attacker_too_poor: `你的总资产（现金+存款）不足 **${ROB_ATTACKER_MIN_ASSETS}** ${cfg.currencyName}，无法发起打劫！`,
       };
-      await interaction.update(
-        buildMenuMessage(ctx, guildId, actor, { page: 'rob' }, { type: 'error', text: msgMap[res.reason] }),
+      await safeEditOrFollowUp(
+        interaction,
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'rob' },
+          { type: 'error', text: msgMap[res.reason] ?? '当前无法发起打劫，请稍后再试。' },
+        ),
       );
       return;
     }
 
     const targetName = targetUser?.displayName ?? '群友';
     const hasBounty = Boolean(res.success && res.bountyClaimed && res.bountyClaimed > 0);
-    const broadcastSent = await sendPublicBroadcast(
+    const broadcast = await sendPublicBroadcast(
       interaction,
       res.success
         ? {
@@ -1869,7 +2032,7 @@ export async function handleMenuUserSelect(
                     ? [`🎯 **通缉令兑现**：成功击破通缉目标，额外独吞赏金 **+${res.bountyClaimed}** ${cfg.currencyName}！`]
                     : []),
                   `受害者剩余现金：**${res.targetBalance}** ｜ 抢劫者当前现金：**${res.attackerBalance}**`,
-                  `🛡️ <@${targetId}> 已自动触发防盗护盾（快把现金存进银行防偷吧！）`,
+                  `🛡️ <@${targetId}> 已自动触发防盗护盾（快把现金存进银行降低风险吧！）`,
                 ].join('\n'),
               ),
             ],
@@ -1893,7 +2056,7 @@ export async function handleMenuUserSelect(
           },
     );
 
-    const warnSuffix = broadcastSent
+    const warnSuffix = broadcast.sent
       ? ''
       : '\n⚠️ 当前频道未能发出公开快报，请检查机器人发言权限。';
 
@@ -1909,7 +2072,10 @@ export async function handleMenuUserSelect(
             : `🚨 打劫翻车被抓现行！向 <@${targetId}> 赔偿了 ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}，你的现金：**${res.attackerBalance}**。${warnSuffix}`,
         };
 
-    await interaction.update(buildMenuMessage(ctx, guildId, actor, { page: 'rob' }, feedback));
+    await safeEditOrFollowUp(
+      interaction,
+      buildMenuMessage(ctx, guildId, actor, { page: 'rob' }, feedback),
+    );
     return;
   }
 
@@ -1941,18 +2107,26 @@ export async function handleMenuUserSelect(
       return;
     }
 
+    await interaction.deferUpdate();
     const cfg = ctx.repos.guildConfig.getOrCreate(guildId).economy;
     const res = ctx.services.economy.robBank(guildId, actor.id, targetId);
     if (!res.ok) {
-      const msgMap: Record<typeof res.reason, string> = {
+      const msgMap: Record<string, string> = {
         self_target: '不能抢自己的银行金库！',
         cooldown: `打劫冷却中，请等待 **${formatDurationZh((res.retryAfterSec ?? 0) * 1000)}**。`,
         target_shielded: `<@${targetId}> 防盗护盾生效中，剩余 **${formatDurationZh((res.retryAfterSec ?? 0) * 1000)}**。`,
-        target_bank_too_poor: `<@${targetId}> 银行金库余额不足 100 ${cfg.currencyName}，不值得动手。`,
-        attacker_too_poor: `你的总资产（现金+存款）不足 **100** ${cfg.currencyName}，不够支付劫金库翻车保底罚金！`,
+        target_bank_too_poor: `<@${targetId}> 银行金库余额不足 ${BANK_ROB_TARGET_MIN} ${cfg.currencyName}，不值得动手。`,
+        attacker_too_poor: `你的总资产（现金+存款）不足 **${BANK_ROB_ATTACKER_MIN_ASSETS}** ${cfg.currencyName}，不够支付劫金库翻车保底罚金！`,
       };
-      await interaction.update(
-        buildMenuMessage(ctx, guildId, actor, { page: 'rob' }, { type: 'error', text: msgMap[res.reason] }),
+      await safeEditOrFollowUp(
+        interaction,
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'rob' },
+          { type: 'error', text: msgMap[res.reason] ?? '当前无法强抢银行金库，请稍后再试。' },
+        ),
       );
       return;
     }
@@ -1964,7 +2138,7 @@ export async function handleMenuUserSelect(
         ? `（扣口袋现金 **${res.fineFromPocket ?? 0}** + 划扣银行存款 **${res.fineFromBank ?? 0}**）`
         : '';
 
-    const broadcastSent = await sendPublicBroadcast(
+    const broadcast = await sendPublicBroadcast(
       interaction,
       res.success
         ? {
@@ -2005,7 +2179,7 @@ export async function handleMenuUserSelect(
           },
     );
 
-    const warnSuffix = broadcastSent
+    const warnSuffix = broadcast.sent
       ? ''
       : '\n⚠️ 当前频道未能发出公开快报，请检查机器人发言权限。';
 
@@ -2021,7 +2195,10 @@ export async function handleMenuUserSelect(
             : `🚨 抢金库触发警报被抓！向 <@${targetId}> 赔偿了 ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}${fineDetail}，你的现金：**${res.attackerBalance}**（银行 **${res.attackerBankBalance}**）。${warnSuffix}`,
         };
 
-    await interaction.update(buildMenuMessage(ctx, guildId, actor, { page: 'rob' }, feedback));
+    await safeEditOrFollowUp(
+      interaction,
+      buildMenuMessage(ctx, guildId, actor, { page: 'rob' }, feedback),
+    );
     return;
   }
 
@@ -2096,11 +2273,12 @@ export async function handleMenuUserSelect(
       return;
     }
 
+    const cfg = ctx.repos.guildConfig.getOrCreate(guildId).economy;
     await interaction.showModal(
       buildAmountModal(
         `menu:modal_sub:duel:${targetId}`,
         '⚔️ 发起骰子决斗',
-        '决斗赌注（1 ~ 1,000,000,000 星币）',
+        `决斗赌注（1 ~ ${MAX_COIN_AMOUNT.toLocaleString('en-US')} ${cfg.currencyName}）`,
         '例如：10000',
       ),
     );
@@ -2147,6 +2325,7 @@ export async function handleMenuUserSelect(
       return;
     }
 
+    await interaction.deferUpdate();
     const res = ctx.services.fun.performInteraction(guildId, actor.id, targetId, action);
     const publicEmbed = new EmbedBuilder()
       .setColor(COLORS.FUN)
@@ -2159,7 +2338,8 @@ export async function handleMenuUserSelect(
       embeds: [publicEmbed],
     });
 
-    await interaction.update(
+    await safeEditOrFollowUp(
+      interaction,
       buildMenuMessage(
         ctx,
         guildId,
@@ -2180,7 +2360,7 @@ export async function handleMenuModal(
 ): Promise<void> {
   if (!interaction.guildId) return;
   const guildId = interaction.guildId;
-  const actor = getActor(interaction, ctx, guildId);
+  const actor = await resolveActor(interaction, ctx, guildId);
   const parts = interaction.customId.split(':');
   const modalType = parts[2];
 
@@ -2197,6 +2377,14 @@ export async function handleMenuModal(
   }
 
   if (modalType === 'shop_custom_title') {
+    const disabledMsg = checkModuleDisabled(ctx, guildId, 'economy', '经济系统');
+    if (disabledMsg) {
+      await respondFromModal(
+        interaction,
+        buildMenuMessage(ctx, guildId, actor, { page: 'home' }, { type: 'error', text: disabledMsg }),
+      );
+      return;
+    }
     const itemId = parsePositiveInt(parts[3] ?? '');
     const titleText = interaction.fields.getTextInputValue('titleText').trim();
     const cfg = ctx.repos.guildConfig.getOrCreate(guildId).economy;
@@ -2238,6 +2426,14 @@ export async function handleMenuModal(
   }
 
   if (modalType === 'bag_custom_title') {
+    const disabledMsg = checkModuleDisabled(ctx, guildId, 'economy', '经济系统');
+    if (disabledMsg) {
+      await respondFromModal(
+        interaction,
+        buildMenuMessage(ctx, guildId, actor, { page: 'home' }, { type: 'error', text: disabledMsg }),
+      );
+      return;
+    }
     const invId = parsePositiveInt(parts[3] ?? '');
     const titleText = interaction.fields.getTextInputValue('titleText').trim();
     if (!invId) {
@@ -2563,8 +2759,8 @@ export async function handleMenuModal(
       if (!targetId) return;
       const amount = parseIntInRange(
         interaction.fields.getTextInputValue('amount'),
-        -1_000_000_000,
-        1_000_000_000,
+        -MAX_COIN_AMOUNT,
+        MAX_COIN_AMOUNT,
       );
       if (amount === null || amount === 0) {
         await respondFromModal(
@@ -2580,18 +2776,36 @@ export async function handleMenuModal(
         return;
       }
 
+      if (amount > 0) {
+        await deferModalForWrite(interaction);
+      }
       const updated = ctx.repos.profile.addCoins(guildId, targetId, amount);
       if (amount > 0) {
         await sendPublicBroadcast(interaction, {
-          content: `🎁 <@${targetId}> 收到管理员发放的星币福利！`,
+          content: `🎁 <@${targetId}> 收到管理员发放的${cfg.economy.currencyName}福利！`,
           embeds: [
             createSuccessEmbed(
-              '🎁 管理员发放星币',
+              `🎁 管理员发放${cfg.economy.currencyName}`,
               `管理员 <@${actor.id}> 向 <@${targetId}> 发放了 ${cfg.economy.currencyEmoji} **+${amount}** ${cfg.economy.currencyName}！\n当前口袋现金：**${updated.coins}** ${cfg.economy.currencyName}`,
             ),
           ],
         });
+        await safeEditOrFollowUp(
+          interaction,
+          buildMenuMessage(
+            ctx,
+            guildId,
+            actor,
+            { page: 'admin_ops' },
+            {
+              type: 'success',
+              text: `已向 <@${targetId}> 发放 **+${amount}** ${cfg.economy.currencyName}（当前现金 **${updated.coins}**）。`,
+            },
+          ),
+        );
+        return;
       }
+
       await respondFromModal(
         interaction,
         buildMenuMessage(
@@ -2601,10 +2815,7 @@ export async function handleMenuModal(
           { page: 'admin_ops' },
           {
             type: 'success',
-            text:
-              amount > 0
-                ? `已向 <@${targetId}> 发放 **+${amount}** ${cfg.economy.currencyName}（当前现金 **${updated.coins}**）。`
-                : `已从 <@${targetId}> 扣除 **${Math.abs(amount)}** ${cfg.economy.currencyName}（剩余现金 **${updated.coins}**）。`,
+            text: `已从 <@${targetId}> 扣除 **${Math.abs(amount)}** ${cfg.economy.currencyName}（剩余现金 **${updated.coins}**）。`,
           },
         ),
       );
@@ -2617,7 +2828,7 @@ export async function handleMenuModal(
       const value = parseIntInRange(
         interaction.fields.getTextInputValue('statValue'),
         0,
-        1_000_000_000,
+        MAX_COIN_AMOUNT,
       );
       if (value === null) {
         await respondFromModal(
@@ -2651,7 +2862,19 @@ export async function handleMenuModal(
     }
 
     if (modalType === 'admin_grant_all') {
-      const amount = parseIntInRange(interaction.fields.getTextInputValue('amount'), 1, 1_000_000_000);
+      const superAdmin = Boolean(actor.isSuperAdmin || isGuildSuperAdmin(interaction, ctx, guildId));
+      if (!superAdmin) {
+        await respondFromModal(
+          interaction,
+          buildMenuMessage(ctx, guildId, actor, { page: 'admin_ops' }, SUPER_ADMIN_DENIED_FEEDBACK),
+        );
+        return;
+      }
+      const amount = parseIntInRange(
+        interaction.fields.getTextInputValue('amount'),
+        1,
+        MAX_COIN_AMOUNT,
+      );
       if (amount === null) {
         await respondFromModal(
           interaction,
@@ -2667,11 +2890,7 @@ export async function handleMenuModal(
       }
 
       if (!interaction.guild) return;
-      if (interaction.isFromMessage()) {
-        await interaction.deferUpdate();
-      } else {
-        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      }
+      await deferModalForWrite(interaction);
 
       const members = await interaction.guild.members.fetch();
       const humanIds = [...members.values()].filter((m) => !m.user.bot).map((m) => m.id);
@@ -2690,7 +2909,8 @@ export async function handleMenuModal(
         ],
       });
 
-      await interaction.editReply(
+      await safeEditOrFollowUp(
+        interaction,
         buildMenuMessage(
           ctx,
           guildId,
@@ -2703,10 +2923,18 @@ export async function handleMenuModal(
     }
 
     if (modalType === 'admin_random_redpacket') {
+      const superAdmin = Boolean(actor.isSuperAdmin || isGuildSuperAdmin(interaction, ctx, guildId));
+      if (!superAdmin) {
+        await respondFromModal(
+          interaction,
+          buildMenuMessage(ctx, guildId, actor, { page: 'admin_ops' }, SUPER_ADMIN_DENIED_FEEDBACK),
+        );
+        return;
+      }
       const totalAmount = parseIntInRange(
         interaction.fields.getTextInputValue('totalAmount'),
         1,
-        1_000_000_000,
+        MAX_COIN_AMOUNT,
       );
       const totalCount = parseIntInRange(
         interaction.fields.getTextInputValue('totalCount'),
@@ -2740,11 +2968,7 @@ export async function handleMenuModal(
         return;
       }
 
-      if (interaction.isFromMessage()) {
-        await interaction.deferUpdate();
-      } else {
-        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      }
+      await deferModalForWrite(interaction);
 
       let candidateIds: string[] = [];
       if (interaction.guild?.members?.fetch) {
@@ -2772,7 +2996,8 @@ export async function handleMenuModal(
           res.reason === 'no_candidates'
             ? '当前没有可派发红包的真实群友。'
             : '红包金额或份数参数超出有效范围。';
-        await interaction.editReply(
+        await safeEditOrFollowUp(
+          interaction,
           buildMenuMessage(
             ctx,
             guildId,
@@ -2809,7 +3034,8 @@ export async function handleMenuModal(
         ],
       });
 
-      await interaction.editReply(
+      await safeEditOrFollowUp(
+        interaction,
         buildMenuMessage(
           ctx,
           guildId,
@@ -2862,6 +3088,7 @@ export async function handleMenuModal(
         return;
       }
 
+      await deferModalForWrite(interaction);
       const res = ctx.services.multiplayer.createRedPacket({
         guildId,
         channelId: interaction.channel.id,
@@ -2876,25 +3103,23 @@ export async function handleMenuModal(
         const msgMap: Record<typeof res.reason, string> = {
           invalid_count: '红包份数必须在 2 ~ 100 份之间。',
           invalid_amount: '红包总金额必须在 1 ~ 1,000,000,000 之间。',
-          amount_too_small_for_count: '红包总金额不能小于红包份数（每份至少 1 星币）。',
+          amount_too_small_for_count: `红包总金额不能小于红包份数（每份至少 1 ${cfg.economy.currencyName}）。`,
           insufficient_funds: '余额不足。',
         };
-        await respondFromModal(
+        await safeEditOrFollowUp(
           interaction,
           buildMenuMessage(ctx, guildId, actor, { page: 'admin_ops' }, { type: 'error', text: msgMap[res.reason] }),
         );
         return;
       }
 
-      try {
-        const sentMsg = await interaction.channel.send({
-          content: `🧧 管理员 <@${actor.id}> 派发了 **${res.packet.totalAmount}** ${cfg.economy.currencyName} 的系统福利大红包（共 ${res.packet.totalCount} 份），快来抢！`,
-          ...buildRedPacketMessage(res.packet, [], null, cfg.economy),
-        });
-        ctx.services.multiplayer.bindRedPacketMessage(res.packet.id, sentMsg.id);
-      } catch {
+      const sent = await sendPublicBroadcast(interaction, {
+        content: `🧧 管理员 <@${actor.id}> 派发了 **${res.packet.totalAmount}** ${cfg.economy.currencyName} 的系统福利大红包（共 ${res.packet.totalCount} 份），快来抢！`,
+        ...buildRedPacketMessage(res.packet, [], null, cfg.economy),
+      });
+      if (!sent.sent || !sent.messageId) {
         ctx.repos.redPacket.markExpired(res.packet.id);
-        await respondFromModal(
+        await safeEditOrFollowUp(
           interaction,
           buildMenuMessage(
             ctx,
@@ -2907,7 +3132,8 @@ export async function handleMenuModal(
         return;
       }
 
-      await respondFromModal(
+      ctx.services.multiplayer.bindRedPacketMessage(res.packet.id, sent.messageId);
+      await safeEditOrFollowUp(
         interaction,
         buildMenuMessage(
           ctx,
@@ -2934,10 +3160,10 @@ export async function handleMenuModal(
       return;
     }
     const out = runSlotsAction(ctx, guildId, actor, amount);
+    await respondFromModal(interaction, out.msg);
     if (out.highlight) {
       await sendPublicBroadcast(interaction, out.highlight);
     }
-    await respondFromModal(interaction, out.msg);
     return;
   }
 
@@ -2958,10 +3184,10 @@ export async function handleMenuModal(
       return;
     }
     const out = runDiceAction(ctx, guildId, actor, choice, amount);
+    await respondFromModal(interaction, out.msg);
     if (out.highlight) {
       await sendPublicBroadcast(interaction, out.highlight);
     }
-    await respondFromModal(interaction, out.msg);
     return;
   }
 
@@ -2984,10 +3210,10 @@ export async function handleMenuModal(
     }
     const res = ctx.services.blackjack.startGame(guildId, actor.id, amount);
     const out = buildBlackjackResponse(ctx, guildId, actor, res);
+    await respondFromModal(interaction, out.msg);
     if (out.highlight) {
       await sendPublicBroadcast(interaction, out.highlight);
     }
-    await respondFromModal(interaction, out.msg);
     return;
   }
 
@@ -3029,6 +3255,7 @@ export async function handleMenuModal(
       return;
     }
 
+    await deferModalForWrite(interaction);
     const cfg = ctx.repos.guildConfig.getOrCreate(guildId).economy;
     const res = ctx.services.economy.transferCoins(guildId, actor.id, targetId, amount);
     if (!res.ok) {
@@ -3037,7 +3264,7 @@ export async function handleMenuModal(
         invalid_amount: '转账金额无效。',
         insufficient_funds: `口袋现金不足，无法转出 **${amount}** ${cfg.currencyName}。`,
       };
-      await respondFromModal(
+      await safeEditOrFollowUp(
         interaction,
         buildMenuMessage(ctx, guildId, actor, { page: 'pay' }, { type: 'error', text: reasonMap[res.reason] }),
       );
@@ -3054,7 +3281,7 @@ export async function handleMenuModal(
       ],
     });
 
-    await respondFromModal(
+    await safeEditOrFollowUp(
       interaction,
       buildMenuMessage(
         ctx,
@@ -3106,6 +3333,7 @@ export async function handleMenuModal(
       return;
     }
 
+    await deferModalForWrite(interaction);
     const cfg = ctx.repos.guildConfig.getOrCreate(guildId).economy;
     const res = ctx.services.multiplayer.createDuel(
       guildId,
@@ -3115,26 +3343,32 @@ export async function handleMenuModal(
       amount,
     );
     if (!res.ok) {
-      const msgMap: Record<typeof res.reason, string> = {
+      const msgMap: Record<string, string> = {
         self_target: '不能向自己发起决斗！',
         invalid_bet: '决斗赌注必须在 1 ~ 1,000,000,000 之间。',
         insufficient_funds: `你的口袋现金不足以支付 **${amount}** ${cfg.currencyName} 赌注。`,
       };
-      await respondFromModal(
+      await safeEditOrFollowUp(
         interaction,
-        buildMenuMessage(ctx, guildId, actor, { page: 'duel' }, { type: 'error', text: msgMap[res.reason] }),
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'duel' },
+          { type: 'error', text: msgMap[res.reason] ?? '发起决斗失败，请重试。' },
+        ),
       );
       return;
     }
 
-    try {
-      await interaction.channel.send({
-        content: `⚔️ <@${opponentId}>，你收到了一条骰子决斗挑战！`,
-        ...buildDuelMessage(res.duel, cfg),
-      });
-    } catch {
+    const sent = await sendPublicBroadcast(interaction, {
+      allowedMentions: { users: [opponentId] },
+      content: `⚔️ <@${opponentId}>，你收到了一条骰子决斗挑战！`,
+      ...buildDuelMessage(res.duel, cfg),
+    });
+    if (!sent.sent) {
       ctx.services.multiplayer.declineDuel(res.duel.id, actor.id);
-      await respondFromModal(
+      await safeEditOrFollowUp(
         interaction,
         buildMenuMessage(
           ctx,
@@ -3147,7 +3381,7 @@ export async function handleMenuModal(
       return;
     }
 
-    await respondFromModal(
+    await safeEditOrFollowUp(
       interaction,
       buildMenuMessage(
         ctx,
@@ -3205,6 +3439,7 @@ export async function handleMenuModal(
       return;
     }
 
+    await deferModalForWrite(interaction);
     const cfg = ctx.repos.guildConfig.getOrCreate(guildId).economy;
     const res = ctx.services.multiplayer.createRedPacket({
       guildId,
@@ -3219,43 +3454,45 @@ export async function handleMenuModal(
       const msgMap: Record<typeof res.reason, string> = {
         invalid_count: '红包份数必须在 2 ~ 100 份之间。',
         invalid_amount: '红包总金额必须在 1 ~ 1,000,000,000 之间。',
-        amount_too_small_for_count: '红包总金额不能小于红包份数（每份至少 1 星币）。',
+        amount_too_small_for_count: `红包总金额不能小于红包份数（每份至少 1 ${cfg.currencyName}）。`,
         insufficient_funds: `你的口袋现金不足以包出 **${totalAmount}** ${cfg.currencyName} 的红包。`,
       };
-      await respondFromModal(
+      await safeEditOrFollowUp(
         interaction,
         buildMenuMessage(ctx, guildId, actor, { page: 'multi' }, { type: 'error', text: msgMap[res.reason] }),
       );
       return;
     }
 
-    try {
-      const sentMsg = await interaction.channel.send({
-        content: `🧧 <@${actor.id}> 发了一个 **${res.packet.totalAmount}** ${cfg.currencyName} 的拼手气红包（${res.packet.totalCount} 份），快来抢！`,
-        ...buildRedPacketMessage(res.packet, [], null, cfg),
-      });
-      ctx.services.multiplayer.bindRedPacketMessage(res.packet.id, sentMsg.id);
-    } catch {
+    const sent = await sendPublicBroadcast(interaction, {
+      content: `🧧 <@${actor.id}> 发了一个 **${res.packet.totalAmount}** ${cfg.currencyName} 的拼手气红包（${res.packet.totalCount} 份），快来抢！`,
+      ...buildRedPacketMessage(res.packet, [], null, cfg),
+    });
+    if (!sent.sent || !sent.messageId) {
       ctx.db.transaction(() => {
         const marked = ctx.repos.redPacket.markExpired(res.packet.id);
         if (marked) {
           ctx.repos.profile.addCoins(guildId, actor.id, res.packet.totalAmount);
         }
       })();
-      await respondFromModal(
+      await safeEditOrFollowUp(
         interaction,
         buildMenuMessage(
           ctx,
           guildId,
           actor,
           { page: 'multi' },
-          { type: 'error', text: '发送红包消息失败，请检查机器人发言与嵌入链接权限（星币已自动退回）。' },
+          {
+            type: 'error',
+            text: `发送红包消息失败，请检查机器人发言与嵌入链接权限（${cfg.currencyName}已自动退回）。`,
+          },
         ),
       );
       return;
     }
 
-    await respondFromModal(
+    ctx.services.multiplayer.bindRedPacketMessage(res.packet.id, sent.messageId);
+    await safeEditOrFollowUp(
       interaction,
       buildMenuMessage(
         ctx,
@@ -3277,7 +3514,7 @@ export async function handleMenuRoleSelect(
 ): Promise<void> {
   if (!interaction.guildId) return;
   const guildId = interaction.guildId;
-  const actor = getActor(interaction, ctx, guildId);
+  const actor = await resolveActor(interaction, ctx, guildId);
   const parts = interaction.customId.split(':');
   await tryHandleConfigMenuRoleSelect(interaction, ctx, guildId, actor, parts);
 }
@@ -3288,7 +3525,10 @@ export async function handleMenuChannelSelect(
 ): Promise<void> {
   if (!interaction.guildId) return;
   const guildId = interaction.guildId;
-  const actor = getActor(interaction, ctx, guildId);
+  const actor = await resolveActor(interaction, ctx, guildId);
   const parts = interaction.customId.split(':');
+  if (await tryHandleConfigMenuChannelSelect(interaction, ctx, guildId, actor, parts)) {
+    return;
+  }
   await tryHandleAiMenuChannelSelect(interaction, ctx, guildId, actor, parts);
 }

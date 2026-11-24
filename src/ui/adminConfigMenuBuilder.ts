@@ -8,10 +8,12 @@ import {
 } from 'discord.js';
 import { MonitorRepo, type InteractionLogEntry } from '../db/repositories/monitorRepo.js';
 import { COLORS, formatDurationZh, type AppContext } from './embeds.js';
-import { formatShopItemTag } from './menuShared.js';
 import {
   buttonRow,
+  formatShopItemTag,
   makeButton,
+  MENU_SELECT_PAGE_SIZE,
+  paginateSlice,
   resolveColor,
   truncateText,
   withFeedback,
@@ -26,13 +28,23 @@ export function buildAdminLvlRewardsView(
   guildId: string,
   actor: MenuActor,
   feedback: MenuFeedback | undefined,
+  listPage?: number,
 ): BuiltMenuMessage {
   const cfg = ctx.repos.guildConfig.getOrCreate(guildId);
   const rewards = ctx.repos.profile.listLevelRewards(guildId);
+  const { slice: pageRewards, page, totalPages } = paginateSlice(
+    rewards,
+    listPage,
+    MENU_SELECT_PAGE_SIZE,
+  );
   const rewardLines =
-    rewards.length > 0
-      ? rewards.map((r) => `• **Lv.${r.level}** → <@&${r.roleId}>`)
+    pageRewards.length > 0
+      ? pageRewards.map((r) => `• **Lv.${r.level}** → <@&${r.roleId}>`)
       : ['暂未配置任何等级奖励身份组。'];
+
+  if (totalPages > 1) {
+    rewardLines.push(`\n*（第 ${page} / ${totalPages} 页 · 共 ${rewards.length} 项奖励）*`);
+  }
 
   const description = [
     '从下方身份组选择器选一个身份组，即可填写对应等级并绑定为**升级自动发放奖励**；若该等级已有奖励将自动覆盖。',
@@ -50,7 +62,12 @@ export function buildAdminLvlRewardsView(
     .setAuthor({ name: `${actor.displayName} · 升级奖励身份组`, iconURL: actor.avatarUrl })
     .setTitle('🎖️ 升级奖励身份组管理')
     .setDescription(withFeedback(description, feedback))
-    .setFooter({ text: '🔒 选择身份组后会弹出等级输入框（支持 Lv.1 ~ Lv.200）' })
+    .setFooter({
+      text:
+        totalPages > 1
+          ? `🔒 第 ${page}/${totalPages} 页 · 选择身份组后会弹出等级输入框（Lv.1 ~ Lv.200）`
+          : '🔒 选择身份组后会弹出等级输入框（支持 Lv.1 ~ Lv.200）',
+    })
     .setTimestamp();
 
   const components: MenuComponentRow[] = [
@@ -63,20 +80,45 @@ export function buildAdminLvlRewardsView(
     ),
   ];
 
-  if (rewards.length > 0) {
+  if (pageRewards.length > 0) {
     components.push(
       new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
         new StringSelectMenuBuilder()
-          .setCustomId('menu:admin_lvl_reward_del')
-          .setPlaceholder('🗑️ 选择要移除的等级奖励...')
+          .setCustomId(`menu:admin_lvl_reward_del:${page}`)
+          .setPlaceholder(
+            totalPages > 1
+              ? `🗑️ 选择要移除的等级奖励（第 ${page}/${totalPages} 页）...`
+              : '🗑️ 选择要移除的等级奖励...',
+          )
           .addOptions(
-            rewards.slice(0, 25).map((r) =>
+            pageRewards.map((r) =>
               new StringSelectMenuOptionBuilder()
                 .setLabel(`Lv.${r.level} 奖励`)
                 .setValue(String(r.level))
                 .setDescription(`移除 Lv.${r.level} 的升级身份组奖励`),
             ),
           ),
+      ),
+    );
+  }
+
+  if (totalPages > 1) {
+    const prevPage = Math.max(1, page - 1);
+    const nextPage = Math.min(totalPages, page + 1);
+    components.push(
+      buttonRow(
+        makeButton(
+          `menu:nav:admin_lvl_rewards:${prevPage}:prev`,
+          '⬅️ 上一页',
+          ButtonStyle.Secondary,
+          page <= 1,
+        ),
+        makeButton(
+          `menu:nav:admin_lvl_rewards:${nextPage}:next`,
+          '➡️ 下一页',
+          ButtonStyle.Secondary,
+          page >= totalPages,
+        ),
       ),
     );
   }
@@ -96,20 +138,24 @@ export function buildAdminLvlRewardsView(
   return { embeds: [embed], components };
 }
 
+export interface AdminRolesViewOptions {
+  panelId?: number;
+  panelPage?: number;
+  optPage?: number;
+  confirmDeletePanelId?: number;
+}
+
 export function buildAdminRolesView(
   ctx: AppContext,
   guildId: string,
   actor: MenuActor,
-  selectedPanelId: number | undefined,
+  opts: AdminRolesViewOptions,
   feedback: MenuFeedback | undefined,
 ): BuiltMenuMessage {
   const panels = ctx.services.rolePanel.listPanels(guildId);
-  const activePanel =
-    (selectedPanelId !== undefined
-      ? panels.find((p) => p.id === selectedPanelId)
-      : undefined) ??
-    panels[0] ??
-    null;
+  const selectedIndex =
+    opts.panelId !== undefined ? panels.findIndex((p) => p.id === opts.panelId) : -1;
+  const activePanel = (selectedIndex >= 0 ? panels[selectedIndex] : panels[0]) ?? null;
 
   if (!activePanel) {
     const embed = new EmbedBuilder()
@@ -140,17 +186,37 @@ export function buildAdminRolesView(
     };
   }
 
+  const inferredPanelPage =
+    opts.panelPage ??
+    (selectedIndex >= 0 ? Math.floor(selectedIndex / MENU_SELECT_PAGE_SIZE) + 1 : 1);
+  const {
+    slice: panelSlice,
+    page: panelPage,
+    totalPages: panelTotalPages,
+  } = paginateSlice(panels, inferredPanelPage, MENU_SELECT_PAGE_SIZE);
+
   const options = ctx.repos.rolePanel.listOptions(activePanel.id);
+  const {
+    slice: optSlice,
+    page: optPage,
+    totalPages: optTotalPages,
+    startIndex: optStartIndex,
+  } = paginateSlice(options, opts.optPage, MENU_SELECT_PAGE_SIZE);
+
   const optionLines =
-    options.length > 0
-      ? options.map(
+    optSlice.length > 0
+      ? optSlice.map(
           (o, idx) =>
-            `${idx + 1}. ${o.emoji ? `${o.emoji} ` : ''}<@&${o.roleId}> — **${o.label}**${o.description ? `（${o.description}）` : ''}`,
+            `${optStartIndex + idx + 1}. ${o.emoji ? `${o.emoji} ` : ''}<@&${o.roleId}> — **${o.label}**${o.description ? `（${o.description}）` : ''}`,
         )
       : ['暂未添加任何身份组选项，请使用下方身份组选择器添加（最多 25 个）。'];
 
+  if (optTotalPages > 1) {
+    optionLines.push(`\n*（选项第 ${optPage} / ${optTotalPages} 页 · 共 ${options.length} 个选项）*`);
+  }
+
   const description = [
-    `当前管理面板：**#${activePanel.id} ${activePanel.title}**（共 ${panels.length} 个面板）`,
+    `当前管理面板：**#${activePanel.id} ${activePanel.title}**（共 ${panels.length} 个面板${panelTotalPages > 1 ? ` · 第 ${panelPage}/${panelTotalPages} 页` : ''}）`,
     `说明：${activePanel.description}`,
     `样式：**${activePanel.displayMode === 'button' ? '按钮点击' : '下拉菜单'}** ｜ 模式：**${activePanel.selectionMode === 'single' ? '单选互斥' : '自由多选'}** ｜ 已发布：${activePanel.channelId ? `<#${activePanel.channelId}>` : '未发布到频道'}`,
     '',
@@ -163,7 +229,7 @@ export function buildAdminRolesView(
     .setAuthor({ name: `${actor.displayName} · 自助身份组管理`, iconURL: actor.avatarUrl })
     .setTitle('🎭 自助身份组面板管理')
     .setDescription(withFeedback(description, feedback))
-    .setFooter({ text: '🔒 添加选项后既可直接发到当前频道，群友也能在菜单「🎭 自助身份组」直接领取' })
+    .setFooter({ text: '🔒 增删改选项或切换样式后，已发布的频道卡片将自动同步刷新' })
     .setTimestamp();
 
   const components: MenuComponentRow[] = [];
@@ -172,10 +238,14 @@ export function buildAdminRolesView(
     components.push(
       new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
         new StringSelectMenuBuilder()
-          .setCustomId('menu:admin_rp_select')
-          .setPlaceholder('📑 切换要管理的身份组面板...')
+          .setCustomId(`menu:admin_rp_select:${panelPage}`)
+          .setPlaceholder(
+            panelTotalPages > 1
+              ? `📑 切换身份组面板（第 ${panelPage}/${panelTotalPages} 页）...`
+              : '📑 切换要管理的身份组面板...',
+          )
           .addOptions(
-            panels.slice(0, 25).map((p) =>
+            panelSlice.map((p) =>
               new StringSelectMenuOptionBuilder()
                 .setLabel(truncateText(`#${p.id} ${p.title}`, 100))
                 .setValue(String(p.id))
@@ -199,14 +269,18 @@ export function buildAdminRolesView(
     ),
   );
 
-  if (options.length > 0) {
+  if (optSlice.length > 0) {
     components.push(
       new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
         new StringSelectMenuBuilder()
-          .setCustomId(`menu:admin_rp_del_opt:${activePanel.id}`)
-          .setPlaceholder('🗑️ 从当前面板移除一个身份组选项...')
+          .setCustomId(`menu:admin_rp_del_opt:${activePanel.id}:${optPage}`)
+          .setPlaceholder(
+            optTotalPages > 1
+              ? `🗑️ 移除身份组选项（选项第 ${optPage}/${optTotalPages} 页）...`
+              : '🗑️ 从当前面板移除一个身份组选项...',
+          )
           .addOptions(
-            options.slice(0, 25).map((o) =>
+            optSlice.map((o) =>
               new StringSelectMenuOptionBuilder()
                 .setLabel(truncateText(`${o.emoji ? `${o.emoji} ` : ''}${o.label}`, 100))
                 .setValue(o.roleId)
@@ -217,32 +291,81 @@ export function buildAdminRolesView(
     );
   }
 
-  components.push(
-    buttonRow(
-      makeButton('menu:modal:admin_rp_create', '➕ 新建面板', ButtonStyle.Success),
+  const isConfirmingDelete = opts.confirmDeletePanelId === activePanel.id;
+  if (isConfirmingDelete) {
+    components.push(
+      buttonRow(
+        makeButton(
+          `menu:admin:rp_delete:${activePanel.id}:confirm`,
+          `✅ 确认删除面板 #${activePanel.id}`,
+          ButtonStyle.Danger,
+        ),
+        makeButton(
+          `menu:nav:admin_roles:${activePanel.id}:${panelPage}:${optPage}:cancel`,
+          '❌ 取消删除',
+          ButtonStyle.Secondary,
+        ),
+      ),
+    );
+  } else {
+    components.push(
+      buttonRow(
+        makeButton('menu:modal:admin_rp_create', '➕ 新建面板', ButtonStyle.Success),
+        makeButton(
+          `menu:admin:rp_send:${activePanel.id}`,
+          '📤 发到本频道',
+          ButtonStyle.Primary,
+          options.length === 0,
+        ),
+        makeButton(
+          `menu:admin:rp_toggle_display:${activePanel.id}`,
+          `样式: ${activePanel.displayMode === 'button' ? '按钮' : '菜单'}`,
+          ButtonStyle.Secondary,
+        ),
+        makeButton(
+          `menu:admin:rp_toggle_mode:${activePanel.id}`,
+          `模式: ${activePanel.selectionMode === 'single' ? '单选' : '多选'}`,
+          ButtonStyle.Secondary,
+        ),
+        makeButton(`menu:admin:rp_delete:${activePanel.id}`, '🗑️ 删除面板', ButtonStyle.Danger),
+      ),
+    );
+  }
+
+  const footerButtons = [];
+  if (panelTotalPages > 1) {
+    const prevPanelPage = Math.max(1, panelPage - 1);
+    const nextPanelPage = Math.min(panelTotalPages, panelPage + 1);
+    footerButtons.push(
       makeButton(
-        `menu:admin:rp_send:${activePanel.id}`,
-        '📤 发到本频道',
-        ButtonStyle.Primary,
-        options.length === 0,
+        `menu:nav:admin_roles:${activePanel.id}:${prevPanelPage}:${optPage}:pprev`,
+        '⬅️ 面板上页',
+        ButtonStyle.Secondary,
+        panelPage <= 1,
       ),
       makeButton(
-        `menu:admin:rp_toggle_display:${activePanel.id}`,
-        `样式: ${activePanel.displayMode === 'button' ? '按钮' : '菜单'}`,
+        `menu:nav:admin_roles:${activePanel.id}:${nextPanelPage}:${optPage}:pnext`,
+        '➡️ 面板下页',
+        ButtonStyle.Secondary,
+        panelPage >= panelTotalPages,
+      ),
+    );
+  }
+  if (optTotalPages > 1) {
+    const nextOptPage = optPage >= optTotalPages ? 1 : optPage + 1;
+    footerButtons.push(
+      makeButton(
+        `menu:nav:admin_roles:${activePanel.id}:${panelPage}:${nextOptPage}:opage`,
+        `📑 选项第${nextOptPage}/${optTotalPages}页`,
         ButtonStyle.Secondary,
       ),
-      makeButton(
-        `menu:admin:rp_toggle_mode:${activePanel.id}`,
-        `模式: ${activePanel.selectionMode === 'single' ? '单选' : '多选'}`,
-        ButtonStyle.Secondary,
-      ),
-      makeButton(`menu:admin:rp_delete:${activePanel.id}`, '🗑️ 删除面板', ButtonStyle.Danger),
-    ),
-    buttonRow(
-      makeButton('menu:nav:admin', '⬅️ 管理后台', ButtonStyle.Secondary),
-      makeButton('menu:nav:home', '🏠 主菜单', ButtonStyle.Secondary),
-    ),
+    );
+  }
+  footerButtons.push(
+    makeButton('menu:nav:admin', '⬅️ 后台', ButtonStyle.Secondary),
+    makeButton('menu:nav:home', '🏠 主菜单', ButtonStyle.Secondary),
   );
+  components.push(buttonRow(...footerButtons));
 
   return { embeds: [embed], components };
 }
@@ -253,14 +376,12 @@ export function buildSelfRolesView(
   actor: MenuActor,
   selectedPanelId: number | undefined,
   feedback: MenuFeedback | undefined,
+  requestedPanelPage?: number,
 ): BuiltMenuMessage {
   const panels = ctx.services.rolePanel.listPanels(guildId);
-  const activePanel =
-    (selectedPanelId !== undefined
-      ? panels.find((p) => p.id === selectedPanelId)
-      : undefined) ??
-    panels[0] ??
-    null;
+  const selectedIndex =
+    selectedPanelId !== undefined ? panels.findIndex((p) => p.id === selectedPanelId) : -1;
+  const activePanel = (selectedIndex >= 0 ? panels[selectedIndex] : panels[0]) ?? null;
 
   if (!activePanel) {
     const embed = new EmbedBuilder()
@@ -285,6 +406,15 @@ export function buildSelfRolesView(
     return { embeds: [embed], components: [buttonRow(...buttons)] };
   }
 
+  const inferredPanelPage =
+    requestedPanelPage ??
+    (selectedIndex >= 0 ? Math.floor(selectedIndex / MENU_SELECT_PAGE_SIZE) + 1 : 1);
+  const {
+    slice: panelSlice,
+    page: panelPage,
+    totalPages: panelTotalPages,
+  } = paginateSlice(panels, inferredPanelPage, MENU_SELECT_PAGE_SIZE);
+
   const options = ctx.repos.rolePanel.listOptions(activePanel.id);
   const ownedSet = new Set(actor.roleIds ?? []);
   const optionLines =
@@ -297,7 +427,7 @@ export function buildSelfRolesView(
 
   const modeText = activePanel.selectionMode === 'single' ? '单选互斥' : '自由多选';
   const description = [
-    `**${activePanel.title}**（${modeText}）`,
+    `**${activePanel.title}**（${modeText}${panelTotalPages > 1 ? ` · 面板第 ${panelPage}/${panelTotalPages} 页` : ''}）`,
     activePanel.description,
     '',
     ...optionLines,
@@ -317,10 +447,14 @@ export function buildSelfRolesView(
     components.push(
       new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
         new StringSelectMenuBuilder()
-          .setCustomId('menu:self_rp_select')
-          .setPlaceholder('📑 切换身份组面板...')
+          .setCustomId(`menu:self_rp_select:${panelPage}`)
+          .setPlaceholder(
+            panelTotalPages > 1
+              ? `📑 切换身份组面板（第 ${panelPage}/${panelTotalPages} 页）...`
+              : '📑 切换身份组面板...',
+          )
           .addOptions(
-            panels.slice(0, 25).map((p) =>
+            panelSlice.map((p) =>
               new StringSelectMenuOptionBuilder()
                 .setLabel(truncateText(p.title, 100))
                 .setValue(String(p.id))
@@ -361,6 +495,27 @@ export function buildSelfRolesView(
     );
   }
 
+  if (panelTotalPages > 1) {
+    const prevPanelPage = Math.max(1, panelPage - 1);
+    const nextPanelPage = Math.min(panelTotalPages, panelPage + 1);
+    components.push(
+      buttonRow(
+        makeButton(
+          `menu:nav:self_roles:${activePanel.id}:${prevPanelPage}:pprev`,
+          '⬅️ 上页面板',
+          ButtonStyle.Secondary,
+          panelPage <= 1,
+        ),
+        makeButton(
+          `menu:nav:self_roles:${activePanel.id}:${nextPanelPage}:pnext`,
+          '➡️ 下页面板',
+          ButtonStyle.Secondary,
+          panelPage >= panelTotalPages,
+        ),
+      ),
+    );
+  }
+
   const navButtons = [
     makeButton('menu:nav:rank', '🪪 我的名片', ButtonStyle.Secondary),
     makeButton('menu:nav:home', '🏠 主菜单', ButtonStyle.Secondary),
@@ -373,17 +528,27 @@ export function buildSelfRolesView(
   return { embeds: [embed], components };
 }
 
+export interface AdminShopViewOptions {
+  listPage?: number;
+  confirmDeleteItemId?: number;
+}
+
 export function buildAdminShopView(
   ctx: AppContext,
   guildId: string,
   actor: MenuActor,
   feedback: MenuFeedback | undefined,
+  opts: AdminShopViewOptions = {},
 ): BuiltMenuMessage {
   const guildCfg = ctx.repos.guildConfig.getOrCreate(guildId);
   const econCfg = guildCfg.economy;
   const lvlCfg = guildCfg.leveling;
   const items = ctx.services.shop.listItems(guildId);
-  const displayItems = items.slice(0, 25);
+  const { slice: displayItems, page, totalPages } = paginateSlice(
+    items,
+    opts.listPage,
+    MENU_SELECT_PAGE_SIZE,
+  );
 
   const itemLines =
     displayItems.length > 0
@@ -394,8 +559,8 @@ export function buildAdminShopView(
         })
       : ['当前商店暂无商品，点击下方选择器或弹窗按钮即可上架！'];
 
-  if (items.length > 25) {
-    itemLines.push(`\n*（共 ${items.length} 件商品，当前展示前 25 件）*`);
+  if (totalPages > 1) {
+    itemLines.push(`\n*（第 ${page} / ${totalPages} 页 · 共 ${items.length} 件商品）*`);
   }
 
   const description = [
@@ -409,7 +574,12 @@ export function buildAdminShopView(
     .setAuthor({ name: `${actor.displayName} · 商店商品管理`, iconURL: actor.avatarUrl })
     .setTitle('🛒 商店商品管理中心')
     .setDescription(withFeedback(description, feedback))
-    .setFooter({ text: '🔒 支持上架 7 类商品，或通过 /商店 上架* 精确配置' })
+    .setFooter({
+      text:
+        totalPages > 1
+          ? `🔒 第 ${page}/${totalPages} 页 · 支持上架 7 类商品，或通过 /商店 上架* 精确配置`
+          : '🔒 支持上架 7 类商品，或通过 /商店 上架* 精确配置',
+    })
     .setTimestamp();
 
   const components: MenuComponentRow[] = [];
@@ -418,8 +588,12 @@ export function buildAdminShopView(
     components.push(
       new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
         new StringSelectMenuBuilder()
-          .setCustomId('menu:admin_shop_del')
-          .setPlaceholder('🗑️ 选择要下架的商品...')
+          .setCustomId(`menu:admin_shop_del:${page}`)
+          .setPlaceholder(
+            totalPages > 1
+              ? `🗑️ 选择要下架的商品（第 ${page}/${totalPages} 页）...`
+              : '🗑️ 选择要下架的商品...',
+          )
           .addOptions(
             displayItems.map((item) =>
               new StringSelectMenuOptionBuilder()
@@ -452,11 +626,49 @@ export function buildAdminShopView(
       makeButton('menu:modal:admin_shop_pet', '🥫 宠物经验', ButtonStyle.Success),
       makeButton('menu:modal:admin_shop_special', '🎁 盲盒/称号券', ButtonStyle.Secondary),
     ),
-    buttonRow(
-      makeButton('menu:nav:admin', '⬅️ 管理后台', ButtonStyle.Secondary),
-      makeButton('menu:nav:home', '🏠 主菜单', ButtonStyle.Secondary),
-    ),
   );
+
+  const confirmItem =
+    opts.confirmDeleteItemId !== undefined
+      ? items.find((i) => i.id === opts.confirmDeleteItemId)
+      : undefined;
+  if (confirmItem) {
+    components.push(
+      buttonRow(
+        makeButton(
+          `menu:admin:shop_del_confirm:${confirmItem.id}:${page}`,
+          `✅ 确认下架 #${confirmItem.id}`,
+          ButtonStyle.Danger,
+        ),
+        makeButton(`menu:nav:admin_shop:${page}:cancel`, '❌ 取消下架', ButtonStyle.Secondary),
+      ),
+    );
+  }
+
+  const navButtons = [];
+  if (totalPages > 1) {
+    const prevPage = Math.max(1, page - 1);
+    const nextPage = Math.min(totalPages, page + 1);
+    navButtons.push(
+      makeButton(
+        `menu:nav:admin_shop:${prevPage}:prev`,
+        '⬅️ 上一页',
+        ButtonStyle.Secondary,
+        page <= 1,
+      ),
+      makeButton(
+        `menu:nav:admin_shop:${nextPage}:next`,
+        '➡️ 下一页',
+        ButtonStyle.Secondary,
+        page >= totalPages,
+      ),
+    );
+  }
+  navButtons.push(
+    makeButton('menu:nav:admin', '⬅️ 管理后台', ButtonStyle.Secondary),
+    makeButton('menu:nav:home', '🏠 主菜单', ButtonStyle.Secondary),
+  );
+  components.push(buttonRow(...navButtons));
 
   return { embeds: [embed], components };
 }
@@ -486,6 +698,7 @@ export function buildAdminMonitorView(
   filter: 'issues' | 'all' = 'issues',
   feedback: MenuFeedback | undefined,
   nowMs = Date.now(),
+  confirmClear = false,
 ): BuiltMenuMessage {
   const repo = ctx.repos.monitor ?? new MonitorRepo(ctx.db);
   const since24h = nowMs - 24 * 3600 * 1000;
@@ -541,31 +754,42 @@ export function buildAdminMonitorView(
     })
     .setTimestamp();
 
-  return {
-    embeds: [embed],
-    components: [
-      buttonRow(
-        makeButton(
-          'menu:admin_monitor:filter:issues',
-          '🚨 仅看异常/慢响应',
-          filter === 'issues' ? ButtonStyle.Primary : ButtonStyle.Secondary,
-        ),
-        makeButton(
-          'menu:admin_monitor:filter:all',
-          '📋 查看全部交互',
-          filter === 'all' ? ButtonStyle.Primary : ButtonStyle.Secondary,
-        ),
-        makeButton(
-          `menu:admin_monitor:refresh:${filter}`,
-          '🔄 刷新监控',
-          ButtonStyle.Success,
-        ),
-        makeButton('menu:admin_monitor:clear', '🧹 清空本服日志', ButtonStyle.Danger),
+  const components: MenuComponentRow[] = [
+    buttonRow(
+      makeButton(
+        'menu:admin_monitor:filter:issues',
+        '🚨 仅看异常/慢响应',
+        filter === 'issues' ? ButtonStyle.Primary : ButtonStyle.Secondary,
       ),
-      buttonRow(
-        makeButton('menu:nav:admin', '⬅️ 管理后台', ButtonStyle.Secondary),
-        makeButton('menu:nav:home', '🏠 主菜单', ButtonStyle.Secondary),
+      makeButton(
+        'menu:admin_monitor:filter:all',
+        '📋 查看全部交互',
+        filter === 'all' ? ButtonStyle.Primary : ButtonStyle.Secondary,
       ),
-    ],
-  };
+      makeButton(
+        `menu:admin_monitor:refresh:${filter}`,
+        '🔄 刷新监控',
+        ButtonStyle.Success,
+      ),
+      makeButton('menu:admin_monitor:clear', '🧹 清空本服日志', ButtonStyle.Danger),
+    ),
+  ];
+
+  if (confirmClear) {
+    components.push(
+      buttonRow(
+        makeButton('menu:admin_monitor:clear:confirm', '✅ 确认清空本服日志', ButtonStyle.Danger),
+        makeButton(`menu:admin_monitor:refresh:${filter}:cancel`, '❌ 取消清空', ButtonStyle.Secondary),
+      ),
+    );
+  }
+
+  components.push(
+    buttonRow(
+      makeButton('menu:nav:admin', '⬅️ 管理后台', ButtonStyle.Secondary),
+      makeButton('menu:nav:home', '🏠 主菜单', ButtonStyle.Secondary),
+    ),
+  );
+
+  return { embeds: [embed], components };
 }

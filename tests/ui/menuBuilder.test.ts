@@ -375,8 +375,16 @@ describe('menuBuilder Discord component constraints & schema integration', () =>
       { page: 'admin_mod' },
       { page: 'admin_ops' },
       { page: 'admin_ai' },
+      { page: 'admin_ai', tab: 'channels' },
       { page: 'admin_monitor', filter: 'issues' },
       { page: 'admin_monitor', filter: 'all' },
+      { page: 'admin_monitor', filter: 'issues', confirmClear: true },
+      { page: 'admin_econ', confirmReset: true },
+      { page: 'admin_lvl', confirmReset: true },
+      { page: 'admin_roles', panelId: rp2.id, confirmDeletePanelId: rp2.id },
+      { page: 'admin_shop', listPage: 2, confirmDeleteItemId: 1 },
+      { page: 'shop', listPage: 2 },
+      { page: 'bag', listPage: 2 },
     ];
 
     for (const view of views) {
@@ -592,6 +600,188 @@ describe('menuBuilder Discord component constraints & schema integration', () =>
         );
       }
     }
+
+    ctx.db.close();
+  });
+
+  it('paginates >20 items across all 6 selects, disables buttons by state, renders single-source constants, and collapses >25 red packet claims', () => {
+    const ctx = createTestCtx();
+    // Configure custom currency to verify zero hardcoded "星币"
+    const baseCfg = ctx.repos.guildConfig.getOrCreate('g1');
+    ctx.repos.guildConfig.updateEconomy('g1', {
+      ...baseCfg.economy,
+      currencyName: '钻石',
+      currencyEmoji: '💎',
+    });
+
+    // Seed 26 shop items, 26 level rewards, 24 role panels, and 25 options on panel #1
+    ctx.repos.profile.addCoins('g1', 'u1', 100_000);
+    for (let i = 1; i <= 26; i++) {
+      ctx.services.shop.createBoostItem({
+        guildId: 'g1',
+        name: `道具_${i}`,
+        description: `描述_${i}`,
+        price: 100,
+        boostMultiplier: 1.5,
+        boostDurationSec: 1800,
+        stock: null,
+      });
+      ctx.repos.profile.setLevelReward('g1', i, `role-lv-${i}`);
+    }
+    for (let i = 1; i <= 24; i++) {
+      ctx.services.shop.buyItem('g1', 'u1', i);
+    }
+
+    const panelIds: number[] = [];
+    for (let i = 1; i <= 24; i++) {
+      const p = ctx.services.rolePanel.createPanel({
+        guildId: 'g1',
+        title: `身份组面板_${i}`,
+        description: '说明',
+        displayMode: 'button',
+        selectionMode: 'multi',
+      });
+      panelIds.push(p.id);
+    }
+    for (let i = 1; i <= 25; i++) {
+      ctx.services.rolePanel.addOption('g1', panelIds[0]!, {
+        roleId: `opt-role-${i}`,
+        label: `选项_${i}`,
+        emoji: '🎮',
+        description: null,
+      });
+    }
+
+    // 1. Shop & Bag pagination (20 per page)
+    const shopP1 = buildMenuMessage(ctx, 'g1', ACTOR, { page: 'shop', listPage: 1 });
+    const shopP2 = buildMenuMessage(ctx, 'g1', ACTOR, { page: 'shop', listPage: 2 });
+    assertDiscordMessageLimits(shopP1, 'shop:p1');
+    assertDiscordMessageLimits(shopP2, 'shop:p2');
+    const shopSelectP1 = shopP1.components[0]!.toJSON().components[0]!;
+    const shopSelectP2 = shopP2.components[0]!.toJSON().components[0]!;
+    expect(shopSelectP1.type).toBe(ComponentType.StringSelect);
+    if (shopSelectP1.type === ComponentType.StringSelect && shopSelectP2.type === ComponentType.StringSelect) {
+      expect(shopSelectP1.options).toHaveLength(20);
+      expect(shopSelectP2.options).toHaveLength(6);
+    }
+
+    const bagP2 = buildMenuMessage(ctx, 'g1', ACTOR, { page: 'bag', listPage: 2 });
+    assertDiscordMessageLimits(bagP2, 'bag:p2');
+    const bagSelectP2 = bagP2.components[0]!.toJSON().components[0]!;
+    if (bagSelectP2.type === ComponentType.StringSelect) {
+      expect(bagSelectP2.options).toHaveLength(4);
+    }
+
+    // 2. Admin level rewards, admin shop, admin roles (panels + options), self roles pagination
+    const lvlRewP2 = buildMenuMessage(ctx, 'g1', { ...ACTOR, isAdmin: true }, { page: 'admin_lvl_rewards', listPage: 2 });
+    assertDiscordMessageLimits(lvlRewP2, 'admin_lvl_rewards:p2');
+    const lvlRewSelect = lvlRewP2.components[1]!.toJSON().components[0]!;
+    if (lvlRewSelect.type === ComponentType.StringSelect) {
+      expect(lvlRewSelect.options).toHaveLength(6);
+    }
+
+    const adminShopP2 = buildMenuMessage(ctx, 'g1', { ...ACTOR, isAdmin: true }, { page: 'admin_shop', listPage: 2, confirmDeleteItemId: 21 });
+    assertDiscordMessageLimits(adminShopP2, 'admin_shop:p2:confirm');
+    const adminShopSelect = adminShopP2.components[0]!.toJSON().components[0]!;
+    if (adminShopSelect.type === ComponentType.StringSelect) {
+      expect(adminShopSelect.options).toHaveLength(6);
+    }
+
+    const adminRolesP2 = buildMenuMessage(ctx, 'g1', { ...ACTOR, isAdmin: true }, { page: 'admin_roles', panelId: panelIds[0]!, panelPage: 2, optPage: 2 });
+    assertDiscordMessageLimits(adminRolesP2, 'admin_roles:p2:opt2');
+    const panelSelectP2 = adminRolesP2.components[0]!.toJSON().components[0]!;
+    const optSelectP2 = adminRolesP2.components[2]!.toJSON().components[0]!;
+    if (panelSelectP2.type === ComponentType.StringSelect && optSelectP2.type === ComponentType.StringSelect) {
+      expect(panelSelectP2.options).toHaveLength(4);
+      expect(optSelectP2.options).toHaveLength(5);
+    }
+
+    const selfRolesP2 = buildMenuMessage(ctx, 'g1', ACTOR, { page: 'self_roles', panelId: panelIds[0]!, panelPage: 2 });
+    assertDiscordMessageLimits(selfRolesP2, 'self_roles:p2');
+
+    // 3. Single-source constants & custom currency rendering (no hardcoded 星币 or stale numbers)
+    const robJson = buildMenuMessage(ctx, 'g1', ACTOR, { page: 'rob' }).embeds[0]!.toJSON();
+    expect(robJson.description).toContain('15%~35%');
+    expect(robJson.description).toContain('1,000');
+    expect(robJson.description).not.toContain('2,500');
+    expect(robJson.description).not.toContain('≥ 500');
+    expect(robJson.description).not.toContain('星币');
+
+    const bankJson = buildMenuMessage(ctx, 'g1', ACTOR, { page: 'bank' }).embeds[0]!.toJSON();
+    expect(bankJson.author?.name).toContain('钻石银行');
+    expect(bankJson.author?.name).not.toContain('星币');
+
+    // 4. Button disabled states
+    ctx.services.economy.claimDaily('g1', 'u2');
+    ctx.services.economy.work('g1', 'u2');
+    const u2Actor: MenuActor = { ...ACTOR, id: 'u2' };
+    const u2Home = buildMenuMessage(ctx, 'g1', u2Actor, { page: 'home' });
+    const u2HomeRow2 = u2Home.components[1]!.toJSON().components;
+    expect(u2HomeRow2[0]).toMatchObject({ custom_id: 'menu:act:daily:home', disabled: true });
+    expect(u2HomeRow2[1]).toMatchObject({ custom_id: 'menu:act:work:home', disabled: true });
+
+    // Bank 0 cash & 0 deposit disables deposit, withdraw, and interest buttons
+    const brokeActor: MenuActor = { ...ACTOR, id: 'broke' };
+    const brokeBank = buildMenuMessage(ctx, 'g1', brokeActor, { page: 'bank' });
+    const depRow = brokeBank.components[0]!.toJSON().components;
+    const wdRow = brokeBank.components[1]!.toJSON().components;
+    const intRow = brokeBank.components[2]!.toJSON().components;
+    expect(depRow.every((c) => 'disabled' in c && c.disabled === true)).toBe(true);
+    expect(wdRow.every((c) => 'disabled' in c && c.disabled === true)).toBe(true);
+    expect(intRow[0]).toMatchObject({ custom_id: 'menu:bank:interest', disabled: true });
+
+    // Blackjack double button disabled when remaining coins < bet
+    ctx.repos.profile.addCoins('g1', 'bj-tight', 100);
+    const riggedDeck = (): Card[] => [
+      { rank: '2', suit: '♠' },
+      { rank: '3', suit: '♥' },
+      { rank: '9', suit: '♦' },
+      { rank: '6', suit: '♣' },
+      { rank: '7', suit: '♠' },
+      { rank: '5', suit: '♥' },
+    ];
+    ctx.services.blackjack.startGame('g1', 'bj-tight', 100, riggedDeck);
+    const tightBj = buildMenuMessage(ctx, 'g1', { ...ACTOR, id: 'bj-tight' }, { page: 'bj' });
+    expect(tightBj.components[0]!.toJSON().components[2]).toMatchObject({
+      custom_id: 'menu:bj:double',
+      disabled: true,
+    });
+
+    // 5. Red packet with 35 claims collapses after 25
+    const cfg = ctx.repos.guildConfig.getOrCreate('g1').economy;
+    const fakeClaims = Array.from({ length: 35 }, (_, i) => ({
+      id: i + 1,
+      packetId: 99,
+      userId: `u-${i + 1}`,
+      amount: 100 + i,
+      claimedAt: Date.now(),
+    }));
+    const bigRpCard = buildRedPacketMessage(
+      {
+        id: 99,
+        guildId: 'g1',
+        channelId: 'c1',
+        messageId: 'm1',
+        senderId: 'u1',
+        totalAmount: 10_000,
+        remainingAmount: 0,
+        totalCount: 35,
+        remainingCount: 0,
+        greeting: '超大红包',
+        status: 'finished',
+        systemFunded: false,
+        expiresAt: Date.now() + 60_000,
+        createdAt: Date.now(),
+      },
+      fakeClaims,
+      'u-35',
+      cfg,
+    );
+    assertDiscordMessageLimits(bigRpCard, 'redpacket:35claims');
+    const rpDesc = bigRpCard.embeds[0]!.toJSON().description ?? '';
+    expect(rpDesc).toContain('仅展示前 25 条，共 35 人已领');
+    expect(rpDesc).toContain('<@u-35>');
+    expect(rpDesc).not.toContain('<@u-30>');
 
     ctx.db.close();
   });

@@ -26,6 +26,7 @@ export interface MenuActor {
   displayName: string;
   avatarUrl: string;
   isAdmin?: boolean;
+  isSuperAdmin?: boolean;
   roleIds?: readonly string[];
 }
 
@@ -59,22 +60,52 @@ export type MenuView =
   | { page: 'cp_lb'; lbPage: number }
   | { page: 'pets' }
   | { page: 'pet_arena' }
-  | { page: 'shop' }
-  | { page: 'bag' }
+  | { page: 'shop'; listPage?: number }
+  | { page: 'bag'; listPage?: number }
   | { page: 'rank' }
-  | { page: 'self_roles'; panelId?: number }
+  | { page: 'self_roles'; panelId?: number; panelPage?: number }
   | { page: 'leaderboard'; lbType: LeaderboardType; lbPage: number }
   | { page: 'admin' }
-  | { page: 'admin_econ' }
-  | { page: 'admin_lvl' }
-  | { page: 'admin_lvl_rewards' }
-  | { page: 'admin_roles'; panelId?: number }
-  | { page: 'admin_shop' }
+  | { page: 'admin_econ'; confirmReset?: boolean }
+  | { page: 'admin_lvl'; confirmReset?: boolean }
+  | { page: 'admin_lvl_rewards'; listPage?: number }
+  | {
+      page: 'admin_roles';
+      panelId?: number;
+      panelPage?: number;
+      optPage?: number;
+      confirmDeletePanelId?: number;
+    }
+  | { page: 'admin_shop'; listPage?: number; confirmDeleteItemId?: number }
   | { page: 'admin_games' }
   | { page: 'admin_mod' }
   | { page: 'admin_ops' }
-  | { page: 'admin_ai' }
-  | { page: 'admin_monitor'; filter?: 'issues' | 'all' };
+  | { page: 'admin_ai'; tab?: 'basic' | 'channels' }
+  | { page: 'admin_monitor'; filter?: 'issues' | 'all'; confirmClear?: boolean };
+
+export const MENU_SELECT_PAGE_SIZE = 20;
+
+export function paginateSlice<T>(
+  items: readonly T[],
+  requestedPage: number | undefined,
+  pageSize = MENU_SELECT_PAGE_SIZE,
+): {
+  slice: T[];
+  page: number;
+  totalPages: number;
+  startIndex: number;
+} {
+  const safeSize = Math.max(1, pageSize);
+  const totalPages = Math.max(1, Math.ceil(items.length / safeSize));
+  const page = Math.max(1, Math.min(totalPages, Math.floor(requestedPage ?? 1)));
+  const startIndex = (page - 1) * safeSize;
+  return {
+    slice: items.slice(startIndex, startIndex + safeSize),
+    page,
+    totalPages,
+    startIndex,
+  };
+}
 
 export type MenuComponentRow =
   | ActionRowBuilder<ButtonBuilder>
@@ -186,7 +217,7 @@ export function formatShopBuyError(
     not_found: '该商品不存在或已被管理员下架。',
     out_of_stock: '该商品已售罄。',
     insufficient_funds: `你的口袋 ${currencyName} 余额不足！`,
-    already_owned: '你已经拥有该专属称号了，无需重复购买。',
+    already_owned: '你已经拥有该专属称号或身份组了，无需重复购买。',
     daily_limit_reached: `今日成长药水/增幅道具使用已达上限（每日共限 **${limit}** 次），请明天再来！`,
     no_active_pet: '你当前没有出战宠物，请先前往「🐾 宠物屋」抽取并设置出战宠物（本次未扣款）。',
     invalid_title: '自定义称号需在 1 ~ 20 个字之间，请重新输入（本次未扣款）。',

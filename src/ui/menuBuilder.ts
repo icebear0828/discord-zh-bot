@@ -1,12 +1,33 @@
 import {
   ActionRowBuilder,
   ButtonStyle,
+  ChannelSelectMenuBuilder,
+  ChannelType,
   EmbedBuilder,
   StringSelectMenuBuilder,
   StringSelectMenuOptionBuilder,
   UserSelectMenuBuilder,
 } from 'discord.js';
 import type { EconomyConfig, ModuleKey } from '../config/defaults.js';
+import {
+  BANK_ROB_ATTACKER_MIN_ASSETS,
+  BANK_ROB_FINE_RATE,
+  BANK_ROB_STEAL_MAX,
+  BANK_ROB_STEAL_MAX_RATE,
+  BANK_ROB_STEAL_MIN_RATE,
+  BANK_ROB_TARGET_MIN,
+  BANK_ROB_TRAP_FINE_MAX,
+  BANK_ROB_TRAP_FINE_RATE,
+  ROB_ATTACKER_MIN_ASSETS,
+  ROB_FINE_MAX,
+  ROB_FINE_RATE,
+  ROB_STEAL_MAX_AMOUNT,
+  ROB_STEAL_MAX_RATE,
+  ROB_STEAL_MIN_RATE,
+  ROB_TARGET_MIN_COINS,
+  ROB_TRAP_FINE_MAX,
+  ROB_TRAP_FINE_RATE,
+} from '../config/economyConstants.js';
 import type { RedPacket, RedPacketClaim } from '../db/repositories/redPacketRepo.js';
 import {
   evaluateHand,
@@ -43,6 +64,8 @@ import {
   formatRatePercent,
   formatShopItemTag,
   makeButton,
+  MENU_SELECT_PAGE_SIZE,
+  paginateSlice,
   resolveColor,
   truncateText,
   withFeedback,
@@ -109,7 +132,7 @@ export function buildLobbyMessage(guildName?: string): BuiltButtonMessage {
         '• 👥 **多人博弈**：偷钱打劫、转账、骰子决斗、拼手气红包、黑市道具、悬赏、轮盘、数字炸弹',
         '• 🎯 **吃瓜事件**：自由开盘押注、天降宝箱、合力讨伐世界 Boss（含尾刀暴击大奖）',
         '• 💞 **关系宠物**：结婚/结拜 CP 打卡称号、盲盒电子宠物与公开斗兽场 PVP',
-        '• 🏦 **银行与商店**：存钱防偷每日领息、购买身份组/称号/经验卡与查看榜单',
+        '• 🏦 **银行与商店**：存钱降险每日领息、购买身份组/称号/经验卡与查看榜单',
       ].join('\n'),
     )
     .setFooter({ text: '提示：也可随时发送斜杠指令 /菜单 打开个人面板' })
@@ -183,7 +206,7 @@ function buildHomeView(
         inline: true,
       },
     )
-    .setFooter({ text: '提示：私密面板仅自己可见；银行存款不会被偷且每日可领利息！' })
+    .setFooter({ text: '提示：私密面板仅自己可见；银行存款更安全（被劫率极低）且每日可领利息！' })
     .setTimestamp();
 
   const navRow = buttonRow(
@@ -195,9 +218,9 @@ function buildHomeView(
   );
 
   const quickButtons = [
-    makeButton('menu:act:daily', '📅 每日签到', ButtonStyle.Success),
-    makeButton('menu:act:work', '💼 立即打工', ButtonStyle.Secondary),
-    makeButton('menu:act:fortune', '🎴 今日运势', ButtonStyle.Secondary),
+    makeButton('menu:act:daily:home', '📅 每日签到', ButtonStyle.Success, checkedInToday),
+    makeButton('menu:act:work:home', '💼 立即打工', ButtonStyle.Secondary, workRemainMs > 0),
+    makeButton('menu:act:fortune:home', '🎴 今日运势', ButtonStyle.Secondary),
     makeButton('menu:nav:home', '🔄 刷新', ButtonStyle.Secondary),
   ];
   if (actor.isAdmin) {
@@ -236,7 +259,7 @@ function buildSoloView(
     '',
     `• 📅 今日签到：${profile.lastDailyDate === today ? `已签到（连签 ${profile.dailyStreak} 天）` : '可领取'}`,
     `• 💼 打工冷却：${workRemainMs > 0 ? `还需 ${formatDurationZh(workRemainMs)}` : '准备就绪'}`,
-    `• 🎴 今日运势：${fortuneToday ? `【${fortuneToday.luckTier}】宜 ${fortuneToday.goodFor}` : '尚未抽签（首抽送星币）'}`,
+    `• 🎴 今日运势：${fortuneToday ? `【${fortuneToday.luckTier}】宜 ${fortuneToday.goodFor}` : `尚未抽签（首抽送${cfg.currencyName}）`}`,
     `• 🃏 二十一点：${activeBj ? `对局进行中（当前下注 ${activeBj.bet}）` : '暂无进行中牌局'}`,
   ].join('\n');
 
@@ -252,9 +275,9 @@ function buildSoloView(
     embeds: [embed],
     components: [
       buttonRow(
-        makeButton('menu:act:daily', '📅 每日签到', ButtonStyle.Success),
-        makeButton('menu:act:work', '💼 立即打工', ButtonStyle.Secondary),
-        makeButton('menu:act:fortune', '🎴 今日运势', ButtonStyle.Secondary),
+        makeButton('menu:act:daily:solo', '📅 每日签到', ButtonStyle.Success, profile.lastDailyDate === today),
+        makeButton('menu:act:work:solo', '💼 立即打工', ButtonStyle.Secondary, workRemainMs > 0),
+        makeButton('menu:act:fortune:solo', '🎴 今日运势', ButtonStyle.Secondary),
       ),
       buttonRow(
         makeButton('menu:nav:slots', '🎰 老虎机', ButtonStyle.Primary),
@@ -443,7 +466,7 @@ function buildBlackjackView(
             'menu:bj:double',
             '💎 双倍下注',
             ButtonStyle.Success,
-            !game.canDouble || game.playerHand.length !== 2,
+            !game.canDouble || game.playerHand.length !== 2 || displayBalance < game.bet,
           ),
         ),
         buttonRow(
@@ -499,12 +522,12 @@ function buildBankView(
   const description = [
     `• 日利率：**${formatRatePercent(cfg.bankInterestRate)}**（每日上限 **${cfg.bankInterestMax}** ${cfg.currencyName}，起息门槛 **${cfg.bankInterestMinDeposit}**）`,
     `• 利息状态：${interestStatus}`,
-    `• 银行金库有重兵把守（强抢成功率仅 **${formatRatePercent(cfg.robBankSuccessRate)}** 且每次最多被刮走少量零头，翻车高额重罚）；游玩游戏、发红包、决斗、转账均使用**口袋现金**。`,
+    `• 银行金库有重兵把守（强抢成功率仅 **${formatRatePercent(cfg.robBankSuccessRate)}**，得手仅刮走 **${formatRatePercent(BANK_ROB_STEAL_MIN_RATE)}~${formatRatePercent(BANK_ROB_STEAL_MAX_RATE)}** 封顶 **${BANK_ROB_STEAL_MAX.toLocaleString('en-US')}**，翻车高额重罚）；游玩游戏、发红包、决斗、转账均使用**口袋现金**。`,
   ].join('\n');
 
   const embed = new EmbedBuilder()
     .setColor(resolveColor(COLORS.GOLD, feedback))
-    .setAuthor({ name: `${actor.displayName} · 星币银行`, iconURL: actor.avatarUrl })
+    .setAuthor({ name: `${actor.displayName} · ${cfg.currencyName}银行`, iconURL: actor.avatarUrl })
     .setTitle('🏦 银行保险柜')
     .setDescription(withFeedback(description, feedback))
     .addFields(
@@ -527,23 +550,27 @@ function buildBankView(
     .setFooter({ text: '🔒 银行私密操作（仅你自己可见，存取款与领息不会在频道刷屏）' })
     .setTimestamp();
 
+  const canDeposit = profile.coins > 0;
+  const canWithdraw = profile.bankCoins > 0;
+  const canClaimInterest = !interestClaimed && profile.bankCoins >= cfg.bankInterestMinDeposit;
+
   return {
     embeds: [embed],
     components: [
       buttonRow(
-        makeButton('menu:bank:dep:25', '📥 存 25%', ButtonStyle.Success),
-        makeButton('menu:bank:dep:50', '📥 存 50%', ButtonStyle.Success),
-        makeButton('menu:bank:dep:all', '📥 全部存入', ButtonStyle.Success),
-        makeButton('menu:modal:bank_dep', '⌨️ 自定义存入', ButtonStyle.Secondary),
+        makeButton('menu:bank:dep:25', '📥 存 25%', ButtonStyle.Success, Math.floor(profile.coins * 0.25) < 1),
+        makeButton('menu:bank:dep:50', '📥 存 50%', ButtonStyle.Success, Math.floor(profile.coins * 0.5) < 1),
+        makeButton('menu:bank:dep:all', '📥 全部存入', ButtonStyle.Success, !canDeposit),
+        makeButton('menu:modal:bank_dep', '⌨️ 自定义存入', ButtonStyle.Secondary, !canDeposit),
       ),
       buttonRow(
-        makeButton('menu:bank:wd:25', '📤 取 25%', ButtonStyle.Primary),
-        makeButton('menu:bank:wd:50', '📤 取 50%', ButtonStyle.Primary),
-        makeButton('menu:bank:wd:all', '📤 全部取出', ButtonStyle.Primary),
-        makeButton('menu:modal:bank_wd', '⌨️ 自定义取出', ButtonStyle.Secondary),
+        makeButton('menu:bank:wd:25', '📤 取 25%', ButtonStyle.Primary, Math.floor(profile.bankCoins * 0.25) < 1),
+        makeButton('menu:bank:wd:50', '📤 取 50%', ButtonStyle.Primary, Math.floor(profile.bankCoins * 0.5) < 1),
+        makeButton('menu:bank:wd:all', '📤 全部取出', ButtonStyle.Primary, !canWithdraw),
+        makeButton('menu:modal:bank_wd', '⌨️ 自定义取出', ButtonStyle.Secondary, !canWithdraw),
       ),
       buttonRow(
-        makeButton('menu:bank:interest', '💹 领取今日利息', ButtonStyle.Success),
+        makeButton('menu:bank:interest', '💹 领取今日利息', ButtonStyle.Success, !canClaimInterest),
         makeButton('menu:nav:solo', '🎮 独立游玩', ButtonStyle.Secondary),
         makeButton('menu:nav:home', '🏠 返回主菜单', ButtonStyle.Secondary),
       ),
@@ -607,7 +634,7 @@ function buildMultiView(
         makeButton('menu:nav:bomb', '💣 数字炸弹', ButtonStyle.Primary),
       ),
       buttonRow(
-        makeButton('menu:nav:bank', '🏦 存钱防偷', ButtonStyle.Secondary),
+        makeButton('menu:nav:bank', '🏦 银行存取', ButtonStyle.Secondary),
         makeButton('menu:rank:coins:1', '🏆 富豪榜', ButtonStyle.Secondary),
         makeButton('menu:nav:home', '🏠 返回主菜单', ButtonStyle.Secondary),
       ),
@@ -639,7 +666,7 @@ function buildRobView(
             shieldMs > 0 ? `🛡️ 护盾剩余 ${formatDurationZh(shieldMs)}` : '✅ 可下手';
           return `${idx + 1}. <@${t.userId}> — ${cfg.currencyEmoji} **${t.coins}** ${cfg.currencyName}（${shieldText}）`;
         })
-      : ['当前暂无口袋现金 ≥ 100 的可下手目标。'];
+      : [`当前暂无口袋现金 ≥ ${ROB_TARGET_MIN_COINS} ${cfg.currencyName}的可下手目标。`];
 
   const bankTargetLines =
     bankTargets.length > 0
@@ -649,12 +676,12 @@ function buildRobView(
             shieldMs > 0 ? `🛡️ 护盾剩余 ${formatDurationZh(shieldMs)}` : '🏦 可强攻';
           return `${idx + 1}. <@${t.userId}> — 🏦 **${t.bankCoins}** ${cfg.currencyName}（${shieldText}）`;
         })
-      : ['当前暂无银行存款 ≥ 500 的金库目标。'];
+      : [`当前暂无银行存款 ≥ ${BANK_ROB_TARGET_MIN} ${cfg.currencyName}的金库目标。`];
 
   const description = [
     `${cfg.currencyEmoji} 你的口袋现金：**${profile.coins}** ｜ 🏦 银行存款：**${profile.bankCoins}** ｜ 冷却：${robRemainMs > 0 ? `⏳ ${formatDurationZh(robRemainMs)}` : '✅ 可下手'}`,
-    `• **🥷 偷口袋现金**：成功率 **${formatRatePercent(cfg.robSuccessRate)}**（可偷 15%~45%，上限 2,500）`,
-    `• **🏦 强抢银行金库**：成功率仅 **${formatRatePercent(cfg.robBankSuccessRate)}**（需自身总资产≥200，得手仅刮走 5%~12% 封顶 500；失败重罚 30%~50% 最高 4,000，现金不够直接扣你银行存款！）`,
+    `• **🥷 偷口袋现金**：成功率 **${formatRatePercent(cfg.robSuccessRate)}**（需自身总资产≥${ROB_ATTACKER_MIN_ASSETS}、目标现金≥${ROB_TARGET_MIN_COINS}；可偷 ${formatRatePercent(ROB_STEAL_MIN_RATE)}~${formatRatePercent(ROB_STEAL_MAX_RATE)} 上限 ${ROB_STEAL_MAX_AMOUNT.toLocaleString('en-US')}；失败罚 ${formatRatePercent(ROB_FINE_RATE)} 最高 ${ROB_FINE_MAX}，踩夹罚 ${formatRatePercent(ROB_TRAP_FINE_RATE)} 最高 ${ROB_TRAP_FINE_MAX.toLocaleString('en-US')}）`,
+    `• **🏦 强抢银行金库**：成功率仅 **${formatRatePercent(cfg.robBankSuccessRate)}**（需自身总资产≥${BANK_ROB_ATTACKER_MIN_ASSETS}、目标存款≥${BANK_ROB_TARGET_MIN}；得手刮走 ${formatRatePercent(BANK_ROB_STEAL_MIN_RATE)}~${formatRatePercent(BANK_ROB_STEAL_MAX_RATE)} 封顶 ${BANK_ROB_STEAL_MAX.toLocaleString('en-US')}；失败重罚 ${formatRatePercent(BANK_ROB_FINE_RATE)}~${formatRatePercent(BANK_ROB_TRAP_FINE_RATE)} 最高 ${BANK_ROB_TRAP_FINE_MAX.toLocaleString('en-US')}，现金不够扣银行存款！）`,
     '',
     '**🎯 口袋肥羊榜（现金前 6 名）：**',
     ...targetLines,
@@ -855,13 +882,18 @@ function buildShopView(
   actor: MenuActor,
   feedback: MenuFeedback | undefined,
   nowMs: number,
+  listPage?: number,
 ): BuiltMenuMessage {
   const guildCfg = ctx.repos.guildConfig.getOrCreate(guildId);
   const cfg = guildCfg.economy;
   const lvlCfg = guildCfg.leveling;
   const profile = ctx.repos.profile.getOrCreate(guildId, actor.id);
   const items = ctx.services.shop.listItems(guildId);
-  const displayItems = items.slice(0, 25);
+  const { slice: displayItems, page, totalPages } = paginateSlice(
+    items,
+    listPage,
+    MENU_SELECT_PAGE_SIZE,
+  );
   const hasStatBoost = items.some((i) => i.type === 'stat_boost');
   const boostQuota = ctx.services.shop.getStatBoostRemainingToday(guildId, actor.id, nowMs);
 
@@ -874,8 +906,8 @@ function buildShopView(
         })
       : ['商店目前还没有商品，管理员可在「⚙️ 管理后台 → 🛒 商店管理」或 `/商店 上架*` 添加商品。'];
 
-  if (items.length > 25) {
-    lines.push(`\n*（共 ${items.length} 件商品，当前展示前 25 件）*`);
+  if (totalPages > 1) {
+    lines.push(`\n*（第 ${page} / ${totalPages} 页 · 共 ${items.length} 件商品）*`);
   }
 
   const statQuotaLine = hasStatBoost
@@ -893,6 +925,9 @@ function buildShopView(
     .setAuthor({ name: `${actor.displayName} · 服务器商店`, iconURL: actor.avatarUrl })
     .setTitle('🛒 服务器商店')
     .setDescription(withFeedback(description, feedback))
+    .setFooter({
+      text: totalPages > 1 ? `第 ${page} / ${totalPages} 页 · 共 ${items.length} 件商品` : '🔒 商店购买仅自己可见',
+    })
     .setTimestamp();
 
   const tabRow = buttonRow(
@@ -908,8 +943,10 @@ function buildShopView(
 
   const selectRow = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
     new StringSelectMenuBuilder()
-      .setCustomId('menu:shop_buy')
-      .setPlaceholder('选择要购买的商品...')
+      .setCustomId(`menu:shop_buy:${page}`)
+      .setPlaceholder(
+        totalPages > 1 ? `选择要购买的商品（第 ${page}/${totalPages} 页）...` : '选择要购买的商品...',
+      )
       .addOptions(
         displayItems.map((item) => {
           const stockTag = item.stock === null ? '无限' : `剩${item.stock}`;
@@ -923,7 +960,20 @@ function buildShopView(
       ),
   );
 
-  return { embeds: [embed], components: [selectRow, tabRow] };
+  const components: MenuComponentRow[] = [selectRow];
+  if (totalPages > 1) {
+    const prevPage = Math.max(1, page - 1);
+    const nextPage = Math.min(totalPages, page + 1);
+    components.push(
+      buttonRow(
+        makeButton(`menu:nav:shop:${prevPage}:prev`, '⬅️ 上一页', ButtonStyle.Secondary, page <= 1),
+        makeButton(`menu:nav:shop:${nextPage}:next`, '➡️ 下一页', ButtonStyle.Secondary, page >= totalPages),
+      ),
+    );
+  }
+  components.push(tabRow);
+
+  return { embeds: [embed], components };
 }
 
 function buildBagView(
@@ -932,10 +982,15 @@ function buildBagView(
   actor: MenuActor,
   feedback: MenuFeedback | undefined,
   nowMs: number,
+  listPage?: number,
 ): BuiltMenuMessage {
   const profile = ctx.repos.profile.getOrCreate(guildId, actor.id);
   const inventory = ctx.services.shop.listInventory(guildId, actor.id);
-  const displayInv = inventory.slice(0, 25);
+  const { slice: displayInv, page, totalPages } = paginateSlice(
+    inventory,
+    listPage,
+    MENU_SELECT_PAGE_SIZE,
+  );
 
   const activeBoostText =
     profile.xpBoostExpiresAt > nowMs && profile.xpBoostMultiplier > 1
@@ -950,8 +1005,8 @@ function buildBagView(
         })
       : ['背包里暂时空空如也，去商店逛逛吧！'];
 
-  if (inventory.length > 25) {
-    invLines.push(`\n*（共 ${inventory.length} 项道具，当前展示前 25 项）*`);
+  if (totalPages > 1) {
+    invLines.push(`\n*（第 ${page} / ${totalPages} 页 · 共 ${inventory.length} 项道具）*`);
   }
 
   const description = [
@@ -967,6 +1022,9 @@ function buildBagView(
     .setAuthor({ name: `${actor.displayName} · 背包与称号`, iconURL: actor.avatarUrl })
     .setTitle('🎒 我的背包与称号')
     .setDescription(withFeedback(description, feedback))
+    .setFooter({
+      text: totalPages > 1 ? `第 ${page} / ${totalPages} 页 · 共 ${inventory.length} 项道具` : '🔒 背包仅自己可见',
+    })
     .setTimestamp();
 
   const tabButtons = [
@@ -985,8 +1043,10 @@ function buildBagView(
 
   const selectRow = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
     new StringSelectMenuBuilder()
-      .setCustomId('menu:bag_use')
-      .setPlaceholder('选择要使用或佩戴的道具...')
+      .setCustomId(`menu:bag_use:${page}`)
+      .setPlaceholder(
+        totalPages > 1 ? `选择要使用或佩戴的道具（第 ${page}/${totalPages} 页）...` : '选择要使用或佩戴的道具...',
+      )
       .addOptions(
         displayInv.map((inv) => {
           const desc =
@@ -1005,7 +1065,20 @@ function buildBagView(
       ),
   );
 
-  return { embeds: [embed], components: [selectRow, tabRow] };
+  const components: MenuComponentRow[] = [selectRow];
+  if (totalPages > 1) {
+    const prevPage = Math.max(1, page - 1);
+    const nextPage = Math.min(totalPages, page + 1);
+    components.push(
+      buttonRow(
+        makeButton(`menu:nav:bag:${prevPage}:prev`, '⬅️ 上一页', ButtonStyle.Secondary, page <= 1),
+        makeButton(`menu:nav:bag:${nextPage}:next`, '➡️ 下一页', ButtonStyle.Secondary, page >= totalPages),
+      ),
+    );
+  }
+  components.push(tabRow);
+
+  return { embeds: [embed], components };
 }
 
 function createRankEmbed(
@@ -1337,6 +1410,7 @@ function buildAdminEconView(
   guildId: string,
   actor: MenuActor,
   feedback: MenuFeedback | undefined,
+  confirmReset = false,
 ): BuiltMenuMessage {
   const e = ctx.repos.guildConfig.getOrCreate(guildId).economy;
 
@@ -1354,25 +1428,38 @@ function buildAdminEconView(
     .setAuthor({ name: `${actor.displayName} · 经济参数调校`, iconURL: actor.avatarUrl })
     .setTitle('💰 经济 / 抢钱 / 银行参数管理')
     .setDescription(withFeedback(description, feedback))
-    .setFooter({ text: '🔒 修改后立即对全服生效' })
+    .setFooter({ text: '🔒 修改后立即对全服生效（恢复默认将保留自定义货币名称与图标）' })
     .setTimestamp();
 
-  return {
-    embeds: [embed],
-    components: [
+  const components: MenuComponentRow[] = [
+    buttonRow(
+      makeButton('menu:modal:admin_daily', '📅 签到与货币', ButtonStyle.Primary),
+      makeButton('menu:modal:admin_work', '💼 打工参数', ButtonStyle.Primary),
+      makeButton('menu:modal:admin_rob', '🥷 抢钱参数', ButtonStyle.Primary),
+      makeButton('menu:modal:admin_bank', '🏦 银行利息', ButtonStyle.Primary),
+    ),
+  ];
+
+  if (confirmReset) {
+    components.push(
       buttonRow(
-        makeButton('menu:modal:admin_daily', '📅 签到与货币', ButtonStyle.Primary),
-        makeButton('menu:modal:admin_work', '💼 打工参数', ButtonStyle.Primary),
-        makeButton('menu:modal:admin_rob', '🥷 抢钱参数', ButtonStyle.Primary),
-        makeButton('menu:modal:admin_bank', '🏦 银行利息', ButtonStyle.Primary),
+        makeButton('menu:admin:reset_econ:confirm', '✅ 确认恢复经济默认', ButtonStyle.Danger),
+        makeButton('menu:nav:admin_econ:cancel', '❌ 取消恢复', ButtonStyle.Secondary),
       ),
-      buttonRow(
-        makeButton('menu:admin:reset_econ', '♻️ 恢复经济默认', ButtonStyle.Danger),
-        makeButton('menu:nav:admin', '⬅️ 管理后台', ButtonStyle.Secondary),
-        makeButton('menu:nav:home', '🏠 主菜单', ButtonStyle.Secondary),
-      ),
-    ],
-  };
+    );
+  }
+
+  components.push(
+    buttonRow(
+      ...(confirmReset
+        ? []
+        : [makeButton('menu:admin:reset_econ', '♻️ 恢复经济默认', ButtonStyle.Danger)]),
+      makeButton('menu:nav:admin', '⬅️ 管理后台', ButtonStyle.Secondary),
+      makeButton('menu:nav:home', '🏠 主菜单', ButtonStyle.Secondary),
+    ),
+  );
+
+  return { embeds: [embed], components };
 }
 
 function buildAdminLvlView(
@@ -1380,6 +1467,7 @@ function buildAdminLvlView(
   guildId: string,
   actor: MenuActor,
   feedback: MenuFeedback | undefined,
+  confirmReset = false,
 ): BuiltMenuMessage {
   const cfg = ctx.repos.guildConfig.getOrCreate(guildId);
   const l = cfg.leveling;
@@ -1412,44 +1500,72 @@ function buildAdminLvlView(
     .setFooter({ text: '🔒 支持直接配置升级提示语模板、升级身份组奖励与固定播报频道' })
     .setTimestamp();
 
-  return {
-    embeds: [embed],
-    components: [
-      buttonRow(
-        makeButton('menu:modal:admin_xp', '💬 经验与冷却', ButtonStyle.Primary),
-        makeButton('menu:modal:admin_heat', '🔥 热度与奖励', ButtonStyle.Primary),
-        makeButton('menu:modal:admin_lvl_msg', '📝 升级提示语', ButtonStyle.Primary),
-        makeButton('menu:nav:admin_lvl_rewards', '🎖️ 升级奖励身份组', ButtonStyle.Primary),
+  const announceChanSelect = new ChannelSelectMenuBuilder()
+    .setCustomId('menu:chan:admin_lvl_announce')
+    .setPlaceholder('📢 选择统一升级播报频道（清空则随当前发言频道）...')
+    .setChannelTypes(
+      ChannelType.GuildText,
+      ChannelType.PublicThread,
+      ChannelType.PrivateThread,
+    )
+    .setMinValues(0)
+    .setMaxValues(1);
+  if (l.announceChannelId) {
+    announceChanSelect.setDefaultChannels([l.announceChannelId]);
+  }
+
+  const components: MenuComponentRow[] = [
+    new ActionRowBuilder<ChannelSelectMenuBuilder>().addComponents(announceChanSelect),
+    buttonRow(
+      makeButton('menu:modal:admin_xp', '💬 经验与冷却', ButtonStyle.Primary),
+      makeButton('menu:modal:admin_heat', '🔥 热度与奖励', ButtonStyle.Primary),
+      makeButton('menu:modal:admin_lvl_msg', '📝 升级提示语', ButtonStyle.Primary),
+      makeButton('menu:nav:admin_lvl_rewards', '🎖️ 升级奖励身份组', ButtonStyle.Primary),
+    ),
+    buttonRow(
+      makeButton(
+        'menu:admin:toggle_voice',
+        `🎙️ 语音经验: ${l.voiceEnabled ? '开' : '关'}`,
+        l.voiceEnabled ? ButtonStyle.Success : ButtonStyle.Secondary,
       ),
-      buttonRow(
-        makeButton(
-          'menu:admin:toggle_voice',
-          `🎙️ 语音经验: ${l.voiceEnabled ? '开' : '关'}`,
-          l.voiceEnabled ? ButtonStyle.Success : ButtonStyle.Secondary,
-        ),
-        makeButton(
-          'menu:admin:toggle_announce',
-          `📢 升级播报: ${l.announceEnabled ? '开' : '关'}`,
-          l.announceEnabled ? ButtonStyle.Success : ButtonStyle.Secondary,
-        ),
-        makeButton(
-          'menu:admin:toggle_announce_channel',
-          l.announceChannelId ? '📌 解绑播报频道' : '📌 设当前为播报频道',
-          ButtonStyle.Secondary,
-        ),
-        makeButton(
-          'menu:admin:toggle_stack_roles',
-          `🏷️ 叠加身份组: ${l.stackRoles ? '保留旧组' : '仅留最高'}`,
-          l.stackRoles ? ButtonStyle.Success : ButtonStyle.Secondary,
-        ),
+      makeButton(
+        'menu:admin:toggle_announce',
+        `📢 升级播报: ${l.announceEnabled ? '开' : '关'}`,
+        l.announceEnabled ? ButtonStyle.Success : ButtonStyle.Secondary,
       ),
-      buttonRow(
-        makeButton('menu:admin:reset_lvl', '♻️ 恢复等级默认', ButtonStyle.Danger),
-        makeButton('menu:nav:admin', '⬅️ 管理后台', ButtonStyle.Secondary),
-        makeButton('menu:nav:home', '🏠 主菜单', ButtonStyle.Secondary),
+      makeButton(
+        'menu:admin:toggle_announce_channel',
+        l.announceChannelId ? '📌 解绑播报频道' : '📌 设当前为播报频道',
+        ButtonStyle.Secondary,
       ),
-    ],
-  };
+      makeButton(
+        'menu:admin:toggle_stack_roles',
+        `🏷️ 叠加身份组: ${l.stackRoles ? '保留旧组' : '仅留最高'}`,
+        l.stackRoles ? ButtonStyle.Success : ButtonStyle.Secondary,
+      ),
+    ),
+  ];
+
+  if (confirmReset) {
+    components.push(
+      buttonRow(
+        makeButton('menu:admin:reset_lvl:confirm', '✅ 确认恢复等级默认', ButtonStyle.Danger),
+        makeButton('menu:nav:admin_lvl:cancel', '❌ 取消恢复', ButtonStyle.Secondary),
+      ),
+    );
+  }
+
+  components.push(
+    buttonRow(
+      ...(confirmReset
+        ? []
+        : [makeButton('menu:admin:reset_lvl', '♻️ 恢复等级默认', ButtonStyle.Danger)]),
+      makeButton('menu:nav:admin', '⬅️ 管理后台', ButtonStyle.Secondary),
+      makeButton('menu:nav:home', '🏠 主菜单', ButtonStyle.Secondary),
+    ),
+  );
+
+  return { embeds: [embed], components };
 }
 
 function buildAdminModView(
@@ -1517,15 +1633,16 @@ function buildAdminOpsView(
       ? cfg.adminRoleIds.map((id) => `<@&${id}>`).join('、')
       : '无';
 
+  const currencyName = cfg.economy.currencyName;
   const description = [
     `👑 **当前授权 Bot 管理员用户**：${adminUsersText}`,
     `🛡️ **当前授权管理员身份组**：${adminRolesText}`,
     '',
-    '• 第一个选人框：给指定群友**发放或扣除口袋星币**（支持最高 **10 亿 `1,000,000,000`**；正数公开喜报，负数私密扣除）',
-    '• 第二个选人框：**添加或移除 Bot 管理员用户**（被授权群友也可打开「⚙️ 管理后台」调参）',
+    `• 第一个选人框：给指定群友**发放或扣除口袋${currencyName}**（支持最高 **10 亿 \`1,000,000,000\`**；正数公开喜报，负数私密扣除）`,
+    '• 第二个选人框：**添加或移除 Bot 管理员用户**（仅限服务器超级管理员操作）',
     `• 第三个选人框：自由设置指定群友的 **${cfg.leveling.statName}**（单位：${cfg.leveling.statUnit}）`,
-    '• **🎉 全服全员发币**：向全服所有真实成员统一发放固定星币（最高 10 亿）',
-    '• **🎲 随机派发红包**：管理员设定份数与总金额，系统自动抽取群友直接随机分钱并播报手气最佳',
+    `• **🎉 全服全员发币**：向全服所有真实成员统一发放固定${currencyName}（最高 10 亿，限超级管理员）`,
+    '• **🎲 随机派发红包**：管理员设定份数与总金额，系统自动抽取群友直接随机分钱并播报手气最佳（限超级管理员）',
     '• **🧧 发系统抢红包**：管理员设定份数与总金额，由系统出资在当前频道发出拼手气红包卡片供大家点击抢领',
   ].join('\n');
 
@@ -1539,7 +1656,7 @@ function buildAdminOpsView(
   const grantUserRow = new ActionRowBuilder<UserSelectMenuBuilder>().addComponents(
     new UserSelectMenuBuilder()
       .setCustomId('menu:user:admin_grant')
-      .setPlaceholder('💸 选择一位群友发放/扣除星币（最高 10 亿）...')
+      .setPlaceholder(truncateText(`💸 选择一位群友发放/扣除${currencyName}（最高 10 亿）...`, 150))
       .setMinValues(1)
       .setMaxValues(1),
   );
@@ -1607,9 +1724,24 @@ function buildAdminGamesView(
     .setFooter({ text: '🔒 修改实时写入数据库并对新事件/购买立即生效' })
     .setTimestamp();
 
+  const eventChanSelect = new ChannelSelectMenuBuilder()
+    .setCustomId('menu:chan:admin_games_event')
+    .setPlaceholder('⚡ 选择世界事件指定频道（清空则随当前活跃频道）...')
+    .setChannelTypes(
+      ChannelType.GuildText,
+      ChannelType.PublicThread,
+      ChannelType.PrivateThread,
+    )
+    .setMinValues(0)
+    .setMaxValues(1);
+  if (g.eventChannelId) {
+    eventChanSelect.setDefaultChannels([g.eventChannelId]);
+  }
+
   return {
     embeds: [embed],
     components: [
+      new ActionRowBuilder<ChannelSelectMenuBuilder>().addComponents(eventChanSelect),
       buttonRow(
         makeButton('menu:modal:admin_props', '🧰 道具价格', ButtonStyle.Primary),
         makeButton('menu:modal:admin_events', '🎁 事件与Boss', ButtonStyle.Primary),
@@ -1697,27 +1829,41 @@ export function buildMenuMessage(
     case 'pet_arena':
       return buildPetArenaView(ctx, guildId, actor, feedback);
     case 'shop':
-      return buildShopView(ctx, guildId, actor, feedback, nowMs);
+      return buildShopView(ctx, guildId, actor, feedback, nowMs, view.listPage);
     case 'bag':
-      return buildBagView(ctx, guildId, actor, feedback, nowMs);
+      return buildBagView(ctx, guildId, actor, feedback, nowMs, view.listPage);
     case 'rank':
       return buildRankView(ctx, guildId, actor, feedback, nowMs);
     case 'self_roles':
-      return buildSelfRolesView(ctx, guildId, actor, view.panelId, feedback);
+      return buildSelfRolesView(ctx, guildId, actor, view.panelId, feedback, view.panelPage);
     case 'leaderboard':
       return buildLeaderboardView(ctx, guildId, view.lbType, view.lbPage, feedback);
     case 'admin':
       return buildAdminOverviewView(ctx, guildId, actor, feedback);
     case 'admin_econ':
-      return buildAdminEconView(ctx, guildId, actor, feedback);
+      return buildAdminEconView(ctx, guildId, actor, feedback, view.confirmReset);
     case 'admin_lvl':
-      return buildAdminLvlView(ctx, guildId, actor, feedback);
+      return buildAdminLvlView(ctx, guildId, actor, feedback, view.confirmReset);
     case 'admin_lvl_rewards':
-      return buildAdminLvlRewardsView(ctx, guildId, actor, feedback);
+      return buildAdminLvlRewardsView(ctx, guildId, actor, feedback, view.listPage);
     case 'admin_roles':
-      return buildAdminRolesView(ctx, guildId, actor, view.panelId, feedback);
+      return buildAdminRolesView(
+        ctx,
+        guildId,
+        actor,
+        {
+          panelId: view.panelId,
+          panelPage: view.panelPage,
+          optPage: view.optPage,
+          confirmDeletePanelId: view.confirmDeletePanelId,
+        },
+        feedback,
+      );
     case 'admin_shop':
-      return buildAdminShopView(ctx, guildId, actor, feedback);
+      return buildAdminShopView(ctx, guildId, actor, feedback, {
+        listPage: view.listPage,
+        confirmDeleteItemId: view.confirmDeleteItemId,
+      });
     case 'admin_games':
       return buildAdminGamesView(ctx, guildId, actor, feedback);
     case 'admin_mod':
@@ -1725,9 +1871,17 @@ export function buildMenuMessage(
     case 'admin_ops':
       return buildAdminOpsView(ctx, guildId, actor, feedback);
     case 'admin_ai':
-      return buildAdminAiView(ctx, guildId, actor, feedback);
+      return buildAdminAiView(ctx, guildId, actor, feedback, view.tab ?? 'basic');
     case 'admin_monitor':
-      return buildAdminMonitorView(ctx, guildId, actor, view.filter ?? 'issues', feedback, nowMs);
+      return buildAdminMonitorView(
+        ctx,
+        guildId,
+        actor,
+        view.filter ?? 'issues',
+        feedback,
+        nowMs,
+        view.confirmClear ?? false,
+      );
   }
 }
 
@@ -1818,16 +1972,24 @@ export function buildDuelMessage(
   return { embeds: [embed], components: [] };
 }
 
+const MAX_VISIBLE_RED_PACKET_CLAIMS = 25;
+
 export function buildRedPacketMessage(
   packet: RedPacket,
   claims: readonly RedPacketClaim[],
   bestLuckUserId: string | null,
   economyCfg: EconomyConfig,
 ): BuiltButtonMessage {
-  const claimLines = claims.map((c) => {
+  const visibleClaims = claims.slice(0, MAX_VISIBLE_RED_PACKET_CLAIMS);
+  const claimLines = visibleClaims.map((c) => {
     const crown = packet.status === 'finished' && bestLuckUserId === c.userId ? '👑 ' : '• ';
     return `${crown}<@${c.userId}> 抢到了 ${economyCfg.currencyEmoji} **${c.amount}** ${economyCfg.currencyName}`;
   });
+  if (claims.length > MAX_VISIBLE_RED_PACKET_CLAIMS) {
+    claimLines.push(
+      `*… 仅展示前 ${MAX_VISIBLE_RED_PACKET_CLAIMS} 条，共 ${claims.length} 人已领*`,
+    );
+  }
 
   if (packet.status === 'open') {
     const expUnix = Math.floor(packet.expiresAt / 1000);

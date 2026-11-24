@@ -29,11 +29,26 @@ import {
 } from './worldEventHandler.js';
 import { handleSocialPetButton } from './socialPetHandler.js';
 
+import { extractDiscordErrorCode } from './menuHelpers.js';
+
 const SLOW_INTERACTION_THRESHOLD_MS = 1500;
 
-function formatFriendlyError(err: unknown): string {
-  if (err instanceof DiscordAPIError && err.code === 50013) {
-    return '机器人权限不足（50013），请检查 Bot 身份组权限与身份组顺序。';
+export function formatFriendlyError(err: unknown): string {
+  const code = extractDiscordErrorCode(err);
+  if (code === 50013) {
+    return '机器人权限不足（50013），请检查 Bot 身份组权限与身份组顺序（需将 Bot 身份组拖到目标身份组上方）。';
+  }
+  if (code === 50001) {
+    return '机器人缺少访问目标频道的权限（50001），请检查频道查看与发言权限设置。';
+  }
+  if (code === 10008 || code === 50027) {
+    return '面板已超过 15 分钟有效期或原消息已被删除，请重新输入 `/菜单` 打开。';
+  }
+  if (code === 10062) {
+    return '交互已超时失效（10062），请重试刚才的操作。';
+  }
+  if (code === 50035) {
+    return '表单内容、参数长度或表情（Emoji）格式无效（50035），请检查后重新提交。';
   }
   return '执行操作时发生内部异常，请稍后再试或查看服务端日志。';
 }
@@ -186,7 +201,18 @@ export async function routeInteraction(
   }
 
   try {
-    if (interaction.isChatInputCommand()) {
+    const isDmAllowed =
+      (interaction.isChatInputCommand() && interaction.commandName === 'help') ||
+      (interaction.isStringSelectMenu() && interaction.customId.startsWith('help:'));
+
+    if (!guildId && !isDmAllowed) {
+      if (interaction.isRepliable()) {
+        await interaction.reply({
+          embeds: [createErrorEmbed('❌ 仅限服务器内使用', '该功能仅限服务器内使用，请在 Discord 服务器频道中操作。')],
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+    } else if (interaction.isChatInputCommand()) {
       const cmd = commandMap.get(interaction.commandName);
       if (!cmd) {
         await interaction.reply({
