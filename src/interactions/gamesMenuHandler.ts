@@ -1,6 +1,7 @@
 import {
   ActionRowBuilder,
   ModalBuilder,
+  PermissionFlagsBits,
   TextInputBuilder,
   TextInputStyle,
   type ButtonInteraction,
@@ -11,6 +12,7 @@ import {
 import { DEFAULT_GAMES_CONFIG } from '../config/defaults.js';
 import type { PropKey } from '../db/repositories/chaosRepo.js';
 import { PROP_CATALOG, PROP_KEYS, getPropPrice } from '../services/chaosService.js';
+import { isBotAdmin } from '../services/permissionService.js';
 import { PET_SPECIES_MAP } from '../services/socialPetService.js';
 import type { BossAttackMode } from '../services/worldEventService.js';
 import { buildNumberBombCard, buildRouletteCard } from '../ui/chaosMenuBuilder.js';
@@ -1688,6 +1690,29 @@ export async function tryHandleGamesMenuModal(
           actor,
           { page: 'props' },
           { type: 'error', text: '无法获取目标群友信息（未扣除道具）。' },
+        ),
+      );
+      return true;
+    }
+
+    const guildCfg = ctx.repos.guildConfig.getOrCreate(guildId);
+    const isTargetAdmin = isBotAdmin({
+      isGuildAdmin: Boolean(member.permissions?.has(PermissionFlagsBits.Administrator)),
+      hasManageGuild: Boolean(member.permissions?.has(PermissionFlagsBits.ManageGuild)),
+      memberRoleIds: member.roles?.cache ? [...member.roles.cache.keys()] : [],
+      configuredAdminRoleIds: guildCfg.adminRoleIds,
+      userId: targetId,
+      configuredAdminUserIds: guildCfg.adminUserIds,
+    });
+    if (isTargetAdmin) {
+      await respondFromModal(
+        interaction,
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'props' },
+          { type: 'error', text: '🛡️ 不能对服务器管理员或 Bot 管理员使用「改昵称卡」（未扣除道具）。' },
         ),
       );
       return true;

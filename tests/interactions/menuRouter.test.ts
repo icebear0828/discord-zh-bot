@@ -1515,6 +1515,47 @@ describe('menu router & multiplayer interaction flows', () => {
     await routeInteraction(failNickModal.interaction, ctx);
     expect(ctx.services.chaos.getPropQuantity('g1', 'u1', 'nickname')).toBe(1);
 
+    // Admin protection: target with Administrator permission OR in adminUserIds cannot be renamed
+    const adminNickModal = createModalMock({
+      customId: 'menu:modal_sub:prop_nick:u2',
+      userId: 'u1',
+      fields: { nickname: '篡位者' },
+    });
+    const adminGuild = (adminNickModal.interaction as unknown as {
+      guild: { ownerId?: string; members: { fetch: ReturnType<typeof vi.fn> } };
+    }).guild;
+    adminGuild.ownerId = 'owner-id';
+    const adminSetNickFn = vi.fn(async () => undefined);
+    adminGuild.members.fetch = vi.fn(async () => ({
+      displayName: 'Admin-u2',
+      permissions: { has: (perm: bigint) => perm === PermissionFlagsBits.Administrator },
+      roles: { cache: new Map() },
+      setNickname: adminSetNickFn,
+    }));
+    await routeInteraction(adminNickModal.interaction, ctx);
+    expect(adminSetNickFn).not.toHaveBeenCalled();
+    expect(ctx.services.chaos.getPropQuantity('g1', 'u1', 'nickname')).toBe(1);
+    expect(adminNickModal.update.mock.calls[0]![0].embeds?.[0]?.toJSON().description).toContain('管理员');
+
+    ctx.repos.guildConfig.updateAdminUsers('g1', ['u2']);
+    const botAdminNickModal = createModalMock({
+      customId: 'menu:modal_sub:prop_nick:u2',
+      userId: 'u1',
+      fields: { nickname: '篡位者2' },
+    });
+    const botAdminGuild = (botAdminNickModal.interaction as unknown as {
+      guild: { ownerId?: string; members: { fetch: ReturnType<typeof vi.fn> } };
+    }).guild;
+    botAdminGuild.ownerId = 'owner-id';
+    botAdminGuild.members.fetch = vi.fn(async () => ({
+      displayName: 'User-u2',
+      setNickname: adminSetNickFn,
+    }));
+    await routeInteraction(botAdminNickModal.interaction, ctx);
+    expect(adminSetNickFn).not.toHaveBeenCalled();
+    expect(ctx.services.chaos.getPropQuantity('g1', 'u1', 'nickname')).toBe(1);
+    ctx.repos.guildConfig.updateAdminUsers('g1', []);
+
     // Succeeding setNickname consumes prop & broadcasts
     const okNickModal = createModalMock({
       customId: 'menu:modal_sub:prop_nick:u2',
