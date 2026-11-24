@@ -11,6 +11,7 @@ import {
   evaluateHand,
   formatHand,
   type BlackjackGame,
+  type Card,
 } from '../services/blackjackService.js';
 import type {
   BankRobResult,
@@ -267,6 +268,20 @@ export function formatBankRobResultEmbed(
     res.trapped ? '🪤 金库捕兽夹重创劫匪！' : '🚨 抢银行金库翻车被捕！',
     lines.join('\n'),
   );
+}
+
+export function formatBlackjackDealerHand(
+  dealerHand: readonly Card[],
+  finished: boolean,
+): string {
+  if (!finished) {
+    const hiddenCards = Array.from({ length: Math.max(2, dealerHand.length) }, () => '`🂠`').join(
+      ' ',
+    );
+    return `${hiddenCards}（结算前隐藏）`;
+  }
+  const dealerEval = evaluateHand(dealerHand);
+  return `${formatHand(dealerHand)}（总计 **${dealerEval.total}** 点）`;
 }
 
 export function buildBlackjackPublicReportEmbed(params: {

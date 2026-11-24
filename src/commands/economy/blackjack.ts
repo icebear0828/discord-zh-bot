@@ -22,6 +22,7 @@ import {
 import { applyZh } from '../../ui/localization.js';
 import {
   buildBlackjackPublicReportEmbed,
+  formatBlackjackDealerHand,
   formatSoloBetError,
   sendChannelPublicNotice,
 } from '../../ui/soloFormatters.js';
@@ -37,14 +38,11 @@ export function buildBlackjackMessage(
   components: ActionRowBuilder<ButtonBuilder>[];
 } {
   const playerEval = evaluateHand(game.playerHand);
-  const dealerEval = evaluateHand(game.dealerHand);
   const finished = game.status !== 'playing';
   const net = game.payout - game.bet;
   const netText = net > 0 ? `+${net}` : String(net);
 
-  const dealerLine = finished
-    ? `${formatHand(game.dealerHand)}（总计 **${dealerEval.total}** 点）`
-    : `\`${game.dealerHand[0]!.suit}${game.dealerHand[0]!.rank}\` \`🂠\``;
+  const dealerLine = formatBlackjackDealerHand(game.dealerHand, finished);
 
   const statusTextMap: Record<BlackjackGame['status'], string> = {
     playing: `${notice ? `${notice}\n` : ''}请选择你的操作：要牌、停牌或双倍下注（15 分钟内未操作将自动退注）。`,

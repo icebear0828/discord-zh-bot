@@ -807,6 +807,25 @@ describe('menuBuilder Discord component constraints & schema integration', () =>
       custom_id: 'menu:bj:double',
       disabled: true,
     });
+    const activeBjDealer = tightBj.embeds[0]!.toJSON().fields?.find((f) => f.name === '🎩 庄家手牌');
+    expect(activeBjDealer?.value).toBe('`🂠` `🂠`（结算前隐藏）');
+    expect(activeBjDealer?.value).not.toContain('♠7');
+    expect(activeBjDealer?.value).not.toContain('♦9');
+    expect(activeBjDealer?.value).not.toContain('16');
+
+    const stoodBj = ctx.services.blackjack.stand('g1', 'bj-tight');
+    expect(stoodBj.ok).toBe(true);
+    if (stoodBj.ok) {
+      const finishedBj = buildMenuMessage(
+        ctx,
+        'g1',
+        { ...ACTOR, id: 'bj-tight' },
+        { page: 'bj', finishedGame: stoodBj.game, balanceAfterFinish: stoodBj.balance },
+      );
+      const finishedDealer = finishedBj.embeds[0]!.toJSON().fields?.find((f) => f.name === '🎩 庄家手牌');
+      expect(finishedDealer?.value).toContain('总计 **');
+      expect(finishedDealer?.value).toContain('`♠7`');
+    }
 
     // 5. Red packet with 35 claims collapses after 25
     const cfg = ctx.repos.guildConfig.getOrCreate('g1').economy;

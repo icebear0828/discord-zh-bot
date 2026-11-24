@@ -98,6 +98,7 @@ import {
   buildPredictionsListView,
   buildWorldStatusView,
 } from './worldEventMenuBuilder.js';
+import { formatBlackjackDealerHand } from './soloFormatters.js';
 
 export {
   truncateText,
@@ -433,15 +434,12 @@ function buildBlackjackView(
     .setColor(resolveColor(COLORS.PRIMARY, feedback))
     .setAuthor({ name: `${actor.displayName} · 二十一点`, iconURL: actor.avatarUrl })
     .setTitle('🃏 二十一点 (Blackjack)')
-    .setFooter({ text: '🔒 私密牌局（天胡 Blackjack 或净赢 ≥500 将自动全群播报！）' })
+    .setFooter({ text: '🔒 私密牌局（抽牌过程仅自己可见，结束后公屏自动发送战报）' })
     .setTimestamp();
 
   if (game) {
     const playerEval = evaluateHand(game.playerHand);
-    const dealerEval = evaluateHand(game.dealerHand);
-    const dealerLine = isPlaying
-      ? `\`${game.dealerHand[0]!.suit}${game.dealerHand[0]!.rank}\` \`🂠\``
-      : `${formatHand(game.dealerHand)}（总计 **${dealerEval.total}** 点）`;
+    const dealerLine = formatBlackjackDealerHand(game.dealerHand, !isPlaying);
 
     embed.setDescription(
       withFeedback(

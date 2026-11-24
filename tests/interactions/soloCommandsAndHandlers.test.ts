@@ -344,6 +344,13 @@ describe('solo commands & handlers visibility, persistence, and governance', () 
     expect(resumeMock.replies[0]?.embeds?.[0]?.toJSON().description).toContain('恢复当前牌局');
     expect(resumeMock.replies[0]?.components?.length).toBe(1);
     expect(resumeMock.channelSends).toHaveLength(0);
+    const activeDealerField = resumeMock.replies[0]?.embeds?.[0]?.toJSON().fields?.find(
+      (f) => f.name === '🎩 庄家手牌',
+    );
+    expect(activeDealerField?.value).toBe('`🂠` `🂠`（结算前隐藏）');
+    expect(activeDealerField?.value).not.toContain('♠10');
+    expect(activeDealerField?.value).not.toContain('♦7');
+    expect(activeDealerField?.value).not.toContain('17');
 
     // Non-owner clicking button is rejected Ephemerally
     const hijacker = createButtonMock({
@@ -360,6 +367,10 @@ describe('solo commands & handlers visibility, persistence, and governance', () 
     await handleBlackjackButton(standBtn.interaction, ctx);
     expect(standBtn.updates).toHaveLength(1);
     expect(standBtn.updates[0]?.components).toEqual([]);
+    const finalDealerField = standBtn.updates[0]?.embeds?.[0]?.toJSON().fields?.find(
+      (f) => f.name === '🎩 庄家手牌',
+    );
+    expect(finalDealerField?.value).toBe('`♠10` `♦7`（总计 **17** 点）');
     const finalDesc = standBtn.updates[0]?.embeds?.[0]?.toJSON().description ?? '';
     expect(finalDesc).toContain('返还 **400**');
     expect(finalDesc).toContain('净赚 **+200**');
