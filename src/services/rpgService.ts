@@ -426,6 +426,29 @@ export function computeItemEffectiveStats(
   };
 }
 
+const RARITY_SCORE_BONUS: Record<RpgItemRarity, number> = {
+  common: 0,
+  uncommon: 8,
+  rare: 18,
+  epic: 32,
+  legendary: 50,
+};
+
+export const DEFAULT_CREDIT_SCORE = 600;
+
+export function computeItemScore(
+  item: Pick<RpgItem, 'rarity' | 'baseHp' | 'baseAtk' | 'baseDef' | 'baseCritBp' | 'enhanceLevel'>,
+): number {
+  const eff = computeItemEffectiveStats(item);
+  const raw =
+    eff.hp * 0.6 +
+    eff.atk * 4 +
+    eff.def * 3 +
+    (eff.critBp / 100) * 5 +
+    RARITY_SCORE_BONUS[item.rarity];
+  return Math.round(raw * 100) / 100;
+}
+
 export function getEnhanceInfo(
   item: Pick<RpgItem, 'rarity' | 'enhanceLevel'>,
 ): { nextLevel: number; cost: number; successRate: number } | null {
@@ -493,6 +516,8 @@ export interface CombatStats {
   equippedItems: RpgItem[];
   petSynergy: PetSynergyInfo | null;
 }
+
+export type RpgCombatStats = CombatStats;
 
 export type RpgRunAction =
   | 'attack'
@@ -614,6 +639,31 @@ export type SalvageItemResult =
   | { ok: true; salvagedItem: RpgItem; coinsEarned: number; balance: number }
   | { ok: false; reason: 'not_found' | 'item_equipped' };
 
+export interface EquipBestGearChange {
+  slot: RpgItemSlot;
+  item: RpgItem;
+  previousItem?: RpgItem;
+}
+
+export type EquipBestGearResult =
+  | {
+      ok: true;
+      changed: EquipBestGearChange[];
+      unchangedCount: number;
+      stats: RpgCombatStats;
+    }
+  | { ok: false; reason: 'no_items' };
+
+export type BulkSalvageItemsResult =
+  | {
+      ok: true;
+      salvagedCount: number;
+      totalCoins: number;
+      balance: number;
+      byRarity: Partial<Record<RpgItemRarity, number>>;
+    }
+  | { ok: false; reason: 'nothing_to_salvage' };
+
 export type StartRunResult =
   | { ok: true; run: RpgRunState; character: RpgCharacter }
   | {
@@ -706,6 +756,7 @@ export interface RpgServiceOptions {
     reason: string,
     nowMs: number,
   ) => void;
+  getCreditScore?: (guildId: string, userId: string) => number;
 }
 
 const RANDOM_EVENTS: readonly RunEventState[] = [
@@ -879,6 +930,7 @@ export class RpgService {
   private readonly socialPetRepo?: SocialPetRepo;
   private readonly onCoinsEarned?: RpgServiceOptions['onCoinsEarned'];
   private readonly onCreditChange?: RpgServiceOptions['onCreditChange'];
+  private readonly getCreditScore?: RpgServiceOptions['getCreditScore'];
 
   constructor(
     private readonly db: Database.Database,
@@ -893,6 +945,15 @@ export class RpgService {
     this.socialPetRepo = options.socialPetRepo;
     this.onCoinsEarned = options.onCoinsEarned;
     this.onCreditChange = options.onCreditChange;
+    this.getCreditScore = options.getCreditScore;
+  }
+
+  getUserCreditScore(guildId: string, userId: string): number {
+    if (!this.getCreditScore) {
+      return DEFAULT_CREDIT_SCORE;
+    }
+    const score = this.getCreditScore(guildId, userId);
+    return Number.isFinite(score) ? score : DEFAULT_CREDIT_SCORE;
   }
 
   getConfig(guildId?: string): RpgConfig {
@@ -1165,6 +1226,108 @@ export class RpgService {
         salvagedItem: item,
         coinsEarned,
         balance: updatedProfile.coins,
+      };
+    })();
+  }
+
+  equipBestGear(guildId: string, userId: string, nowMs = Date.now()): EquipBestGearResult {
+    return this.db.transaction((): EquipBestGearResult => {
+      const items = this.rpgRepo.listItems(guildId, userId);
+      if (items.length === 0) {
+        return { ok: false, reason: 'no_items' };
+      }
+
+      const slots: readonly RpgItemSlot[] = ['weapon', 'armor', 'accessory'];
+      const changed: EquipBestGearChange[] = [];
+      let unchangedCount = 0;
+
+      for (const slot of slots) {
+        const slotItems = items.filter((item) => item.slot === slot);
+        if (slotItems.length === 0) {
+          continue;
+        }
+
+        let best = slotItems[0]!;
+        let bestScore = computeItemScore(best);
+        for (let i = 1; i < slotItems.length; i++) {
+          const candidate = slotItems[i]!;
+          const candidateScore = computeItemScore(candidate);
+          if (
+            candidateScore > bestScore ||
+            (candidateScore === bestScore && candidate.enhanceLevel > best.enhanceLevel) ||
+            (candidateScore === bestScore &&
+              candidate.enhanceLevel === best.enhanceLevel &&
+              candidate.id < best.id)
+          ) {
+            best = candidate;
+            bestScore = candidateScore;
+          }
+        }
+
+        if (best.equipped) {
+          unchangedCount += 1;
+          continue;
+        }
+
+        const previousEquipped = slotItems.find((item) => item.equipped);
+        this.rpgRepo.setSlotEquipped(guildId, userId, slot, best.id);
+        const updatedBest = this.rpgRepo.getItemById(best.id)!;
+        if (previousEquipped) {
+          changed.push({
+            slot,
+            item: updatedBest,
+            previousItem: { ...previousEquipped, equipped: false },
+          });
+        } else {
+          changed.push({ slot, item: updatedBest });
+        }
+      }
+
+      const character = this.getOrCreateCharacterInTx(guildId, userId, nowMs);
+      const stats = this.computeCombatStatsForCharacter(character);
+      return { ok: true, changed, unchangedCount, stats };
+    })();
+  }
+
+  bulkSalvageItems(
+    guildId: string,
+    userId: string,
+    maxRarity: 'uncommon' | 'rare' = 'uncommon',
+    _nowMs = Date.now(),
+  ): BulkSalvageItemsResult {
+    return this.db.transaction((): BulkSalvageItemsResult => {
+      const maxOrder = RARITY_ORDER[maxRarity];
+      const targets = this.rpgRepo
+        .listItems(guildId, userId)
+        .filter((item) => !item.equipped && RARITY_ORDER[item.rarity] <= maxOrder);
+
+      if (targets.length === 0) {
+        return { ok: false, reason: 'nothing_to_salvage' };
+      }
+
+      let salvagedCount = 0;
+      let totalCoins = 0;
+      const byRarity: Partial<Record<RpgItemRarity, number>> = {};
+
+      for (const item of targets) {
+        const deleted = this.rpgRepo.deleteItem(item.id, guildId, userId);
+        if (!deleted) continue;
+        salvagedCount += 1;
+        totalCoins += getSalvageValue(item);
+        byRarity[item.rarity] = (byRarity[item.rarity] ?? 0) + 1;
+      }
+
+      if (salvagedCount === 0) {
+        return { ok: false, reason: 'nothing_to_salvage' };
+      }
+
+      const updatedProfile = this.profileRepo.addCoins(guildId, userId, totalCoins);
+      return {
+        ok: true,
+        salvagedCount,
+        totalCoins,
+        balance: updatedProfile.coins,
+        byRarity,
       };
     })();
   }
