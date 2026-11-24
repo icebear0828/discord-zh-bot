@@ -211,6 +211,12 @@ export class LevelingService {
     if (cfg.leveling.ignoredChannelIds.includes(channelId)) {
       return this.skippedResult(profile, 'ignored_channel', nowMs, cfg.leveling.heatMaxMultiplier);
     }
+    if (
+      cfg.leveling.allowedChannelIds.length > 0 &&
+      !cfg.leveling.allowedChannelIds.includes(channelId)
+    ) {
+      return this.skippedResult(profile, 'ignored_channel', nowMs, cfg.leveling.heatMaxMultiplier);
+    }
 
     const cooldownMs = cfg.leveling.cooldownSec * 1000;
     if (profile.lastXpAt > 0 && nowMs - profile.lastXpAt < cooldownMs) {

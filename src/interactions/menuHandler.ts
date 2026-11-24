@@ -966,6 +966,7 @@ export async function handleMenuButton(
       ctx.repos.guildConfig.updateLeveling(guildId, {
         ...DEFAULT_LEVELING_CONFIG,
         announceChannelId: cfg.leveling.announceChannelId,
+        allowedChannelIds: cfg.leveling.allowedChannelIds,
         ignoredChannelIds: cfg.leveling.ignoredChannelIds,
         channelMultipliers: cfg.leveling.channelMultipliers,
       });

@@ -33,6 +33,7 @@ export interface LevelingConfig {
   statUnit: string;
   statMinGain: number;
   statMaxGain: number;
+  allowedChannelIds: string[];
   ignoredChannelIds: string[];
   channelMultipliers: Record<string, number>;
   stackRoles: boolean;
@@ -144,6 +145,7 @@ export const DEFAULT_LEVELING_CONFIG: LevelingConfig = {
   statUnit: '点',
   statMinGain: 1,
   statMaxGain: 3,
+  allowedChannelIds: [],
   ignoredChannelIds: [],
   channelMultipliers: {},
   stackRoles: true,
@@ -217,6 +219,7 @@ export function createDefaultGuildConfig(guildId: string, nowMs = Date.now()): G
     adminUserIds: [],
     leveling: {
       ...DEFAULT_LEVELING_CONFIG,
+      allowedChannelIds: [],
       ignoredChannelIds: [],
       channelMultipliers: {},
     },

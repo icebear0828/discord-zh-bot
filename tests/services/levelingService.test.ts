@@ -293,6 +293,17 @@ describe('levelingService', () => {
     expect(statLb.items[2]?.userId).toBe('u-new');
     expect(statLb.items[2]?.primaryValue).toBe(2);
 
+    // allowedChannelIds whitelist restricts message XP to specified channels only
+    configRepo.updateLeveling('g1', {
+      ...configRepo.getOrCreate('g1').leveling,
+      allowedChannelIds: ['c-game'],
+    });
+    const blockedRes = svc.awardMessageXp('g1', 'u-whitelist', 'c-other', 4_000_000, () => 0.5);
+    expect(blockedRes.awarded).toBe(false);
+    expect(blockedRes.reason).toBe('ignored_channel');
+    const allowedRes = svc.awardMessageXp('g1', 'u-whitelist', 'c-game', 4_000_000, () => 0.5);
+    expect(allowedRes.awarded).toBe(true);
+
     db.close();
   });
 });

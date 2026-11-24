@@ -61,6 +61,7 @@ export class GuildConfigRepo {
     if (row) {
       const levelingRaw = parseRecord<LevelingConfig>(row.leveling_config_json, {
         ...DEFAULT_LEVELING_CONFIG,
+        allowedChannelIds: [],
         ignoredChannelIds: [],
         channelMultipliers: {},
       });
@@ -71,6 +72,9 @@ export class GuildConfigRepo {
         adminUserIds: parseStringArray(row.admin_user_ids_json ?? '[]'),
         leveling: {
           ...levelingRaw,
+          allowedChannelIds: Array.isArray(levelingRaw.allowedChannelIds)
+            ? levelingRaw.allowedChannelIds
+            : [],
           ignoredChannelIds: Array.isArray(levelingRaw.ignoredChannelIds)
             ? levelingRaw.ignoredChannelIds
             : [],

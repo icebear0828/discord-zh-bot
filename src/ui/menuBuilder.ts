@@ -1364,6 +1364,7 @@ function buildAdminLvlView(
     `🎖️ **升级身份组奖励**：${rewardsSummary}（${l.stackRoles ? '保留旧组' : '仅留最高'}）`,
     `🎙️ **语音挂机经验**：${l.voiceEnabled ? `✅ 已开启（每分钟 **${l.voiceXpPerMin}** XP）` : `⛔ 已关闭（预设 ${l.voiceXpPerMin} XP/分）`}`,
     `📢 **升级公告播报**：${l.announceEnabled ? '✅ 已开启' : '⛔ 已关闭'}${l.announceChannelId ? `（固定频道 <#${l.announceChannelId}>）` : '（当前发言频道）'}`,
+    `📌 **限定经验频道**：${l.allowedChannelIds.length > 0 ? l.allowedChannelIds.map((id) => `<#${id}>`).join('、') : '全频道（除忽略列表）'}`,
     `📏 **独立成长数值**：${l.statEnabled ? `${l.statName}（每次升级 +${l.statMinGain}~${l.statMaxGain} ${l.statUnit}）` : '已关闭'}`,
     `📝 **升级提示语**：标题「${truncateText(l.levelUpTitle, 24)}」｜ 内容「${truncateText(l.levelUpTemplate, 48)}」`,
   ].join('\n');
