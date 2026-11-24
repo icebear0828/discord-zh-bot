@@ -59,6 +59,7 @@ import {
   buildRpgGearView,
   buildRpgHomeView,
   buildRpgRunView,
+  buildRpgTabletopRunView,
 } from '../../src/ui/rpgMenuBuilder.js';
 
 const GUILD_ID = 'g-rpg-ui';
@@ -103,6 +104,7 @@ function createTestCtx(): AppContext {
     onCreditChange: (gId, uId, delta, reason, now) => {
       creditLoan.adjustCredit(gId, uId, delta, reason, now);
     },
+    getCreditScore: (gId, uId) => creditLoan.getCreditProfile(gId, uId).account.score,
   });
 
   return {
@@ -424,9 +426,15 @@ describe('RPG UI Builders', () => {
     expect(desc).toContain('虚空星杖');
     expect(desc).toContain('+2');
     expect(desc).toContain('0 / 6');
-    expect(extractButtons(view).map((b) => b.custom_id)).toContain('rpg:nav:chapters');
+    expect(desc).toContain('武力');
+    expect(desc).toContain('奥术');
+    expect(desc).toContain('灵巧');
+    expect(desc).toContain('魅力');
+    const idleHomeIds = extractButtons(view).map((b) => b.custom_id);
+    expect(idleHomeIds).toContain('rpg:nav:chapters:tabletop');
+    expect(idleHomeIds).toContain('rpg:nav:chapters:classic');
 
-    // Start a run and confirm banner + continue button
+    // Start a classic run and confirm banner + continue button
     const started = ctx.services.rpg.startRun(GUILD_ID, USER_ID, 1, NOW, () => 0.1);
     expect(started.ok).toBe(true);
     const viewWithRun = buildRpgHomeView(ctx, GUILD_ID, makeActor(), undefined, NOW);
@@ -434,28 +442,78 @@ describe('RPG UI Builders', () => {
     expect(viewWithRun.embeds[0]!.toJSON().description).toContain('进行中的地下城冒险');
     const runBtnIds = extractButtons(viewWithRun).map((b) => b.custom_id);
     expect(runBtnIds).toContain('rpg:nav:run');
-    expect(runBtnIds).not.toContain('rpg:nav:chapters');
+    expect(runBtnIds).not.toContain('rpg:nav:chapters:tabletop');
+
+    // Retreat classic run and start a tabletop run -> confirm tabletop banner + resume button
+    ctx.services.rpg.actInRun(GUILD_ID, USER_ID, 'retreat', NOW);
+    const startedTt = ctx.services.rpg.startTabletopRun(GUILD_ID, USER_ID, 1, NOW, () => 0.1);
+    expect(startedTt.ok).toBe(true);
+    const viewWithTt = buildRpgHomeView(ctx, GUILD_ID, makeActor(), undefined, NOW);
+    assertDiscordComponentLimits(viewWithTt);
+    expect(viewWithTt.embeds[0]!.toJSON().description).toContain('进行中的博德跑团');
+    const ttBtnIds = extractButtons(viewWithTt).map((b) => b.custom_id);
+    expect(ttBtnIds).toContain('rpg:nav:tabletop_run');
   });
 
-  it('renders all 6 chapters with locked chapters disabled', () => {
+  it('renders all 6 chapters in both tabletop (default) and classic modes with locked chapters disabled', () => {
     const ctx = createTestCtx();
     ctx.services.rpg.chooseOrSwitchClass(GUILD_ID, USER_ID, 'warrior', NOW);
 
-    const view = buildRpgChaptersView(ctx, GUILD_ID, makeActor(), undefined, NOW);
-    assertDiscordComponentLimits(view);
-    const desc = view.embeds[0]!.toJSON().description ?? '';
+    const ttView = buildRpgChaptersView(ctx, GUILD_ID, makeActor(), undefined, NOW);
+    assertDiscordComponentLimits(ttView);
+    const ttDesc = ttView.embeds[0]!.toJSON().description ?? '';
     for (const ch of RPG_CHAPTERS) {
-      expect(desc).toContain(ch.name);
-      expect(desc).toContain(ch.boss.name);
+      expect(ttDesc).toContain(ch.name);
+      expect(ttDesc).toContain(ch.boss.name);
     }
+    const ttButtons = extractButtons(ttView);
+    expect(ttButtons.find((b) => b.custom_id === 'rpg:start_tt:1')?.disabled).toBe(false);
+    expect(ttButtons.find((b) => b.custom_id === 'rpg:start_tt:2')?.disabled).toBe(true);
+    expect(ttButtons.find((b) => b.custom_id === 'rpg:start_tt:6')?.disabled).toBe(true);
+    expect(ttButtons.find((b) => b.custom_id === 'rpg:nav:chapters:classic')).toBeDefined();
 
-    const buttons = extractButtons(view);
-    const ch1 = buttons.find((b) => b.custom_id === 'rpg:start:1');
-    const ch2 = buttons.find((b) => b.custom_id === 'rpg:start:2');
-    const ch6 = buttons.find((b) => b.custom_id === 'rpg:start:6');
-    expect(ch1?.disabled).toBe(false);
-    expect(ch2?.disabled).toBe(true);
-    expect(ch6?.disabled).toBe(true);
+    const classicView = buildRpgChaptersView(ctx, GUILD_ID, makeActor(), undefined, NOW, 'classic');
+    assertDiscordComponentLimits(classicView);
+    const classicButtons = extractButtons(classicView);
+    expect(classicButtons.find((b) => b.custom_id === 'rpg:start:1')?.disabled).toBe(false);
+    expect(classicButtons.find((b) => b.custom_id === 'rpg:start:2')?.disabled).toBe(true);
+    expect(classicButtons.find((b) => b.custom_id === 'rpg:nav:chapters:tabletop')).toBeDefined();
+  });
+
+  it('renders seamless Baldur tabletop story card with live odds, lastOutcome blockquote, and potion disabled at full HP', () => {
+    const ctx = createTestCtx();
+    ctx.services.rpg.chooseOrSwitchClass(GUILD_ID, USER_ID, 'paladin', NOW);
+    ctx.services.creditLoan.adjustCredit(GUILD_ID, USER_ID, 300, '金卡测试', NOW); // score = 900
+
+    const started = ctx.services.rpg.startTabletopRun(GUILD_ID, USER_ID, 1, NOW, () => 0.0);
+    expect(started.ok).toBe(true);
+    const initialView = buildRpgTabletopRunView(ctx, GUILD_ID, makeActor(), undefined, NOW);
+    assertDiscordComponentLimits(initialView);
+    const initDesc = initialView.embeds[0]!.toJSON().description ?? '';
+    expect(initDesc).toContain('第 1/5 幕');
+    expect(initDesc).toContain('❤️ HP');
+    const initButtons = extractButtons(initialView);
+    const choiceBtns = initButtons.filter((b) => b.custom_id.startsWith('rpg:tt_choice:'));
+    expect(choiceBtns).toHaveLength(3);
+    expect(initButtons.find((b) => b.custom_id === 'rpg:tt_act:potion')?.disabled).toBe(true);
+    expect(initButtons.find((b) => b.custom_id === 'rpg:tt_share')).toBeDefined();
+    expect(initButtons.find((b) => b.custom_id === 'rpg:tt_act:retreat')).toBeDefined();
+
+    // Advance one choice with Nat 20 -> next scene renders Nat 20 blockquote at top
+    const firstChoiceId = choiceBtns[0]!.custom_id.replace('rpg:tt_choice:', '');
+    const step = ctx.services.rpg.actInTabletopRun(
+      GUILD_ID,
+      USER_ID,
+      { type: 'choice', choiceId: firstChoiceId },
+      NOW + 1000,
+      () => 0.97,
+    );
+    expect(step.ok).toBe(true);
+    const nextView = buildRpgTabletopRunView(ctx, GUILD_ID, makeActor(), undefined, NOW + 1000);
+    assertDiscordComponentLimits(nextView);
+    const nextDesc = nextView.embeds[0]!.toJSON().description ?? '';
+    expect(nextDesc).toContain('第 2/5 幕');
+    expect(nextDesc).toMatch(/大成功|免检通过|D20/);
   });
 
   it('renders combat, event, and floor_clear run views and falls back to home when no run exists', () => {
@@ -593,6 +651,8 @@ describe('RPG UI Builders', () => {
     expect(buttons.find((b) => b.custom_id === `rpg:gear_salvage:${legItem.id}`)?.disabled).toBe(
       true,
     );
+    expect(buttons.find((b) => b.custom_id === 'rpg:gear_equip_best')).toBeDefined();
+    expect(buttons.find((b) => b.custom_id === 'rpg:gear_bulk_salvage')?.disabled).toBe(false);
   });
 
   it('renders class switch view with current class disabled and switch cost displayed', () => {
@@ -985,6 +1045,236 @@ describe('RPG Interaction Handlers & Public Broadcasts', () => {
     expect(retreatDesc).toContain('安全撤退');
     expect(retreatDesc).toContain('自动抵扣逾期债务');
   });
+
+  it('handles full tabletop interaction lifecycle: Boss P1/P2 victory, Nat 20 / Nat 1 / manual share broadcasts, potion, retreat, defeat, and bribe error', async () => {
+    const ctx = createTestCtx();
+    ctx.services.rpg.chooseOrSwitchClass(GUILD_ID, USER_ID, 'warrior', NOW);
+
+    // 1. Dual-mode chapters nav & start tabletop Ch 1
+    for (const id of ['rpg:nav:chapters:tabletop', 'rpg:nav:chapters:classic']) {
+      const nav = createButtonMock({ customId: id });
+      await handleRpgButton(nav.interaction, ctx);
+      expect(nav.update).toHaveBeenCalledTimes(1);
+      assertDiscordComponentLimits(nav.update.mock.calls[0]![0]);
+    }
+
+    const startTt = createButtonMock({ customId: 'rpg:start_tt:1' });
+    await handleRpgButton(startTt.interaction, ctx);
+    expect(startTt.update).toHaveBeenCalledTimes(1);
+    assertDiscordComponentLimits(startTt.update.mock.calls[0]![0]);
+    expect(ctx.services.rpg.getActiveTabletopRun(GUILD_ID, USER_ID)).not.toBeNull();
+
+    // 2. Manual share (📢 晒出名场面) updates ephemeral panel first and broadcasts highlight publicly
+    const shareChannel = makeMockChannel(true);
+    const shareBtn = createButtonMock({ customId: 'rpg:tt_share', channel: shareChannel });
+    await handleRpgButton(shareBtn.interaction, ctx);
+    expect(shareBtn.update).toHaveBeenCalledTimes(1);
+    expect(shareBtn.update.mock.calls[0]![0].embeds?.[0]?.toJSON().description).toContain(
+      '晒出到本频道',
+    );
+    expect(shareChannel.send).toHaveBeenCalledTimes(1);
+    expect(shareChannel.send.mock.calls[0]![0].embeds?.[0]?.toJSON().title).toContain('名场面');
+
+    // 3. Play through Acts 1..4 -> Boss P1 -> Boss P2 -> Victory with Math.random mocked to 0.97 (Nat 20!)
+    const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.97);
+    let nat20BroadcastSeen = false;
+    let victoryDesc = '';
+    let victoryChannel: MockChannel | null = null;
+
+    try {
+      for (let i = 0; i < 8; i++) {
+        const current = ctx.services.rpg.getActiveTabletopRun(GUILD_ID, USER_ID);
+        if (!current) break;
+        const ch = makeMockChannel(true);
+        const choiceId = current.currentChoiceIds[0]!;
+        const choiceBtn = createButtonMock({ customId: `rpg:tt_choice:${choiceId}`, channel: ch });
+        await handleRpgButton(choiceBtn.interaction, ctx);
+        expect(choiceBtn.update).toHaveBeenCalledTimes(1);
+        assertDiscordComponentLimits(choiceBtn.update.mock.calls[0]![0]);
+
+        const desc = choiceBtn.update.mock.calls[0]![0].embeds?.[0]?.toJSON().description ?? '';
+        if (ctx.services.rpg.getActiveTabletopRun(GUILD_ID, USER_ID) === null) {
+          victoryDesc = desc;
+          victoryChannel = ch;
+          break;
+        }
+        if (ch.send.mock.calls.length > 0) {
+          const pubTitle = ch.send.mock.calls[0]![0].embeds?.[0]?.toJSON().title ?? '';
+          if (pubTitle.includes('自然20')) {
+            nat20BroadcastSeen = true;
+          }
+        }
+      }
+    } finally {
+      randomSpy.mockRestore();
+    }
+
+    expect(nat20BroadcastSeen).toBe(true);
+    expect(victoryDesc).toContain('博德跑团通关');
+    expect(victoryChannel?.send).toHaveBeenCalledTimes(1);
+    expect(victoryChannel?.send.mock.calls[0]![0].embeds?.[0]?.toJSON().title).toContain(
+      '章节首通',
+    );
+
+    // 4. Test bribe error, potion, and retreat
+    const start2 = createButtonMock({ customId: 'rpg:start_tt:1' });
+    await handleRpgButton(start2.interaction, ctx);
+    const run2 = ctx.services.rpg.getActiveTabletopRun(GUILD_ID, USER_ID)!;
+    // Drain pocket coins to 0 and force ch1_goblin_toll with bribe + low HP
+    const prof = ctx.repos.profile.getOrCreate(GUILD_ID, USER_ID);
+    ctx.repos.profile.save({ ...prof, coins: 0 });
+    ctx.repos.rpg.upsertRun({
+      guildId: GUILD_ID,
+      userId: USER_ID,
+      chapter: 1,
+      floor: 1,
+      stateJson: JSON.stringify({
+        ...run2,
+        currentSceneId: 'ch1_goblin_toll',
+        currentChoiceIds: ['ch1_toll_bribe', 'ch1_toll_agility', 'ch1_toll_charm'],
+        playerHp: 50,
+        pendingCoins: 2400,
+      }),
+      updatedAt: NOW,
+    });
+
+    const bribeErrBtn = createButtonMock({ customId: 'rpg:tt_choice:ch1_toll_bribe' });
+    await handleRpgButton(bribeErrBtn.interaction, ctx);
+    expect(bribeErrBtn.update.mock.calls[0]![0].embeds?.[0]?.toJSON().description).toContain('不足');
+
+    const potionBtn = createButtonMock({ customId: 'rpg:tt_act:potion' });
+    await handleRpgButton(potionBtn.interaction, ctx);
+    expect(potionBtn.update.mock.calls[0]![0].embeds?.[0]?.toJSON().description).toContain(
+      '饮用生命药水',
+    );
+    expect(ctx.services.rpg.getActiveTabletopRun(GUILD_ID, USER_ID)?.playerHp).toBeGreaterThan(50);
+
+    const retreatBtn = createButtonMock({ customId: 'rpg:tt_act:retreat' });
+    await handleRpgButton(retreatBtn.interaction, ctx);
+    expect(retreatBtn.update.mock.calls[0]![0].embeds?.[0]?.toJSON().description).toContain(
+      '安全撤退',
+    );
+    expect(ctx.services.rpg.getActiveTabletopRun(GUILD_ID, USER_ID)).toBeNull();
+
+    // 5. Test Nat 1 broadcast & defeat summary
+    const start3 = createButtonMock({ customId: 'rpg:start_tt:1' });
+    await handleRpgButton(start3.interaction, ctx);
+    const run3 = ctx.services.rpg.getActiveTabletopRun(GUILD_ID, USER_ID)!;
+    ctx.repos.rpg.upsertRun({
+      guildId: GUILD_ID,
+      userId: USER_ID,
+      chapter: 1,
+      floor: 1,
+      stateJson: JSON.stringify({
+        ...run3,
+        currentSceneId: 'ch1_goblin_toll',
+        currentChoiceIds: ['ch1_toll_agility', 'ch1_toll_charm', 'ch1_toll_bribe'],
+        playerHp: 1,
+        pendingCoins: 1800,
+      }),
+      updatedAt: NOW,
+    });
+
+    const nat1Spy = vi.spyOn(Math, 'random').mockReturnValue(0.0);
+    const nat1Channel = makeMockChannel(true);
+    try {
+      const nat1Btn = createButtonMock({
+        customId: 'rpg:tt_choice:ch1_toll_agility',
+        channel: nat1Channel,
+      });
+      await handleRpgButton(nat1Btn.interaction, ctx);
+      expect(nat1Btn.update).toHaveBeenCalledTimes(1);
+      expect(nat1Btn.update.mock.calls[0]![0].embeds?.[0]?.toJSON().description).toContain(
+        '跑团团灭',
+      );
+      expect(nat1Channel.send).toHaveBeenCalledTimes(1);
+      expect(nat1Channel.send.mock.calls[0]![0].embeds?.[0]?.toJSON().title).toContain('自然1');
+    } finally {
+      nat1Spy.mockRestore();
+    }
+  });
+
+  it('handles ⚡ 一键穿最强 (rpg:gear_equip_best) and ♻️ 一键拆白绿装 (rpg:gear_bulk_salvage)', async () => {
+    const ctx = createTestCtx();
+    ctx.services.rpg.chooseOrSwitchClass(GUILD_ID, USER_ID, 'ranger', NOW);
+
+    const weakWeapon = ctx.repos.rpg.createItem({
+      guildId: GUILD_ID,
+      userId: USER_ID,
+      name: '猎人木弓',
+      slot: 'weapon',
+      rarity: 'common',
+      baseHp: 5,
+      baseAtk: 10,
+      baseDef: 1,
+      baseCritBp: 100,
+      equipped: true,
+      createdAt: NOW,
+    });
+    const strongWeapon = ctx.repos.rpg.createItem({
+      guildId: GUILD_ID,
+      userId: USER_ID,
+      name: '暗影追魂弓',
+      slot: 'weapon',
+      rarity: 'epic',
+      baseHp: 30,
+      baseAtk: 85,
+      baseDef: 8,
+      baseCritBp: 900,
+      createdAt: NOW + 1,
+    });
+    const junkArmor = ctx.repos.rpg.createItem({
+      guildId: GUILD_ID,
+      userId: USER_ID,
+      name: '精钢锁甲',
+      slot: 'armor',
+      rarity: 'uncommon',
+      baseHp: 35,
+      baseAtk: 0,
+      baseDef: 8,
+      baseCritBp: 0,
+      createdAt: NOW + 2,
+    });
+    const rareArmor = ctx.repos.rpg.createItem({
+      guildId: GUILD_ID,
+      userId: USER_ID,
+      name: '影步轻铠',
+      slot: 'armor',
+      rarity: 'rare',
+      baseHp: 90,
+      baseAtk: 0,
+      baseDef: 22,
+      baseCritBp: 0,
+      createdAt: NOW + 3,
+    });
+
+    // 1. Equip best -> swaps weapon to strongWeapon & equips rareArmor
+    const bestBtn = createButtonMock({ customId: 'rpg:gear_equip_best' });
+    await handleRpgButton(bestBtn.interaction, ctx);
+    expect(bestBtn.update).toHaveBeenCalledTimes(1);
+    assertDiscordComponentLimits(bestBtn.update.mock.calls[0]![0]);
+    expect(bestBtn.update.mock.calls[0]![0].embeds?.[0]?.toJSON().description).toContain(
+      '一键换装完成',
+    );
+    expect(ctx.repos.rpg.getItemById(strongWeapon.id)?.equipped).toBe(true);
+    expect(ctx.repos.rpg.getItemById(rareArmor.id)?.equipped).toBe(true);
+    expect(ctx.repos.rpg.getItemById(weakWeapon.id)?.equipped).toBe(false);
+
+    // 2. Bulk salvage -> destroys unequipped weakWeapon (common) & junkArmor (uncommon), keeps equipped epic/rare
+    const coinsBefore = ctx.repos.profile.getOrCreate(GUILD_ID, USER_ID).coins;
+    const bulkBtn = createButtonMock({ customId: 'rpg:gear_bulk_salvage' });
+    await handleRpgButton(bulkBtn.interaction, ctx);
+    expect(bulkBtn.update).toHaveBeenCalledTimes(1);
+    assertDiscordComponentLimits(bulkBtn.update.mock.calls[0]![0]);
+    expect(bulkBtn.update.mock.calls[0]![0].embeds?.[0]?.toJSON().description).toContain(
+      '一键拆解 **2** 件白绿装',
+    );
+    expect(ctx.repos.rpg.getItemById(weakWeapon.id)).toBeNull();
+    expect(ctx.repos.rpg.getItemById(junkArmor.id)).toBeNull();
+    expect(ctx.repos.rpg.getItemById(strongWeapon.id)).not.toBeNull();
+    expect(ctx.repos.rpg.getItemById(rareArmor.id)).not.toBeNull();
+    expect(ctx.repos.profile.getOrCreate(GUILD_ID, USER_ID).coins).toBeGreaterThan(coinsBefore);
+  });
 });
 
 describe('/冒险 Slash Command', () => {
@@ -1020,5 +1310,16 @@ describe('/冒险 Slash Command', () => {
     expect(running.reply).toHaveBeenCalledTimes(1);
     expect(running.reply.mock.calls[0]![0].flags).toBe(MessageFlags.Ephemeral);
     expect(running.reply.mock.calls[0]![0].embeds?.[0]?.toJSON().title).toContain('第 1 章');
+
+    // Also verify /冒险 auto-resumes tabletop run
+    ctx.services.rpg.actInRun(GUILD_ID, USER_ID, 'retreat', NOW);
+    ctx.services.rpg.startTabletopRun(GUILD_ID, USER_ID, 1, NOW, () => 0.1);
+    const runningTt = createSlashMock();
+    await adventureCommand.execute(runningTt.interaction, ctx);
+    expect(runningTt.reply).toHaveBeenCalledTimes(1);
+    expect(runningTt.reply.mock.calls[0]![0].flags).toBe(MessageFlags.Ephemeral);
+    expect(runningTt.reply.mock.calls[0]![0].embeds?.[0]?.toJSON().author?.name).toContain(
+      '博德跑团中',
+    );
   });
 });

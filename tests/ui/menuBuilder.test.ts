@@ -89,6 +89,7 @@ function createTestCtx(): AppContext {
     onCreditChange: (gId, uId, delta, reason, now) => {
       creditLoan.adjustCredit(gId, uId, delta, reason, now);
     },
+    getCreditScore: (gId, uId) => creditLoan.getCreditProfile(gId, uId).account.score,
   });
 
   return {
@@ -531,6 +532,13 @@ describe('menuBuilder Discord component constraints & schema integration', () =>
       'custom_id' in c ? c.custom_id : '',
     );
     expect(row1Ids).toEqual(['menu:bj:hit', 'menu:bj:stand', 'menu:bj:double']);
+
+    // Active RPG tabletop run via buildMenuMessage({ page: 'rpg' })
+    ctx.services.rpg.chooseOrSwitchClass('g1', 'u1', 'warrior');
+    ctx.services.rpg.startTabletopRun('g1', 'u1', 1);
+    const activeTtMsg = buildMenuMessage(ctx, 'g1', ACTOR, { page: 'rpg' });
+    assertDiscordMessageLimits(activeTtMsg, 'view:rpg:tabletop_active');
+    expect(activeTtMsg.embeds[0]!.toJSON().author?.name).toContain('博德跑团中');
 
     ctx.db.close();
   });

@@ -1,7 +1,11 @@
 import { MessageFlags, SlashCommandBuilder, type ChatInputCommandInteraction } from 'discord.js';
 import type { AppContext, CommandDefinition } from '../../ui/embeds.js';
 import { applyZh } from '../../ui/localization.js';
-import { buildRpgHomeView, buildRpgRunView } from '../../ui/rpgMenuBuilder.js';
+import {
+  buildRpgHomeView,
+  buildRpgRunView,
+  buildRpgTabletopRunView,
+} from '../../ui/rpgMenuBuilder.js';
 import { checkMemberIsBotAdmin, requireGuildMember, requireModuleEnabled } from '../guards.js';
 
 export const adventureCommand: CommandDefinition = {
@@ -31,10 +35,13 @@ export const adventureCommand: CommandDefinition = {
     };
 
     const nowMs = Date.now();
-    const activeRun = ctx.services.rpg.getActiveRun(guildCtx.guildId, interaction.user.id);
-    const msg = activeRun
-      ? buildRpgRunView(ctx, guildCtx.guildId, actor, undefined, nowMs)
-      : buildRpgHomeView(ctx, guildCtx.guildId, actor, undefined, nowMs);
+    const activeMode = ctx.services.rpg.getAnyActiveRunMode(guildCtx.guildId, interaction.user.id);
+    const msg =
+      activeMode === 'tabletop'
+        ? buildRpgTabletopRunView(ctx, guildCtx.guildId, actor, undefined, nowMs)
+        : activeMode === 'classic'
+          ? buildRpgRunView(ctx, guildCtx.guildId, actor, undefined, nowMs)
+          : buildRpgHomeView(ctx, guildCtx.guildId, actor, undefined, nowMs);
 
     await interaction.reply({
       ...msg,

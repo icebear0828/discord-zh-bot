@@ -1130,4 +1130,189 @@ describe('RpgService (Western Fantasy Roguelike Engine)', () => {
     expect(getCreditScore).toHaveBeenNthCalledWith(2, 'g1', 'debtor');
     customFixture.db.close();
   });
+
+  it('supports dual-mode tabletop persistence, cross-mode guards, full Boss P1/P2 victory, potion, retreat, bribe, and defeat', () => {
+    const onCoinsEarned = vi.fn((_g: string, _u: string, gross: number) => {
+      const garnished = Math.floor(gross * 0.25);
+      return { garnished, net: gross - garnished };
+    });
+    const onCreditChange = vi.fn();
+    const { db, profileRepo, rpgRepo, rpg } = createFixture({
+      onCoinsEarned,
+      onCreditChange,
+      getCreditScore: (_g, uid) => (uid === 'vip' ? 880 : 600),
+    });
+    const now = Date.UTC(2026, 0, 21, 4, 0, 0);
+
+    rpg.chooseOrSwitchClass('g1', 'vip', 'paladin', now);
+    const attrs = rpg.getTabletopAttributes('g1', 'vip', now);
+    expect(attrs.creditCharmBonus).toBe(3);
+    expect(rpg.getAnyActiveRunMode('g1', 'vip')).toBeNull();
+
+    // Locked chapter & invalid chapter checks
+    expect(rpg.startTabletopRun('g1', 'vip', 99, now)).toEqual({
+      ok: false,
+      reason: 'invalid_chapter',
+    });
+    expect(rpg.startTabletopRun('g1', 'vip', 2, now)).toEqual({
+      ok: false,
+      reason: 'chapter_locked',
+      maxUnlockedChapter: 1,
+    });
+
+    // Start tabletop run on Ch 1 -> deducts 1 stamina
+    const started = rpg.startTabletopRun('g1', 'vip', 1, now, () => 0.1);
+    expect(started.ok).toBe(true);
+    if (!started.ok) return;
+    expect(started.character.stamina).toBe(4);
+    expect(rpg.getActiveRun('g1', 'vip')).toBeNull();
+    expect(rpg.getActiveTabletopRun('g1', 'vip')?.mode).toBe('tabletop');
+    expect(rpg.getAnyActiveRunMode('g1', 'vip')).toBe('tabletop');
+
+    // Cross-mode guards: classic start, class switch, and stale classic actInRun must not destroy tabletop run
+    expect(rpg.startRun('g1', 'vip', 1, now)).toEqual({
+      ok: false,
+      reason: 'active_run_exists',
+    });
+    expect(rpg.chooseOrSwitchClass('g1', 'vip', 'mage', now)).toEqual({
+      ok: false,
+      reason: 'active_run',
+    });
+    expect(rpg.actInRun('g1', 'vip', 'attack', now)).toEqual({
+      ok: false,
+      reason: 'no_active_run',
+    });
+    expect(rpg.getActiveTabletopRun('g1', 'vip')).not.toBeNull();
+
+    // Potion fails at full HP
+    expect(rpg.actInTabletopRun('g1', 'vip', { type: 'potion' }, now)).toEqual({
+      ok: false,
+      reason: 'already_full_hp',
+    });
+
+    // Play Acts 1..4 -> Boss P1 -> Boss P2 with guaranteed Nat 20 / high rolls (0.97 -> D20=20)
+    let victoryRes: ReturnType<typeof rpg.actInTabletopRun> | null = null;
+    for (let step = 0; step < 8; step++) {
+      const current = rpg.getActiveTabletopRun('g1', 'vip');
+      if (!current) break;
+      const choiceId = current.currentChoiceIds[0]!;
+      const res = rpg.actInTabletopRun('g1', 'vip', { type: 'choice', choiceId }, now + step * 1000, () => 0.97);
+      expect(res.ok).toBe(true);
+      if (res.ok && res.status === 'victory') {
+        victoryRes = res;
+        break;
+      }
+    }
+
+    expect(victoryRes?.ok).toBe(true);
+    if (!victoryRes || !victoryRes.ok || victoryRes.status !== 'victory') return;
+    expect(victoryRes.firstClear).toBe(true);
+    expect(victoryRes.victoryEpilogue.length).toBeGreaterThan(10);
+    expect(victoryRes.character.maxChapterCleared).toBe(1);
+    expect(victoryRes.character.totalClears).toBe(1);
+    expect(victoryRes.character.totalBossKills).toBe(1);
+    expect(victoryRes.reward.bossBonusCoins).toBe(16_000); // Ch1 8000 * 2x firstClear
+    expect(victoryRes.reward.garnishedCoins).toBeGreaterThan(0);
+    expect(onCoinsEarned).toHaveBeenCalled();
+    expect(onCreditChange).toHaveBeenCalledWith('g1', 'vip', 25, expect.stringContaining('首通'), expect.any(Number));
+    expect(rpg.getActiveTabletopRun('g1', 'vip')).toBeNull();
+    expect(rpg.getAnyActiveRunMode('g1', 'vip')).toBeNull();
+
+    // Test bribe insufficient coins -> add coins -> bribe succeeds & deducts coins -> potion -> retreat
+    rpg.chooseOrSwitchClass('g1', 'u_bribe', 'warrior', now);
+    const bribeRunStart = rpg.startTabletopRun('g1', 'u_bribe', 1, now, () => 0.0);
+    expect(bribeRunStart.ok).toBe(true);
+    if (!bribeRunStart.ok) return;
+
+    // Force scene 'ch1_goblin_toll' with bribe choice 'ch1_toll_bribe'
+    const forcedBribeRun = {
+      ...bribeRunStart.run,
+      currentSceneId: 'ch1_goblin_toll',
+      currentChoiceIds: ['ch1_toll_bribe', 'ch1_toll_agility', 'ch1_toll_charm'],
+      playerHp: Math.floor(bribeRunStart.run.playerMaxHp / 2),
+      pendingCoins: 2000,
+    };
+    rpgRepo.upsertRun({
+      guildId: 'g1',
+      userId: 'u_bribe',
+      chapter: 1,
+      floor: 1,
+      stateJson: JSON.stringify(forcedBribeRun),
+      updatedAt: now,
+    });
+
+    // Pocket coins = 0 -> insufficient_coins
+    const brokeBribe = rpg.actInTabletopRun('g1', 'u_bribe', { type: 'choice', choiceId: 'ch1_toll_bribe' }, now);
+    expect(brokeBribe.ok).toBe(false);
+    if (!brokeBribe.ok) {
+      expect(brokeBribe.reason).toBe('insufficient_coins');
+      expect(brokeBribe.requiredCoins).toBeGreaterThan(0);
+    }
+
+    // Potion heals while damaged without advancing act
+    const potRes = rpg.actInTabletopRun('g1', 'u_bribe', { type: 'potion' }, now);
+    expect(potRes.ok).toBe(true);
+    if (potRes.ok && potRes.status === 'potion') {
+      expect(potRes.healed).toBeGreaterThan(0);
+      expect(potRes.run.act).toBe(1);
+      expect(potRes.run.potionsLeft).toBe(2);
+    }
+
+    // Add coins and execute bribe -> deducts from profile.coins
+    profileRepo.addCoins('g1', 'u_bribe', 5000);
+    const paidBribe = rpg.actInTabletopRun(
+      'g1',
+      'u_bribe',
+      { type: 'choice', choiceId: 'ch1_toll_bribe' },
+      now,
+      () => 0.5,
+    );
+    expect(paidBribe.ok).toBe(true);
+    if (paidBribe.ok && paidBribe.status === 'ongoing') {
+      expect(paidBribe.coinsSpent).toBeGreaterThan(0);
+      expect(profileRepo.getOrCreate('g1', 'u_bribe').coins).toBe(5000 - paidBribe.coinsSpent);
+    }
+
+    // Retreat banks pending coins cleanly
+    const retreatRes = rpg.actInTabletopRun('g1', 'u_bribe', { type: 'retreat' }, now);
+    expect(retreatRes.ok).toBe(true);
+    if (retreatRes.ok && retreatRes.status === 'retreat') {
+      expect(retreatRes.reward.grossCoins).toBeGreaterThanOrEqual(2000);
+      expect(rpg.getActiveTabletopRun('g1', 'u_bribe')).toBeNull();
+    }
+
+    // Defeat: force 1 HP & Nat 1 roll (0.0 -> D20=1) -> deletes run and reports lost loot
+    const defeatStart = rpg.startTabletopRun('g1', 'u_bribe', 1, now, () => 0.1);
+    expect(defeatStart.ok).toBe(true);
+    if (!defeatStart.ok) return;
+    rpgRepo.upsertRun({
+      guildId: 'g1',
+      userId: 'u_bribe',
+      chapter: 1,
+      floor: 1,
+      stateJson: JSON.stringify({
+        ...defeatStart.run,
+        currentSceneId: 'ch1_goblin_toll',
+        currentChoiceIds: ['ch1_toll_agility', 'ch1_toll_charm', 'ch1_toll_bribe'],
+        playerHp: 1,
+        pendingCoins: 1500,
+      }),
+      updatedAt: now,
+    });
+    const defeatRes = rpg.actInTabletopRun(
+      'g1',
+      'u_bribe',
+      { type: 'choice', choiceId: 'ch1_toll_agility' },
+      now,
+      () => 0.0,
+    );
+    expect(defeatRes.ok).toBe(true);
+    if (defeatRes.ok && defeatRes.status === 'defeat') {
+      expect(defeatRes.lostCoins).toBe(1500);
+      expect(defeatRes.outcome.publicHighlight?.kind).toBe('nat1');
+      expect(rpg.getActiveTabletopRun('g1', 'u_bribe')).toBeNull();
+    }
+
+    db.close();
+  });
 });

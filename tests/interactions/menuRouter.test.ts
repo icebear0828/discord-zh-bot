@@ -90,6 +90,7 @@ function createTestCtx(): AppContext {
     onCreditChange: (gId, uId, delta, reason, now) => {
       creditLoan.adjustCredit(gId, uId, delta, reason, now);
     },
+    getCreditScore: (gId, uId) => creditLoan.getCreditProfile(gId, uId).account.score,
   });
 
   return {
@@ -2724,10 +2725,22 @@ describe('menu router & multiplayer interaction flows', () => {
     expect(startCh1.update).toHaveBeenCalledTimes(1);
     expect(ctx.services.rpg.getActiveRun('g1', 'u1')).not.toBeNull();
 
-    // Navigating menu:nav:rpg while run is active opens active run view
+    // Navigating menu:nav:rpg while classic run is active opens classic run view
     const resumeRpg = createButtonMock({ customId: 'menu:nav:rpg', userId: 'u1' });
     await routeInteraction(resumeRpg.interaction, ctx);
     expect(resumeRpg.update.mock.calls[0]![0].embeds?.[0]?.toJSON().title).toContain('第 1 章');
+
+    // Retreat classic run -> start tabletop run via router -> menu:nav:rpg auto-resumes tabletop view
+    const retreatClassic = createButtonMock({ customId: 'rpg:act:retreat', userId: 'u1' });
+    await routeInteraction(retreatClassic.interaction, ctx);
+    const startTtCh1 = createButtonMock({ customId: 'rpg:start_tt:1', userId: 'u1' });
+    await routeInteraction(startTtCh1.interaction, ctx);
+    expect(ctx.services.rpg.getActiveTabletopRun('g1', 'u1')).not.toBeNull();
+    const resumeTtRpg = createButtonMock({ customId: 'menu:nav:rpg', userId: 'u1' });
+    await routeInteraction(resumeTtRpg.interaction, ctx);
+    expect(resumeTtRpg.update.mock.calls[0]![0].embeds?.[0]?.toJSON().author?.name).toContain(
+      '博德跑团中',
+    );
 
     // 4. 12-board leaderboard StringSelectMenu (menu:lb_select) & public lb:select
     ctx.services.creditLoan.recordGamblingResult('g1', 'u1', 2000, 1500);

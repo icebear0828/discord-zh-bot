@@ -60,6 +60,7 @@ import {
 import {
   buildRpgHomeView,
   buildRpgRunView,
+  buildRpgTabletopRunView,
 } from './rpgMenuBuilder.js';
 import {
   COLORS,
@@ -1973,10 +1974,14 @@ export function buildMenuMessage(
     case 'hustle':
       return buildHustleView(ctx, guildId, actor, feedback, nowMs);
     case 'rpg': {
-      const activeRun = ctx.services.rpg.getActiveRun(guildId, actor.id);
-      return activeRun
-        ? buildRpgRunView(ctx, guildId, actor, feedback)
-        : buildRpgHomeView(ctx, guildId, actor, feedback, nowMs);
+      const activeMode = ctx.services.rpg.getAnyActiveRunMode(guildId, actor.id);
+      if (activeMode === 'tabletop') {
+        return buildRpgTabletopRunView(ctx, guildId, actor, feedback, nowMs);
+      }
+      if (activeMode === 'classic') {
+        return buildRpgRunView(ctx, guildId, actor, feedback, nowMs);
+      }
+      return buildRpgHomeView(ctx, guildId, actor, feedback, nowMs);
     }
     case 'multi':
       return buildMultiView(ctx, guildId, actor, feedback, nowMs);

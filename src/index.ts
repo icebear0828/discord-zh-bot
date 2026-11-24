@@ -93,6 +93,8 @@ function main(): void {
     onCreditChange: (guildId, userId, delta, reason, nowMs) => {
       creditLoanService.adjustCredit(guildId, userId, delta, reason, nowMs);
     },
+    getCreditScore: (guildId, userId) =>
+      creditLoanService.getCreditProfile(guildId, userId).account.score,
   });
 
   const ctx: AppContext = {

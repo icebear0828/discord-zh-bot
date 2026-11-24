@@ -12,6 +12,25 @@ import type {
 import type { PetRarity, SocialPetRepo, UserPet } from '../db/repositories/socialPetRepo.js';
 import { getDateKey } from './economyService.js';
 import { PET_SPECIES_MAP } from './socialPetService.js';
+import { TABLETOP_BOSS_ACTS, TABLETOP_SCENES } from './rpgTabletopCatalog.js';
+import {
+  createInitialTabletopRun,
+  deriveTabletopAttributes,
+  drinkTabletopPotion,
+  isTabletopRunState,
+  resolveTabletopChoice,
+  type TabletopAttributes,
+  type TabletopCatalog,
+  type TabletopRollOutcome,
+  type TabletopRunState,
+} from './rpgTabletopCore.js';
+
+export type { TabletopAttributes, TabletopCatalog, TabletopRollOutcome, TabletopRunState };
+
+export const TABLETOP_CATALOG: TabletopCatalog = {
+  scenes: TABLETOP_SCENES,
+  bossActs: TABLETOP_BOSS_ACTS,
+};
 
 export interface RpgConfig {
   dailyStamina: number;
@@ -737,6 +756,78 @@ export type ActInRunResult =
       cooldownLeft?: number;
     };
 
+export type StartTabletopRunResult =
+  | { ok: true; run: TabletopRunState; character: RpgCharacter }
+  | {
+      ok: false;
+      reason: 'invalid_chapter' | 'chapter_locked' | 'insufficient_stamina' | 'active_run_exists';
+      maxUnlockedChapter?: number;
+    };
+
+export type TabletopRunAction =
+  | { type: 'choice'; choiceId: string }
+  | { type: 'potion' }
+  | { type: 'retreat' };
+
+export type ActInTabletopRunResult =
+  | {
+      ok: true;
+      status: 'ongoing';
+      run: TabletopRunState;
+      outcome: TabletopRollOutcome;
+      coinsSpent: number;
+    }
+  | {
+      ok: true;
+      status: 'potion';
+      run: TabletopRunState;
+      healed: number;
+    }
+  | {
+      ok: true;
+      status: 'victory';
+      chapter: number;
+      outcome: TabletopRollOutcome;
+      victoryEpilogue: string;
+      coinsSpent: number;
+      reward: RunBankedReward;
+      firstClear: boolean;
+      legendaryDrops: RpgItem[];
+      character: RpgCharacter;
+      balance: number;
+    }
+  | {
+      ok: true;
+      status: 'defeat';
+      chapter: number;
+      act: number;
+      outcome: TabletopRollOutcome;
+      coinsSpent: number;
+      lostCoins: number;
+      lostXp: number;
+      lostItemsCount: number;
+    }
+  | {
+      ok: true;
+      status: 'retreat';
+      chapter: number;
+      act: number;
+      reward: RunBankedReward;
+      legendaryDrops: RpgItem[];
+      character: RpgCharacter;
+      balance: number;
+    }
+  | {
+      ok: false;
+      reason:
+        | 'no_active_run'
+        | 'invalid_choice'
+        | 'insufficient_coins'
+        | 'no_potions_left'
+        | 'already_full_hp';
+      requiredCoins?: number;
+    };
+
 export interface RpgServiceOptions {
   timezone?: string;
   config?: Partial<RpgConfig>;
@@ -906,6 +997,7 @@ function parseRunState(raw: string): RpgRunState | null {
   try {
     const parsed: unknown = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object') return null;
+    if (isTabletopRunState(parsed)) return null;
     const obj = parsed as Partial<RpgRunState>;
     if (
       typeof obj.chapter !== 'number' ||
@@ -917,6 +1009,15 @@ function parseRunState(raw: string): RpgRunState | null {
       return null;
     }
     return parsed as RpgRunState;
+  } catch {
+    return null;
+  }
+}
+
+function parseTabletopRunState(raw: string): TabletopRunState | null {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return isTabletopRunState(parsed) ? parsed : null;
   } catch {
     return null;
   }
@@ -982,7 +1083,10 @@ export class RpgService {
   ): ChooseClassResult {
     return this.db.transaction((): ChooseClassResult => {
       const existingRun = this.rpgRepo.getRun(guildId, userId);
-      if (existingRun && parseRunState(existingRun.stateJson)) {
+      if (
+        existingRun &&
+        (parseRunState(existingRun.stateJson) || parseTabletopRunState(existingRun.stateJson))
+      ) {
         return { ok: false, reason: 'active_run' };
       }
       if (existingRun) {
@@ -1338,6 +1442,285 @@ export class RpgService {
     return parseRunState(rec.stateJson);
   }
 
+  getActiveTabletopRun(guildId: string, userId: string): TabletopRunState | null {
+    const rec = this.rpgRepo.getRun(guildId, userId);
+    if (!rec) return null;
+    return parseTabletopRunState(rec.stateJson);
+  }
+
+  getAnyActiveRunMode(guildId: string, userId: string): 'tabletop' | 'classic' | null {
+    const rec = this.rpgRepo.getRun(guildId, userId);
+    if (!rec) return null;
+    if (parseTabletopRunState(rec.stateJson)) return 'tabletop';
+    if (parseRunState(rec.stateJson)) return 'classic';
+    return null;
+  }
+
+  getTabletopAttributes(
+    guildId: string,
+    userId: string,
+    nowMs = Date.now(),
+  ): TabletopAttributes {
+    const stats = this.computeCombatStats(guildId, userId, nowMs);
+    const creditScore = this.getUserCreditScore(guildId, userId);
+    return deriveTabletopAttributes({
+      classKey: stats.classKey,
+      level: stats.level,
+      maxHp: stats.maxHp,
+      atk: stats.atk,
+      def: stats.def,
+      critBp: stats.critBp,
+      dodgeBp: stats.dodgeBp,
+      creditScore,
+      petSynergy: stats.petSynergy,
+    });
+  }
+
+  startTabletopRun(
+    guildId: string,
+    userId: string,
+    chapter: number,
+    nowMs = Date.now(),
+    rng: () => number = Math.random,
+  ): StartTabletopRunResult {
+    const chapterDef = RPG_CHAPTER_MAP.get(chapter);
+    if (!chapterDef) {
+      return { ok: false, reason: 'invalid_chapter' };
+    }
+
+    return this.db.transaction((): StartTabletopRunResult => {
+      const existingRun = this.rpgRepo.getRun(guildId, userId);
+      if (
+        existingRun &&
+        (parseRunState(existingRun.stateJson) || parseTabletopRunState(existingRun.stateJson))
+      ) {
+        return { ok: false, reason: 'active_run_exists' };
+      }
+      if (existingRun) {
+        this.rpgRepo.deleteRun(guildId, userId);
+      }
+
+      const character = this.getOrCreateCharacterInTx(guildId, userId, nowMs);
+      const maxUnlockedChapter = Math.min(RPG_CHAPTERS.length, character.maxChapterCleared + 1);
+      if (chapter > maxUnlockedChapter) {
+        return { ok: false, reason: 'chapter_locked', maxUnlockedChapter };
+      }
+
+      if (character.stamina < 1) {
+        return { ok: false, reason: 'insufficient_stamina' };
+      }
+
+      const updatedChar: RpgCharacter = {
+        ...character,
+        stamina: character.stamina - 1,
+        updatedAt: nowMs,
+      };
+      this.rpgRepo.saveCharacter(updatedChar);
+
+      const stats = this.computeCombatStatsForCharacter(updatedChar);
+      const creditScore = this.getUserCreditScore(guildId, userId);
+      const profile = this.profileRepo.getOrCreate(guildId, userId);
+
+      const run = createInitialTabletopRun({
+        chapter,
+        classKey: updatedChar.classKey,
+        level: updatedChar.level,
+        maxHp: stats.maxHp,
+        atk: stats.atk,
+        def: stats.def,
+        critBp: stats.critBp,
+        dodgeBp: stats.dodgeBp,
+        creditScore,
+        petSynergy: stats.petSynergy,
+        pocketCoins: profile.coins,
+        catalog: TABLETOP_CATALOG,
+        rng,
+      });
+
+      this.saveTabletopRunInTx(guildId, userId, run, nowMs);
+      return { ok: true, run, character: updatedChar };
+    })();
+  }
+
+  actInTabletopRun(
+    guildId: string,
+    userId: string,
+    action: TabletopRunAction,
+    nowMs = Date.now(),
+    rng: () => number = Math.random,
+  ): ActInTabletopRunResult {
+    return this.db.transaction((): ActInTabletopRunResult => {
+      const record = this.rpgRepo.getRun(guildId, userId);
+      if (!record) {
+        return { ok: false, reason: 'no_active_run' };
+      }
+      const run = parseTabletopRunState(record.stateJson);
+      if (!run) {
+        if (!parseRunState(record.stateJson)) {
+          this.rpgRepo.deleteRun(guildId, userId);
+        }
+        return { ok: false, reason: 'no_active_run' };
+      }
+
+      const chapterDef = RPG_CHAPTER_MAP.get(run.chapter);
+      if (!chapterDef) {
+        this.rpgRepo.deleteRun(guildId, userId);
+        return { ok: false, reason: 'no_active_run' };
+      }
+
+      if (action.type === 'potion') {
+        const potionRes = drinkTabletopPotion(run);
+        if (!potionRes.ok) {
+          return { ok: false, reason: potionRes.reason };
+        }
+        this.saveTabletopRunInTx(guildId, userId, potionRes.state, nowMs);
+        return {
+          ok: true,
+          status: 'potion',
+          run: potionRes.state,
+          healed: potionRes.healed,
+        };
+      }
+
+      if (action.type === 'retreat') {
+        const character = this.getOrCreateCharacterInTx(guildId, userId, nowMs);
+        const { reward, legendaryDrops, updatedCharacter, balance } = this.bankLootInTx({
+          guildId,
+          userId,
+          character,
+          pendingCoins: run.pendingCoins,
+          pendingXp: run.pendingXp,
+          pendingItems: run.pendingItems,
+          bossBonusCoins: 0,
+          creditDelta: 0,
+          source: `rpg_tabletop_retreat_ch${run.chapter}`,
+          nowMs,
+        });
+        this.rpgRepo.saveCharacter(updatedCharacter);
+        this.rpgRepo.deleteRun(guildId, userId);
+        return {
+          ok: true,
+          status: 'retreat',
+          chapter: run.chapter,
+          act: run.act,
+          reward,
+          legendaryDrops,
+          character: updatedCharacter,
+          balance,
+        };
+      }
+
+      // action.type === 'choice'
+      const profile = this.profileRepo.getOrCreate(guildId, userId);
+      const resolved = resolveTabletopChoice({
+        state: run,
+        choiceId: action.choiceId,
+        pocketCoins: profile.coins,
+        catalog: TABLETOP_CATALOG,
+        rng,
+        generateItem: generatePendingItem,
+      });
+
+      if (!resolved.ok) {
+        return resolved;
+      }
+
+      if (resolved.coinsSpent > 0) {
+        this.profileRepo.save({
+          ...profile,
+          coins: Math.max(0, profile.coins - resolved.coinsSpent),
+        });
+      }
+
+      if (resolved.status === 'ongoing') {
+        this.saveTabletopRunInTx(guildId, userId, resolved.state, nowMs);
+        return {
+          ok: true,
+          status: 'ongoing',
+          run: resolved.state,
+          outcome: resolved.outcome,
+          coinsSpent: resolved.coinsSpent,
+        };
+      }
+
+      if (resolved.status === 'defeat') {
+        this.rpgRepo.deleteRun(guildId, userId);
+        return {
+          ok: true,
+          status: 'defeat',
+          chapter: run.chapter,
+          act: run.act,
+          outcome: resolved.outcome,
+          coinsSpent: resolved.coinsSpent,
+          lostCoins: resolved.lostLoot.coins,
+          lostXp: resolved.lostLoot.xp,
+          lostItemsCount: resolved.lostLoot.itemCount,
+        };
+      }
+
+      // victory
+      const character = this.getOrCreateCharacterInTx(guildId, userId, nowMs);
+      const firstClear = character.maxChapterCleared < chapterDef.chapter;
+      const bossBonusCoins = firstClear
+        ? Math.round(chapterDef.clearBaseCoins * chapterDef.firstClearMultiplier)
+        : chapterDef.clearBaseCoins;
+      const bossBonusXp = firstClear
+        ? Math.round(chapterDef.clearBaseXp * 1.5)
+        : chapterDef.clearBaseXp;
+
+      const creditDelta = firstClear ? 25 : 5;
+      const creditReason = firstClear
+        ? `RPG首通第${chapterDef.chapter}章「${chapterDef.name}」`
+        : `RPG通关第${chapterDef.chapter}章「${chapterDef.name}」`;
+
+      const {
+        reward,
+        legendaryDrops,
+        updatedCharacter: leveledChar,
+        balance,
+      } = this.bankLootInTx({
+        guildId,
+        userId,
+        character,
+        pendingCoins: resolved.state.pendingCoins,
+        pendingXp: resolved.state.pendingXp + bossBonusXp,
+        pendingItems: resolved.state.pendingItems,
+        bossBonusCoins,
+        creditDelta,
+        source: `rpg_tabletop_clear_ch${chapterDef.chapter}`,
+        nowMs,
+      });
+
+      const finalCharacter: RpgCharacter = {
+        ...leveledChar,
+        maxChapterCleared: Math.max(leveledChar.maxChapterCleared, chapterDef.chapter),
+        totalClears: leveledChar.totalClears + 1,
+        totalBossKills: leveledChar.totalBossKills + 1,
+        updatedAt: nowMs,
+      };
+      this.rpgRepo.saveCharacter(finalCharacter);
+      this.rpgRepo.deleteRun(guildId, userId);
+
+      if (this.onCreditChange) {
+        this.onCreditChange(guildId, userId, creditDelta, creditReason, nowMs);
+      }
+
+      return {
+        ok: true,
+        status: 'victory',
+        chapter: chapterDef.chapter,
+        outcome: resolved.outcome,
+        victoryEpilogue: resolved.victoryEpilogue,
+        coinsSpent: resolved.coinsSpent,
+        reward,
+        firstClear,
+        legendaryDrops,
+        character: finalCharacter,
+        balance,
+      };
+    })();
+  }
+
   getLeaderboard(
     guildId: string,
     limit = 10,
@@ -1360,7 +1743,10 @@ export class RpgService {
 
     return this.db.transaction((): StartRunResult => {
       const existingRun = this.rpgRepo.getRun(guildId, userId);
-      if (existingRun && parseRunState(existingRun.stateJson)) {
+      if (
+        existingRun &&
+        (parseRunState(existingRun.stateJson) || parseTabletopRunState(existingRun.stateJson))
+      ) {
         return { ok: false, reason: 'active_run_exists' };
       }
       if (existingRun) {
@@ -1436,7 +1822,9 @@ export class RpgService {
       }
       const run = parseRunState(record.stateJson);
       if (!run) {
-        this.rpgRepo.deleteRun(guildId, userId);
+        if (!parseTabletopRunState(record.stateJson)) {
+          this.rpgRepo.deleteRun(guildId, userId);
+        }
         return { ok: false, reason: 'no_active_run' };
       }
 
@@ -1589,6 +1977,22 @@ export class RpgService {
       userId,
       chapter: run.chapter,
       floor: run.floor,
+      stateJson: JSON.stringify(run),
+      updatedAt: nowMs,
+    });
+  }
+
+  private saveTabletopRunInTx(
+    guildId: string,
+    userId: string,
+    run: TabletopRunState,
+    nowMs: number,
+  ): void {
+    this.rpgRepo.upsertRun({
+      guildId,
+      userId,
+      chapter: run.chapter,
+      floor: run.act,
       stateJson: JSON.stringify(run),
       updatedAt: nowMs,
     });
