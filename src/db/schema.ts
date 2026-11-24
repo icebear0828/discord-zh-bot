@@ -2,9 +2,11 @@ import type Database from 'better-sqlite3';
 import { initAiSchema } from './repositories/aiMemoryRepo.js';
 import { initBlackjackSchema } from './repositories/blackjackRepo.js';
 import { initChaosSchema } from './repositories/chaosRepo.js';
+import { initCreditLoanSchema } from './repositories/creditLoanRepo.js';
 import { initDuelSchema } from './repositories/duelRepo.js';
 import { initMonitorSchema } from './repositories/monitorRepo.js';
 import { initRedPacketSchema } from './repositories/redPacketRepo.js';
+import { initRpgSchema } from './repositories/rpgRepo.js';
 import { initSocialPetSchema } from './repositories/socialPetRepo.js';
 import { initWorldEventSchema } from './repositories/worldEventRepo.js';
 
@@ -20,6 +22,8 @@ CREATE TABLE IF NOT EXISTS guild_configs (
   ticket_config_json TEXT NOT NULL,
   games_config_json TEXT NOT NULL DEFAULT '{}',
   ai_config_json TEXT NOT NULL DEFAULT '{}',
+  credit_loan_config_json TEXT NOT NULL DEFAULT '{}',
+  rpg_config_json TEXT NOT NULL DEFAULT '{}',
   updated_at INTEGER NOT NULL
 );
 
@@ -232,10 +236,14 @@ export function initSchema(db: Database.Database): void {
   initMonitorSchema(db);
   initBlackjackSchema(db);
   initDuelSchema(db);
+  initCreditLoanSchema(db);
+  initRpgSchema(db);
 
   ensureColumn(db, 'guild_configs', 'admin_user_ids_json', "TEXT NOT NULL DEFAULT '[]'");
   ensureColumn(db, 'guild_configs', 'games_config_json', "TEXT NOT NULL DEFAULT '{}'");
   ensureColumn(db, 'guild_configs', 'ai_config_json', "TEXT NOT NULL DEFAULT '{}'");
+  ensureColumn(db, 'guild_configs', 'credit_loan_config_json', "TEXT NOT NULL DEFAULT '{}'");
+  ensureColumn(db, 'guild_configs', 'rpg_config_json', "TEXT NOT NULL DEFAULT '{}'");
 
   ensureColumn(db, 'member_profiles', 'bank_coins', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn(db, 'member_profiles', 'last_bank_interest_date', 'TEXT');

@@ -54,6 +54,7 @@ export async function handleMultiplayerButton(
         expired: '这场决斗已超时过期。',
         challenger_insufficient_funds: '发起人当前口袋现金不足，无法完成结算。',
         opponent_insufficient_funds: `你的口袋现金不足以支付本次赌注（银行存款不参与决斗，请先从银行取出）。`,
+        deadbeat_blocked: '参与方存在逾期未还贷款（失信老赖限制），还清逾期欠款前禁止进行带赌注决斗！',
       };
 
       await interaction.reply({

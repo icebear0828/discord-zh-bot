@@ -154,7 +154,19 @@ function parseSocialAction(raw: string | undefined): InteractionAction {
 }
 
 function parseLeaderboardType(raw: string | undefined): LeaderboardType {
-  if (raw === 'coins' || raw === 'invites' || raw === 'stat') return raw;
+  if (
+    raw === 'coins' ||
+    raw === 'invites' ||
+    raw === 'stat' ||
+    raw === 'credit' ||
+    raw === 'deadbeat' ||
+    raw === 'hustle' ||
+    raw === 'gambling_profit' ||
+    raw === 'gambling_loss' ||
+    raw === 'rpg'
+  ) {
+    return raw;
+  }
   return 'xp';
 }
 
@@ -387,12 +399,13 @@ function runSlotsAction(
   const cfg = ctx.repos.guildConfig.getOrCreate(guildId).economy;
   const res = ctx.services.economy.playSlots(guildId, actor.id, bet);
   if (!res.ok) {
-    const text =
-      res.reason === 'insufficient_funds'
-        ? `口袋现金不足，无法下注 **${bet}** ${cfg.currencyName}。`
-        : '下注金额无效，请输入大于 0 的整数。';
+    const msgMap: Record<typeof res.reason, string> = {
+      invalid_bet: '下注金额无效，请输入大于 0 的整数。',
+      insufficient_funds: `口袋现金不足，无法下注 **${bet}** ${cfg.currencyName}。`,
+      deadbeat_blocked: '你当前有逾期未还贷款，已被列入失信名单，还清逾期欠款前禁止参与博弈！',
+    };
     return {
-      msg: buildMenuMessage(ctx, guildId, actor, { page: 'slots' }, { type: 'error', text }),
+      msg: buildMenuMessage(ctx, guildId, actor, { page: 'slots' }, { type: 'error', text: msgMap[res.reason] }),
     };
   }
 
@@ -438,12 +451,19 @@ function runDiceAction(
   const cfg = ctx.repos.guildConfig.getOrCreate(guildId).economy;
   const res = ctx.services.economy.playDice(guildId, actor.id, bet, choice);
   if (!res.ok) {
-    const text =
-      res.reason === 'insufficient_funds'
-        ? `口袋现金不足，无法下注 **${bet}** ${cfg.currencyName}。`
-        : '下注金额无效，请输入大于 0 的整数。';
+    const msgMap: Record<typeof res.reason, string> = {
+      invalid_bet: '下注金额无效，请输入大于 0 的整数。',
+      insufficient_funds: `口袋现金不足，无法下注 **${bet}** ${cfg.currencyName}。`,
+      deadbeat_blocked: '你当前有逾期未还贷款，已被列入失信名单，还清逾期欠款前禁止参与博弈！',
+    };
     return {
-      msg: buildMenuMessage(ctx, guildId, actor, { page: 'dice', choice }, { type: 'error', text }),
+      msg: buildMenuMessage(
+        ctx,
+        guildId,
+        actor,
+        { page: 'dice', choice },
+        { type: 'error', text: msgMap[res.reason] },
+      ),
     };
   }
 
@@ -489,6 +509,7 @@ function buildBlackjackResponse(
       game_already_active: '你还有一局未结束的二十一点，请先完成当前对局。',
       no_active_game: '当前没有进行中的牌局，请先下注开局。',
       cannot_double: '只能在首轮两张牌时双倍下注。',
+      deadbeat_blocked: '你当前有逾期未还贷款，已被列入失信名单，还清逾期欠款前禁止参与博弈！',
     };
     return {
       msg: buildMenuMessage(
@@ -895,6 +916,12 @@ export async function handleMenuButton(
       coins: { key: 'economy', name: '经济系统' },
       invites: { key: 'invites', name: '邀请追踪' },
       stat: { key: 'leveling', name: '等级与热度' },
+      credit: { key: 'creditLoan', name: '征信与借贷' },
+      deadbeat: { key: 'creditLoan', name: '征信与借贷' },
+      hustle: { key: 'creditLoan', name: '征信与借贷' },
+      gambling_profit: { key: 'creditLoan', name: '征信与借贷' },
+      gambling_loss: { key: 'creditLoan', name: '征信与借贷' },
+      rpg: { key: 'rpg', name: '奇幻RPG地牢' },
     };
     const mod = moduleMap[lbType];
     const disabledMsg = checkModuleDisabled(ctx, guildId, mod.key, mod.name);
@@ -925,6 +952,12 @@ export async function handleMenuButton(
       coins: `${fullCfg.economy.currencyName}富豪榜`,
       invites: '邀请贡献排行榜',
       stat: `${fullCfg.leveling.statName}排行榜`,
+      credit: '信用分红榜',
+      deadbeat: '失信老赖黑榜',
+      hustle: '下海捞金榜',
+      gambling_profit: '赌神盈利榜',
+      gambling_loss: '慈善赌圣亏损榜',
+      rpg: '奇幻RPG地牢榜',
     };
     const sent = await sendPublicBroadcast(interaction, {
       content: `🏆 <@${actor.id}> 查看了服务器「${lbNameMap[lbType]}」：`,
@@ -970,6 +1003,12 @@ export async function handleMenuButton(
         coins: { key: 'economy', name: '经济系统' },
         invites: { key: 'invites', name: '邀请追踪' },
         stat: { key: 'leveling', name: '等级与热度' },
+        credit: { key: 'creditLoan', name: '征信与借贷' },
+        deadbeat: { key: 'creditLoan', name: '征信与借贷' },
+        hustle: { key: 'creditLoan', name: '征信与借贷' },
+        gambling_profit: { key: 'creditLoan', name: '征信与借贷' },
+        gambling_loss: { key: 'creditLoan', name: '征信与借贷' },
+        rpg: { key: 'rpg', name: '奇幻RPG地牢' },
       };
       const mod = moduleMap[lbType];
       const disabledMsg = checkModuleDisabled(ctx, guildId, mod.key, mod.name);
@@ -992,6 +1031,12 @@ export async function handleMenuButton(
         coins: `${cfg.currencyName}富豪榜`,
         invites: '邀请贡献排行榜',
         stat: `${fullCfg.leveling.statName}排行榜`,
+        credit: '信用分红榜',
+        deadbeat: '失信老赖黑榜',
+        hustle: '下海捞金榜',
+        gambling_profit: '赌神盈利榜',
+        gambling_loss: '慈善赌圣亏损榜',
+        rpg: '奇幻RPG地牢榜',
       };
       const publicEmbed = buildPublicLeaderboardEmbed(ctx, guildId, lbType, lbPage);
       const sent = await sendPublicBroadcast(interaction, {
@@ -3036,6 +3081,7 @@ export async function handleMenuModal(
         self_target: '不能给自己转账。',
         invalid_amount: '转账金额无效。',
         insufficient_funds: `口袋现金不足，无法转出 **${amount}** ${cfg.currencyName}。`,
+        deadbeat_blocked: '你当前有逾期未还贷款，已被列入失信名单，还清逾期欠款前禁止转账！',
       };
       await respondFromModal(
         interaction,
@@ -3119,6 +3165,7 @@ export async function handleMenuModal(
         self_target: '不能向自己发起决斗！',
         invalid_bet: '决斗赌注必须在 1 ~ 1,000,000,000 之间。',
         insufficient_funds: `你的口袋现金不足以支付 **${amount}** ${cfg.currencyName} 赌注。`,
+        deadbeat_blocked: '你当前有逾期未还贷款，已被列入失信名单，还清逾期欠款前禁止参与带赌注决斗！',
       };
       await respondFromModal(
         interaction,

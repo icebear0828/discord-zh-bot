@@ -116,6 +116,7 @@ export async function handleSocialPetButton(
         challenger_no_pet: '挑战方的出战宠物已不在宠物屋，无法开战。',
         challenger_insufficient_funds: '发起人当前口袋现金不足支付赌注。',
         opponent_insufficient_funds: '你的口袋现金不足以支付本场赌注（银行存款不参与决斗）。',
+        deadbeat_blocked: '参与方存在逾期未还贷款（失信老赖限制），还清逾期欠款前禁止进行带赌注斗兽场！',
       };
       await interaction.reply({
         embeds: [createErrorEmbed('❌ 无法出战', msgMap[res.reason])],

@@ -54,6 +54,7 @@ export const payCommand: CommandDefinition = {
         self_target: '不能给自己转账。',
         invalid_amount: '转账金额必须大于 0。',
         insufficient_funds: `余额不足！无法转出 **${amount}** ${cfg.currencyName}。`,
+        deadbeat_blocked: '你当前有逾期未还贷款，已被列入失信名单，还清逾期欠款前禁止转账！',
       };
       await interaction.reply({
         embeds: [createErrorEmbed('❌ 转账失败', reasonMap[res.reason])],

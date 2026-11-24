@@ -40,7 +40,7 @@ describe('ChaosService (props, bounties, roulette, number bomb)', () => {
     expect(workRes.ok).toBe(true);
     if (workRes.ok) {
       expect(workRes.cursed).toBe(true);
-      expect(workRes.reward).toBeLessThanOrEqual(110); // half of [80, 220]
+      expect(workRes.reward).toBeLessThanOrEqual(2500); // half of [2000, 5000]
     }
     // Curse is single-use
     const workRes2 = economy.work('g1', 'victim', 5_000_000, () => 0.5);

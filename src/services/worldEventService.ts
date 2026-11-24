@@ -9,6 +9,7 @@ import type {
   WorldEventParticipant,
   WorldEventRepo,
 } from '../db/repositories/worldEventRepo.js';
+import type { CreditLoanService } from './creditLoanService.js';
 
 export interface PredictionOptionStat {
   index: number;
@@ -39,7 +40,8 @@ export type PlaceBetResult =
         | 'closed'
         | 'invalid_option'
         | 'invalid_amount'
-        | 'insufficient_funds';
+        | 'insufficient_funds'
+        | 'deadbeat_blocked';
     };
 
 export type LockPredictionResult =
@@ -144,6 +146,7 @@ export class WorldEventService {
     private readonly profileRepo: ProfileRepo,
     private readonly worldEventRepo: WorldEventRepo,
     private readonly socialPetRepo?: SocialPetRepo,
+    private readonly creditLoanService?: CreditLoanService,
   ) {}
 
   // Predictions
@@ -238,6 +241,9 @@ export class WorldEventService {
         input.optionIndex >= pred.options.length
       ) {
         return { ok: false, reason: 'invalid_option' };
+      }
+      if (this.creditLoanService?.isDeadbeatBlocked(pred.guildId, input.userId, nowMs).blocked) {
+        return { ok: false, reason: 'deadbeat_blocked' };
       }
 
       const profile = this.profileRepo.getOrCreate(pred.guildId, input.userId);
@@ -353,6 +359,23 @@ export class WorldEventService {
           if (entry.amount > 0) {
             this.profileRepo.addCoins(pred.guildId, entry.userId, entry.amount);
             payouts.push(entry);
+          }
+        }
+
+        if (this.creditLoanService) {
+          const payoutMap = new Map<string, number>();
+          for (const entry of payouts) {
+            payoutMap.set(entry.userId, (payoutMap.get(entry.userId) ?? 0) + entry.amount);
+          }
+          for (const [userId, stake] of stakesAll) {
+            const received = payoutMap.get(userId) ?? 0;
+            this.creditLoanService.recordGamblingResult(
+              pred.guildId,
+              userId,
+              stake,
+              received - stake,
+              nowMs,
+            );
           }
         }
       }

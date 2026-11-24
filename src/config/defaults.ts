@@ -1,3 +1,11 @@
+import {
+  DEFAULT_CREDIT_LOAN_CONFIG,
+  type CreditLoanConfig,
+} from '../services/creditLoanService.js';
+import { DEFAULT_RPG_CONFIG, type RpgConfig } from '../services/rpgService.js';
+
+export { DEFAULT_CREDIT_LOAN_CONFIG, DEFAULT_RPG_CONFIG, type CreditLoanConfig, type RpgConfig };
+
 export interface ModuleToggles {
   leveling: boolean;
   economy: boolean;
@@ -11,6 +19,8 @@ export interface ModuleToggles {
   worldEvents: boolean;
   petsAndCp: boolean;
   ai: boolean;
+  creditLoan: boolean;
+  rpg: boolean;
 }
 
 export type ModuleKey = keyof ModuleToggles;
@@ -141,6 +151,8 @@ export interface GuildConfig {
   ticket: TicketConfig;
   games: GamesConfig;
   ai: AiConfig;
+  creditLoan: CreditLoanConfig;
+  rpg: RpgConfig;
   updatedAt: number;
 }
 
@@ -157,6 +169,8 @@ export const DEFAULT_MODULES: ModuleToggles = {
   worldEvents: true,
   petsAndCp: true,
   ai: true,
+  creditLoan: true,
+  rpg: true,
 };
 
 export const DEFAULT_LEVELING_CONFIG: LevelingConfig = {
@@ -187,18 +201,18 @@ export const DEFAULT_LEVELING_CONFIG: LevelingConfig = {
 export const DEFAULT_ECONOMY_CONFIG: EconomyConfig = {
   currencyName: '星币',
   currencyEmoji: '🪙',
-  dailyBase: 200,
-  dailyStreakBonus: 30,
-  dailyMaxStreakBonus: 300,
-  workMin: 80,
-  workMax: 220,
+  dailyBase: 5000,
+  dailyStreakBonus: 1000,
+  dailyMaxStreakBonus: 10000,
+  workMin: 2000,
+  workMax: 5000,
   workCooldownSec: 1800,
   robCooldownSec: 3600,
   robTargetShieldSec: 3600,
   robSuccessRate: 0.45,
   robBankSuccessRate: 0.2,
   bankInterestRate: 0.02,
-  bankInterestMax: 500,
+  bankInterestMax: 10000,
   bankInterestMinDeposit: 100,
 };
 
@@ -370,6 +384,8 @@ export function createDefaultGuildConfig(guildId: string, nowMs = Date.now()): G
       allowedChannelIds: [],
       ignoredChannelIds: [],
     },
+    creditLoan: { ...DEFAULT_CREDIT_LOAN_CONFIG },
+    rpg: { ...DEFAULT_RPG_CONFIG },
     updatedAt: nowMs,
   };
 }

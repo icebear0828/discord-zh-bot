@@ -5,6 +5,7 @@ import type { ProfileRepo } from '../db/repositories/profileRepo.js';
 import type { InventoryItem, ShopItem, ShopRepo } from '../db/repositories/shopRepo.js';
 import type { SocialPetRepo } from '../db/repositories/socialPetRepo.js';
 import { PROP_CATALOG } from './chaosService.js';
+import { getCreditTier, type CreditLoanService } from './creditLoanService.js';
 import { getDateKey } from './economyService.js';
 import { applyPetXp } from './socialPetService.js';
 
@@ -53,6 +54,7 @@ export interface ShopServiceDeps {
   guildConfigRepo?: GuildConfigRepo;
   chaosRepo?: ChaosRepo;
   socialPetRepo?: SocialPetRepo;
+  creditLoanService?: CreditLoanService;
   timezone?: string;
 }
 
@@ -69,6 +71,7 @@ export type BuyResult =
   | {
       ok: true;
       item: ShopItem;
+      finalPrice: number;
       balance: number;
       grantRoleId: string | null;
       equippedTitle: string | null;
@@ -82,6 +85,7 @@ export type BuyResult =
       ok: false;
       reason: BuyFailureReason;
       dailyLimit?: number;
+      finalPrice?: number;
     };
 
 export type UseInventoryResult =
@@ -156,6 +160,7 @@ export class ShopService {
   private readonly guildConfigRepo?: GuildConfigRepo;
   private readonly chaosRepo?: ChaosRepo;
   private readonly socialPetRepo?: SocialPetRepo;
+  private readonly creditLoanService?: CreditLoanService;
   private readonly timezone: string;
 
   constructor(
@@ -167,7 +172,22 @@ export class ShopService {
     this.guildConfigRepo = deps.guildConfigRepo;
     this.chaosRepo = deps.chaosRepo;
     this.socialPetRepo = deps.socialPetRepo;
+    this.creditLoanService = deps.creditLoanService;
     this.timezone = deps.timezone ?? 'Asia/Shanghai';
+  }
+
+  private computeFinalPrice(
+    guildId: string,
+    userId: string,
+    basePrice: number,
+    nowMs: number,
+  ): number {
+    if (!this.creditLoanService || basePrice <= 0) {
+      return basePrice;
+    }
+    const creditProfile = this.creditLoanService.getCreditProfile(guildId, userId, nowMs);
+    const mult = getCreditTier(creditProfile.account.score).shopMult;
+    return Math.max(1, Math.round(basePrice * mult));
   }
 
   private getStatMeta(guildId: string): { statName: string; statUnit: string; currencyName: string } {
@@ -402,8 +422,9 @@ export class ShopService {
       }
 
       const profile = this.profileRepo.getOrCreate(guildId, userId);
-      if (profile.coins < item.price) {
-        return { ok: false, reason: 'insufficient_funds' };
+      const finalPrice = this.computeFinalPrice(guildId, userId, item.price, nowMs);
+      if (profile.coins < finalPrice) {
+        return { ok: false, reason: 'insufficient_funds', finalPrice };
       }
 
       if (item.type === 'title' && item.titleText) {
@@ -442,7 +463,7 @@ export class ShopService {
         }
 
         const nextStatValue = Math.max(0, profile.statValue + delta);
-        const nextCoins = profile.coins - item.price;
+        const nextCoins = profile.coins - finalPrice;
         const nextUsed = usedToday + 1;
 
         this.shopRepo.decrementStock(guildId, item.id);
@@ -457,6 +478,7 @@ export class ShopService {
         return {
           ok: true,
           item,
+          finalPrice,
           balance: nextCoins,
           grantRoleId: null,
           equippedTitle: null,
@@ -479,7 +501,7 @@ export class ShopService {
 
         const { petXp } = parsePetXpPayload(item.payloadJson);
         const applied = applyPetXp(activePet, petXp);
-        const nextCoins = profile.coins - item.price;
+        const nextCoins = profile.coins - finalPrice;
 
         this.shopRepo.decrementStock(guildId, item.id);
         this.profileRepo.save({ ...profile, coins: nextCoins });
@@ -488,6 +510,7 @@ export class ShopService {
         return {
           ok: true,
           item,
+          finalPrice,
           balance: nextCoins,
           grantRoleId: null,
           equippedTitle: null,
@@ -505,14 +528,14 @@ export class ShopService {
       if (item.type === 'mystery_box') {
         const meta = this.getStatMeta(guildId);
         this.shopRepo.decrementStock(guildId, item.id);
-        let nextCoins = profile.coins - item.price;
+        let nextCoins = profile.coins - finalPrice;
         let nextStat = profile.statValue;
         const roll = rng();
         let reward: MysteryBoxReward;
 
         if (roll < 0.03) {
           const mult = randomIntInclusive(3, 5, rng);
-          const prize = Math.max(100, item.price * mult);
+          const prize = Math.max(100, finalPrice * mult);
           nextCoins += prize;
           reward = {
             kind: 'coins_jackpot',
@@ -573,7 +596,7 @@ export class ShopService {
               summary: `🐾 出战宠物 **${applied.updatedPet.nickname}** 获得 **+${petXpGain} XP**${applied.levelsGained > 0 ? `（连升 ${applied.levelsGained} 级至 Lv.${applied.updatedPet.level}！）` : ''}！`,
             };
           } else {
-            const prize = Math.max(1, Math.floor(item.price * 0.7));
+            const prize = Math.max(1, Math.floor(finalPrice * 0.7));
             nextCoins += prize;
             reward = {
               kind: 'coins_refund',
@@ -594,7 +617,7 @@ export class ShopService {
           };
         } else {
           const ratio = 0.25 + rng() * 0.55;
-          const prize = Math.max(1, Math.floor(item.price * ratio));
+          const prize = Math.max(1, Math.floor(finalPrice * ratio));
           nextCoins += prize;
           reward = {
             kind: 'coins_refund',
@@ -613,6 +636,7 @@ export class ShopService {
         return {
           ok: true,
           item,
+          finalPrice,
           balance: nextCoins,
           grantRoleId: null,
           equippedTitle: null,
@@ -622,13 +646,14 @@ export class ShopService {
       }
 
       this.shopRepo.decrementStock(guildId, item.id);
-      const nextCoins = profile.coins - item.price;
+      const nextCoins = profile.coins - finalPrice;
 
       if (item.type === 'role') {
         this.profileRepo.save({ ...profile, coins: nextCoins });
         return {
           ok: true,
           item,
+          finalPrice,
           balance: nextCoins,
           grantRoleId: item.roleId,
           equippedTitle: null,
@@ -655,6 +680,7 @@ export class ShopService {
         return {
           ok: true,
           item,
+          finalPrice,
           balance: nextCoins,
           grantRoleId: null,
           equippedTitle: item.titleText,
@@ -676,6 +702,7 @@ export class ShopService {
         return {
           ok: true,
           item,
+          finalPrice,
           balance: nextCoins,
           grantRoleId: null,
           equippedTitle: null,
@@ -702,6 +729,7 @@ export class ShopService {
       return {
         ok: true,
         item,
+        finalPrice,
         balance: nextCoins,
         grantRoleId: null,
         equippedTitle: null,
@@ -732,8 +760,9 @@ export class ShopService {
       }
 
       const profile = this.profileRepo.getOrCreate(guildId, userId);
-      if (profile.coins < item.price) {
-        return { ok: false, reason: 'insufficient_funds' };
+      const finalPrice = this.computeFinalPrice(guildId, userId, item.price, nowMs);
+      if (profile.coins < finalPrice) {
+        return { ok: false, reason: 'insufficient_funds', finalPrice };
       }
 
       const owned = this.shopRepo.findInventoryByTypeAndName(guildId, userId, 'title', cleanTitle);
@@ -742,7 +771,7 @@ export class ShopService {
       }
 
       this.shopRepo.decrementStock(guildId, item.id);
-      const nextCoins = profile.coins - item.price;
+      const nextCoins = profile.coins - finalPrice;
       const payload: TitlePayload = { titleText: cleanTitle };
       const inv = this.shopRepo.addInventoryItem({
         guildId,
@@ -762,6 +791,7 @@ export class ShopService {
       return {
         ok: true,
         item,
+        finalPrice,
         balance: nextCoins,
         grantRoleId: null,
         equippedTitle: cleanTitle,

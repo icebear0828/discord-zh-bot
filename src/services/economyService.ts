@@ -2,6 +2,7 @@ import type Database from 'better-sqlite3';
 import type { ChaosRepo } from '../db/repositories/chaosRepo.js';
 import type { GuildConfigRepo } from '../db/repositories/guildConfigRepo.js';
 import type { ProfileRepo } from '../db/repositories/profileRepo.js';
+import { getCreditTier, type CreditLoanService } from './creditLoanService.js';
 
 export function getDateKey(nowMs: number, timezone: string): string {
   return new Intl.DateTimeFormat('en-CA', {
@@ -17,11 +18,26 @@ export function getPreviousDateKey(nowMs: number, timezone: string): string {
 }
 
 export type DailyResult =
-  | { ok: true; reward: number; streak: number; bonus: number; balance: number }
+  | {
+      ok: true;
+      reward: number;
+      streak: number;
+      bonus: number;
+      balance: number;
+      garnished?: number;
+    }
   | { ok: false; reason: 'already_claimed'; streak: number };
 
 export type WorkResult =
-  | { ok: true; reward: number; story: string; balance: number; cursed?: boolean }
+  | {
+      ok: true;
+      reward: number;
+      story: string;
+      balance: number;
+      cursed?: boolean;
+      garnished?: number;
+      creditMultiplier?: number;
+    }
   | { ok: false; reason: 'cooldown'; retryAfterSec: number };
 
 export type RobResult =
@@ -68,7 +84,10 @@ export type BankRobResult =
 
 export type TransferResult =
   | { ok: true; amount: number; fromBalance: number; toBalance: number }
-  | { ok: false; reason: 'self_target' | 'invalid_amount' | 'insufficient_funds' };
+  | {
+      ok: false;
+      reason: 'self_target' | 'invalid_amount' | 'insufficient_funds' | 'deadbeat_blocked';
+    };
 
 export type BankTransferResult =
   | { ok: true; amount: number; coins: number; bankCoins: number }
@@ -90,7 +109,7 @@ export type DiceResult =
       netChange: number;
       balance: number;
     }
-  | { ok: false; reason: 'invalid_bet' | 'insufficient_funds' };
+  | { ok: false; reason: 'invalid_bet' | 'insufficient_funds' | 'deadbeat_blocked' };
 
 export type SlotsResult =
   | {
@@ -101,7 +120,7 @@ export type SlotsResult =
       netChange: number;
       balance: number;
     }
-  | { ok: false; reason: 'invalid_bet' | 'insufficient_funds' };
+  | { ok: false; reason: 'invalid_bet' | 'insufficient_funds' | 'deadbeat_blocked' };
 
 const WORK_STORIES = [
   '帮管理员整理频道归档',
@@ -141,6 +160,7 @@ export class EconomyService {
     private readonly profileRepo: ProfileRepo,
     private readonly timezone = 'Asia/Shanghai',
     private readonly chaosRepo?: ChaosRepo,
+    private readonly creditLoanService?: CreditLoanService,
   ) {}
 
   claimDaily(guildId: string, userId: string, nowMs = Date.now()): DailyResult {
@@ -160,7 +180,21 @@ export class EconomyService {
         cfg.dailyMaxStreakBonus,
       );
       const reward = cfg.dailyBase + bonus;
-      const nextCoins = profile.coins + reward;
+      let garnished = 0;
+      let netReward = reward;
+      if (this.creditLoanService) {
+        this.creditLoanService.adjustCredit(guildId, userId, 3, '每日签到信用奖励', nowMs);
+        const garnishRes = this.creditLoanService.garnishIncomingCoins(
+          guildId,
+          userId,
+          reward,
+          'daily',
+          nowMs,
+        );
+        garnished = garnishRes.garnished;
+        netReward = garnishRes.netAmount;
+      }
+      const nextCoins = profile.coins + netReward;
 
       this.profileRepo.save({
         ...profile,
@@ -175,6 +209,7 @@ export class EconomyService {
         streak: nextStreak,
         bonus,
         balance: nextCoins,
+        ...(this.creditLoanService ? { garnished } : {}),
       };
     })();
   }
@@ -204,13 +239,30 @@ export class EconomyService {
       const baseReward = min + Math.floor(rng() * (max - min + 1));
       const cursedEffect = this.chaosRepo?.consumeEffect(guildId, userId, 'work_cursed', nowMs);
       const cursed = Boolean(cursedEffect);
-      const reward = cursed ? Math.max(1, Math.floor(baseReward * 0.5)) : baseReward;
+      let reward = cursed ? Math.max(1, Math.floor(baseReward * 0.5)) : baseReward;
+      let creditMultiplier: number | undefined;
+      let garnished = 0;
+      let netReward = reward;
+      if (this.creditLoanService) {
+        const creditProfile = this.creditLoanService.getCreditProfile(guildId, userId, nowMs);
+        creditMultiplier = getCreditTier(creditProfile.account.score).workMult;
+        reward = Math.max(1, Math.round(reward * creditMultiplier));
+        const garnishRes = this.creditLoanService.garnishIncomingCoins(
+          guildId,
+          userId,
+          reward,
+          'work',
+          nowMs,
+        );
+        garnished = garnishRes.garnished;
+        netReward = garnishRes.netAmount;
+      }
       const storyIndex = Math.min(
         WORK_STORIES.length - 1,
         Math.floor(rng() * WORK_STORIES.length),
       );
       const story = WORK_STORIES[storyIndex]!;
-      const nextCoins = profile.coins + reward;
+      const nextCoins = profile.coins + netReward;
 
       this.profileRepo.save({
         ...profile,
@@ -218,7 +270,14 @@ export class EconomyService {
         lastWorkAt: nowMs,
       });
 
-      return { ok: true, reward, story, balance: nextCoins, ...(cursed ? { cursed: true } : {}) };
+      return {
+        ok: true,
+        reward,
+        story,
+        balance: nextCoins,
+        ...(cursed ? { cursed: true } : {}),
+        ...(this.creditLoanService ? { garnished, creditMultiplier } : {}),
+      };
     })();
   }
 
@@ -280,6 +339,13 @@ export class EconomyService {
           ...target,
           coins: nextTarget,
         });
+        this.creditLoanService?.adjustCredit(
+          guildId,
+          attackerId,
+          -10,
+          '偷窃踩捕兽夹信用扣分',
+          nowMs,
+        );
 
         return {
           ok: true,
@@ -341,6 +407,7 @@ export class EconomyService {
         ...target,
         coins: nextTarget,
       });
+      this.creditLoanService?.adjustCredit(guildId, attackerId, -10, '偷窃失败信用扣分', nowMs);
 
       return {
         ok: true,
@@ -435,6 +502,13 @@ export class EconomyService {
           ...target,
           bankCoins: nextTargetBank,
         });
+        this.creditLoanService?.adjustCredit(
+          guildId,
+          attackerId,
+          -20,
+          '抢劫银行踩陷阱信用扣分',
+          nowMs,
+        );
 
         return {
           ok: true,
@@ -506,6 +580,13 @@ export class EconomyService {
         ...target,
         bankCoins: nextTargetBank,
       });
+      this.creditLoanService?.adjustCredit(
+        guildId,
+        attackerId,
+        -20,
+        '抢劫银行失败信用扣分',
+        nowMs,
+      );
 
       return {
         ok: true,
@@ -526,6 +607,7 @@ export class EconomyService {
     fromId: string,
     toId: string,
     amount: number,
+    nowMs = Date.now(),
   ): TransferResult {
     if (fromId === toId) {
       return { ok: false, reason: 'self_target' };
@@ -536,6 +618,9 @@ export class EconomyService {
     }
 
     return this.db.transaction((): TransferResult => {
+      if (this.creditLoanService?.isDeadbeatBlocked(guildId, fromId, nowMs).blocked) {
+        return { ok: false, reason: 'deadbeat_blocked' };
+      }
       const sender = this.profileRepo.getOrCreate(guildId, fromId);
       if (sender.coins < cleanAmount) {
         return { ok: false, reason: 'insufficient_funds' };
@@ -557,6 +642,7 @@ export class EconomyService {
     bet: number,
     choice: DiceChoice,
     rng: () => number = Math.random,
+    nowMs = Date.now(),
   ): DiceResult {
     const cleanBet = Math.floor(bet);
     if (!Number.isFinite(cleanBet) || cleanBet <= 0) {
@@ -564,6 +650,9 @@ export class EconomyService {
     }
 
     return this.db.transaction((): DiceResult => {
+      if (this.creditLoanService?.isDeadbeatBlocked(guildId, userId, nowMs).blocked) {
+        return { ok: false, reason: 'deadbeat_blocked' };
+      }
       const profile = this.profileRepo.getOrCreate(guildId, userId);
       if (profile.coins < cleanBet) {
         return { ok: false, reason: 'insufficient_funds' };
@@ -593,6 +682,7 @@ export class EconomyService {
 
       const balance = profile.coins + netChange;
       this.profileRepo.save({ ...profile, coins: balance });
+      this.creditLoanService?.recordGamblingResult(guildId, userId, cleanBet, netChange, nowMs);
 
       return { ok: true, dice, sum, isTriple, won, netChange, balance };
     })();
@@ -603,6 +693,7 @@ export class EconomyService {
     userId: string,
     bet: number,
     rng: () => number = Math.random,
+    nowMs = Date.now(),
   ): SlotsResult {
     const cleanBet = Math.floor(bet);
     if (!Number.isFinite(cleanBet) || cleanBet <= 0) {
@@ -610,6 +701,9 @@ export class EconomyService {
     }
 
     return this.db.transaction((): SlotsResult => {
+      if (this.creditLoanService?.isDeadbeatBlocked(guildId, userId, nowMs).blocked) {
+        return { ok: false, reason: 'deadbeat_blocked' };
+      }
       const profile = this.profileRepo.getOrCreate(guildId, userId);
       if (profile.coins < cleanBet) {
         return { ok: false, reason: 'insufficient_funds' };
@@ -637,6 +731,7 @@ export class EconomyService {
       const netChange = payout - cleanBet;
       const balance = profile.coins + netChange;
       this.profileRepo.save({ ...profile, coins: balance });
+      this.creditLoanService?.recordGamblingResult(guildId, userId, cleanBet, netChange, nowMs);
 
       return { ok: true, reels, multiplier, payout, netChange, balance };
     })();
@@ -667,9 +762,18 @@ export class EconomyService {
         };
       }
 
+      let interestCap = cfg.bankInterestMax;
+      if (this.creditLoanService) {
+        const creditProfile = this.creditLoanService.getCreditProfile(guildId, userId, nowMs);
+        interestCap = Math.max(
+          1,
+          Math.round(cfg.bankInterestMax * getCreditTier(creditProfile.account.score).bankInterestCapMult),
+        );
+      }
+
       const interest = Math.max(
         1,
-        Math.min(cfg.bankInterestMax, Math.floor(profile.bankCoins * cfg.bankInterestRate)),
+        Math.min(interestCap, Math.floor(profile.bankCoins * cfg.bankInterestRate)),
       );
       const bankCoins = profile.bankCoins + interest;
 

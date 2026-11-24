@@ -1,6 +1,8 @@
 import { MessageFlags, type ButtonInteraction } from 'discord.js';
-import { buildLeaderboardMessage } from '../commands/leveling/leaderboard.js';
-import type { LeaderboardType } from '../services/levelingService.js';
+import {
+  buildLeaderboardMessage,
+  parseLeaderboardType,
+} from '../commands/leveling/leaderboard.js';
 import { createErrorEmbed, type AppContext } from '../ui/embeds.js';
 
 export async function handleLeaderboardButton(
@@ -12,8 +14,7 @@ export async function handleLeaderboardButton(
   const parts = interaction.customId.split(':');
   const rawType = parts[1];
   const rawPage = Number(parts[2] ?? '1');
-  const type: LeaderboardType =
-    rawType === 'coins' || rawType === 'invites' || rawType === 'stat' ? rawType : 'xp';
+  const type = parseLeaderboardType(rawType);
   const page = Number.isFinite(rawPage) && rawPage >= 1 ? rawPage : 1;
 
   try {

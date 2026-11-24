@@ -98,6 +98,15 @@ describe('env & database schema', () => {
           'interaction_logs',
           'blackjack_games',
           'duel_challenges',
+          'credit_accounts',
+          'credit_logs',
+          'credit_reviews',
+          'loans',
+          'hustle_stats',
+          'gambling_stats',
+          'rpg_characters',
+          'rpg_items',
+          'rpg_runs',
         ]),
       );
 
@@ -278,13 +287,19 @@ describe('env & database schema', () => {
     expect(colNames).toContain('admin_user_ids_json');
     expect(colNames).toContain('games_config_json');
     expect(colNames).toContain('ai_config_json');
+    expect(colNames).toContain('credit_loan_config_json');
+    expect(colNames).toContain('rpg_config_json');
 
     const repo = new GuildConfigRepo(db);
     expect(repo.getOrCreate('g1').adminUserIds).toEqual([]);
     expect(repo.getOrCreate('g1').games.petGachaPrice).toBe(500);
     expect(repo.getOrCreate('g1').modules.socialGames).toBe(true);
     expect(repo.getOrCreate('g1').modules.ai).toBe(true);
+    expect(repo.getOrCreate('g1').modules.creditLoan).toBe(true);
+    expect(repo.getOrCreate('g1').modules.rpg).toBe(true);
     expect(repo.getOrCreate('g1').ai.preset).toBe('community');
+    expect(repo.getOrCreate('g1').creditLoan.garnishRate).toBe(0.5);
+    expect(repo.getOrCreate('g1').rpg.dailyStamina).toBe(5);
     repo.updateAdminUsers('g1', ['u100', 'u200']);
     expect(repo.getOrCreate('g1').adminUserIds).toEqual(['u100', 'u200']);
 

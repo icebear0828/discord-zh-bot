@@ -7,6 +7,7 @@ import type {
   RedPacketClaim,
   RedPacketRepo,
 } from '../db/repositories/redPacketRepo.js';
+import type { CreditLoanService } from './creditLoanService.js';
 
 export type CreateRedPacketResult =
   | { ok: true; packet: RedPacket; senderBalance: number }
@@ -27,6 +28,7 @@ export type ClaimRedPacketResult =
       packet: RedPacket;
       claims: RedPacketClaim[];
       bestLuckUserId: string | null;
+      garnished?: number;
     }
   | {
       ok: false;
@@ -60,7 +62,10 @@ export interface DuelChallenge {
 
 export type CreateDuelResult =
   | { ok: true; duel: DuelChallenge }
-  | { ok: false; reason: 'self_target' | 'invalid_bet' | 'insufficient_funds' };
+  | {
+      ok: false;
+      reason: 'self_target' | 'invalid_bet' | 'insufficient_funds' | 'deadbeat_blocked';
+    };
 
 export type AcceptDuelResult =
   | {
@@ -85,7 +90,8 @@ export type AcceptDuelResult =
         | 'already_resolved'
         | 'expired'
         | 'challenger_insufficient_funds'
-        | 'opponent_insufficient_funds';
+        | 'opponent_insufficient_funds'
+        | 'deadbeat_blocked';
     };
 
 export type DeclineDuelResult =
@@ -146,6 +152,7 @@ export class MultiplayerService {
     private readonly profileRepo: ProfileRepo,
     private readonly redPacketRepo: RedPacketRepo,
     private readonly chaosRepo?: ChaosRepo,
+    private readonly creditLoanService?: CreditLoanService,
   ) {}
 
   createRedPacket(input: {
@@ -333,7 +340,24 @@ export class MultiplayerService {
         share = 1 + Math.min(maxShare - 1, Math.max(0, Math.floor(rng() * maxShare)));
       }
 
-      const updatedClaimer = this.profileRepo.addCoins(packet.guildId, userId, share);
+      let garnished = 0;
+      let netShare = share;
+      if (this.creditLoanService) {
+        const garnishRes = this.creditLoanService.garnishIncomingCoins(
+          packet.guildId,
+          userId,
+          share,
+          'red_packet',
+          nowMs,
+        );
+        garnished = garnishRes.garnished;
+        netShare = garnishRes.netAmount;
+      }
+
+      const updatedClaimer =
+        netShare > 0
+          ? this.profileRepo.addCoins(packet.guildId, userId, netShare)
+          : this.profileRepo.getOrCreate(packet.guildId, userId);
       const updatedPacket = this.redPacketRepo.recordClaimAndDecrement(
         packetId,
         userId,
@@ -350,6 +374,7 @@ export class MultiplayerService {
         packet: updatedPacket,
         claims,
         bestLuckUserId,
+        ...(this.creditLoanService ? { garnished } : {}),
       };
     })();
   }
@@ -414,6 +439,9 @@ export class MultiplayerService {
     if (!Number.isInteger(bet) || bet <= 0 || bet > MAX_COIN_AMOUNT) {
       return { ok: false, reason: 'invalid_bet' };
     }
+    if (bet > 0 && this.creditLoanService?.isDeadbeatBlocked(guildId, challengerId, nowMs).blocked) {
+      return { ok: false, reason: 'deadbeat_blocked' };
+    }
 
     const challenger = this.profileRepo.getOrCreate(guildId, challengerId);
     if (challenger.coins < bet) {
@@ -464,6 +492,14 @@ export class MultiplayerService {
     }
 
     return this.db.transaction((): AcceptDuelResult => {
+      if (
+        duel.bet > 0 &&
+        (this.creditLoanService?.isDeadbeatBlocked(duel.guildId, acceptorId, nowMs).blocked ||
+          this.creditLoanService?.isDeadbeatBlocked(duel.guildId, duel.challengerId, nowMs).blocked)
+      ) {
+        return { ok: false, reason: 'deadbeat_blocked' };
+      }
+
       const challenger = this.profileRepo.getOrCreate(duel.guildId, duel.challengerId);
       if (challenger.coins < duel.bet) {
         return { ok: false, reason: 'challenger_insufficient_funds' };
@@ -507,6 +543,23 @@ export class MultiplayerService {
         opponentBalance = opponent.coins + duel.bet + bountyClaimed;
         this.profileRepo.save({ ...challenger, coins: challengerBalance });
         this.profileRepo.save({ ...opponent, coins: opponentBalance });
+      }
+
+      if (!tie && winnerId && loserId && duel.bet > 0) {
+        this.creditLoanService?.recordGamblingResult(
+          duel.guildId,
+          winnerId,
+          duel.bet,
+          duel.bet,
+          nowMs,
+        );
+        this.creditLoanService?.recordGamblingResult(
+          duel.guildId,
+          loserId,
+          duel.bet,
+          -duel.bet,
+          nowMs,
+        );
       }
 
       duel.status = 'completed';

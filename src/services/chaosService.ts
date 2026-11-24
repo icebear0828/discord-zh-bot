@@ -12,6 +12,7 @@ import type {
 } from '../db/repositories/chaosRepo.js';
 import type { GuildConfigRepo } from '../db/repositories/guildConfigRepo.js';
 import type { ProfileRepo } from '../db/repositories/profileRepo.js';
+import { getCreditTier, type CreditLoanService } from './creditLoanService.js';
 
 export interface PropDefinition {
   key: PropKey;
@@ -98,7 +99,10 @@ export type ClearBountyResult =
 
 export type CreateRouletteResult =
   | { ok: true; game: RouletteGame; hostBalance: number }
-  | { ok: false; reason: 'invalid_fee' | 'invalid_max_players' | 'insufficient_funds' };
+  | {
+      ok: false;
+      reason: 'invalid_fee' | 'invalid_max_players' | 'insufficient_funds' | 'deadbeat_blocked';
+    };
 
 export type JoinRouletteResult =
   | { ok: true; game: RouletteGame; balance: number }
@@ -109,7 +113,8 @@ export type JoinRouletteResult =
         | 'not_recruiting'
         | 'already_joined'
         | 'room_full'
-        | 'insufficient_funds';
+        | 'insufficient_funds'
+        | 'deadbeat_blocked';
     };
 
 export type LeaveRouletteResult =
@@ -148,7 +153,7 @@ export interface TimedOutRouletteUpdate {
 
 export type CreateBombResult =
   | { ok: true; game: NumberBombGame }
-  | { ok: false; reason: 'invalid_penalty' | 'insufficient_funds' };
+  | { ok: false; reason: 'invalid_penalty' | 'insufficient_funds' | 'deadbeat_blocked' };
 
 export interface BombPayout {
   userId: string;
@@ -172,7 +177,8 @@ export type GuessBombResult =
         | 'expired'
         | 'invalid_guess'
         | 'consecutive_guess'
-        | 'insufficient_funds';
+        | 'insufficient_funds'
+        | 'deadbeat_blocked';
       minBound?: number;
       maxBound?: number;
       penalty?: number;
@@ -202,6 +208,7 @@ export class ChaosService {
     private readonly configRepo: GuildConfigRepo,
     private readonly profileRepo: ProfileRepo,
     private readonly chaosRepo: ChaosRepo,
+    private readonly creditLoanService?: CreditLoanService,
   ) {}
 
   listUserProps(guildId: string, userId: string): UserPropRowData[] {
@@ -224,9 +231,19 @@ export class ChaosService {
     return this.chaosRepo.listActiveEffects(guildId, userId, nowMs);
   }
 
-  buyProp(guildId: string, userId: string, propKey: PropKey): BuyPropResult {
+  buyProp(
+    guildId: string,
+    userId: string,
+    propKey: PropKey,
+    nowMs = Date.now(),
+  ): BuyPropResult {
     const cfg = this.configRepo.getOrCreate(guildId).games;
-    const price = Math.max(0, Math.floor(getPropPrice(cfg, propKey)));
+    const basePrice = Math.max(0, Math.floor(getPropPrice(cfg, propKey)));
+    let price = basePrice;
+    if (this.creditLoanService && basePrice > 0) {
+      const creditProfile = this.creditLoanService.getCreditProfile(guildId, userId, nowMs);
+      price = Math.max(1, Math.round(basePrice * getCreditTier(creditProfile.account.score).shopMult));
+    }
     const prop = PROP_CATALOG[propKey];
 
     return this.db.transaction((): BuyPropResult => {
@@ -407,6 +424,9 @@ export class ChaosService {
     if (!Number.isFinite(maxPlayers) || maxPlayers < 2 || maxPlayers > 6) {
       return { ok: false, reason: 'invalid_max_players' };
     }
+    if (this.creditLoanService?.isDeadbeatBlocked(input.guildId, input.hostId, nowMs).blocked) {
+      return { ok: false, reason: 'deadbeat_blocked' };
+    }
 
     return this.db.transaction((): CreateRouletteResult => {
       const host = this.profileRepo.getOrCreate(input.guildId, input.hostId);
@@ -449,6 +469,9 @@ export class ChaosService {
       if (game.status !== 'recruiting') return { ok: false, reason: 'not_recruiting' };
       if (game.players.includes(userId)) return { ok: false, reason: 'already_joined' };
       if (game.players.length >= game.maxPlayers) return { ok: false, reason: 'room_full' };
+      if (this.creditLoanService?.isDeadbeatBlocked(game.guildId, userId, nowMs).blocked) {
+        return { ok: false, reason: 'deadbeat_blocked' };
+      }
 
       const profile = this.profileRepo.getOrCreate(game.guildId, userId);
       if (profile.coins < game.entryFee) {
@@ -601,6 +624,20 @@ export class ChaosService {
           const prizePool = game.entryFee * game.players.length;
           this.profileRepo.addCoins(game.guildId, winnerId, prizePool);
 
+          if (this.creditLoanService) {
+            for (const playerId of game.players) {
+              const netChange =
+                playerId === winnerId ? prizePool - game.entryFee : -game.entryFee;
+              this.creditLoanService.recordGamblingResult(
+                game.guildId,
+                playerId,
+                game.entryFee,
+                netChange,
+                nowMs,
+              );
+            }
+          }
+
           const updated: RouletteGame = {
             ...game,
             status: 'finished',
@@ -744,6 +781,9 @@ export class ChaosService {
     if (!Number.isFinite(penalty) || penalty < 100 || penalty > 1_000_000_000) {
       return { ok: false, reason: 'invalid_penalty' };
     }
+    if (this.creditLoanService?.isDeadbeatBlocked(input.guildId, input.hostId, nowMs).blocked) {
+      return { ok: false, reason: 'deadbeat_blocked' };
+    }
 
     const host = this.profileRepo.getOrCreate(input.guildId, input.hostId);
     if (host.coins < penalty) {
@@ -807,6 +847,9 @@ export class ChaosService {
       if (game.guesses.length > 0 && game.lastGuesserId === userId) {
         return { ok: false, reason: 'consecutive_guess' };
       }
+      if (this.creditLoanService?.isDeadbeatBlocked(game.guildId, userId, nowMs).blocked) {
+        return { ok: false, reason: 'deadbeat_blocked' };
+      }
 
       const player = this.profileRepo.getOrCreate(game.guildId, userId);
       if (player.coins < game.penalty) {
@@ -838,6 +881,25 @@ export class ChaosService {
         } else if (userId !== game.hostId && actualPenalty > 0) {
           this.profileRepo.addCoins(game.guildId, game.hostId, actualPenalty);
           payouts.push({ userId: game.hostId, amount: actualPenalty });
+        }
+
+        if (this.creditLoanService && actualPenalty > 0) {
+          this.creditLoanService.recordGamblingResult(
+            game.guildId,
+            userId,
+            actualPenalty,
+            -actualPenalty,
+            nowMs,
+          );
+          for (const payout of payouts) {
+            this.creditLoanService.recordGamblingResult(
+              game.guildId,
+              payout.userId,
+              game.penalty,
+              payout.amount,
+              nowMs,
+            );
+          }
         }
 
         const updated: NumberBombGame = {

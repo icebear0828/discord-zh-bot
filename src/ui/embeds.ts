@@ -14,8 +14,10 @@ import type { WorldEventRepo } from '../db/repositories/worldEventRepo.js';
 import type { SocialPetRepo } from '../db/repositories/socialPetRepo.js';
 import type { AiMemoryRepo } from '../db/repositories/aiMemoryRepo.js';
 import type { BlackjackRepo } from '../db/repositories/blackjackRepo.js';
+import type { CreditLoanRepo } from '../db/repositories/creditLoanRepo.js';
 import type { DuelRepo } from '../db/repositories/duelRepo.js';
 import type { MonitorRepo } from '../db/repositories/monitorRepo.js';
+import type { RpgRepo } from '../db/repositories/rpgRepo.js';
 import type { LevelingService } from '../services/levelingService.js';
 import type { EconomyService } from '../services/economyService.js';
 import type { BlackjackManager } from '../services/blackjackService.js';
@@ -30,6 +32,8 @@ import type { ChaosService } from '../services/chaosService.js';
 import type { WorldEventService } from '../services/worldEventService.js';
 import type { SocialPetService } from '../services/socialPetService.js';
 import type { AiService } from '../services/aiService.js';
+import type { CreditLoanService } from '../services/creditLoanService.js';
+import type { RpgService } from '../services/rpgService.js';
 
 export interface AppContext {
   db: Database.Database;
@@ -48,6 +52,8 @@ export interface AppContext {
     worldEvent: WorldEventRepo;
     socialPet: SocialPetRepo;
     aiMemory: AiMemoryRepo;
+    creditLoan: CreditLoanRepo;
+    rpg: RpgRepo;
     blackjack?: BlackjackRepo;
     duel?: DuelRepo;
     monitor?: MonitorRepo;
@@ -67,6 +73,8 @@ export interface AppContext {
     worldEvent: WorldEventService;
     socialPet: SocialPetService;
     ai: AiService;
+    creditLoan: CreditLoanService;
+    rpg: RpgService;
   };
 }
 

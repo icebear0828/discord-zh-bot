@@ -1149,6 +1149,12 @@ function createLeaderboardEmbedAndMeta(
     coins: `💰 服务器${cfg.currencyName}富豪榜`,
     invites: '📨 服务器邀请贡献排行榜',
     stat: `📏 服务器${lvlCfg.statName}排行榜`,
+    credit: '🏦 服务器信用分红榜',
+    deadbeat: '💀 服务器失信老赖黑榜',
+    hustle: '🪩 服务器下海捞金榜',
+    gambling_profit: '🎰 服务器赌神盈利榜',
+    gambling_loss: '🪦 服务器慈善赌圣亏损榜',
+    rpg: '⚔️ 服务器奇幻RPG地牢榜',
   };
 
   const lines = res.items.map((item, idx) => {
@@ -1164,6 +1170,22 @@ function createLeaderboardEmbedAndMeta(
     }
     if (lbType === 'stat') {
       return `${medal} <@${item.userId}> ${titleTag} — 📏 **${item.primaryValue}** ${lvlCfg.statUnit}（Lv.${item.secondaryValue}）`;
+    }
+    if (lbType === 'credit') {
+      return `${medal} <@${item.userId}> — 🏦 信用分 **${item.primaryValue}**`;
+    }
+    if (lbType === 'deadbeat') {
+      return `${medal} <@${item.userId}> — 💀 逾期欠款 **${item.primaryValue.toLocaleString()}** ${cfg.currencyName}（信用分 ${item.secondaryValue}）`;
+    }
+    if (lbType === 'hustle') {
+      return `${medal} <@${item.userId}> — 🪩 累计营收 **${item.primaryValue.toLocaleString()}** ${cfg.currencyName}（营业 ${item.secondaryValue} 次）`;
+    }
+    if (lbType === 'gambling_profit' || lbType === 'gambling_loss') {
+      const sign = item.primaryValue >= 0 ? '+' : '';
+      return `${medal} <@${item.userId}> — 🎰 净盈亏 **${sign}${item.primaryValue.toLocaleString()}** ${cfg.currencyName}（${item.secondaryValue} 局）`;
+    }
+    if (lbType === 'rpg') {
+      return `${medal} <@${item.userId}> — ⚔️ 已通第 **${item.primaryValue}** 章（Lv.${item.secondaryValue}）`;
     }
     return `${medal} <@${item.userId}> — 成功邀请 **${item.primaryValue}** 人`;
   });
@@ -1267,6 +1289,8 @@ const MODULE_META: ReadonlyArray<{ key: ModuleKey; label: string; emoji: string 
   { key: 'worldEvents', label: '吃瓜与事件', emoji: '🎯' },
   { key: 'petsAndCp', label: '关系与宠物', emoji: '💞' },
   { key: 'ai', label: 'AI 对话', emoji: '🤖' },
+  { key: 'creditLoan', label: '征信与借贷', emoji: '🏦' },
+  { key: 'rpg', label: '奇幻RPG地牢', emoji: '⚔️' },
 ];
 
 function buildAdminOverviewView(

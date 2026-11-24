@@ -391,6 +391,7 @@ function getLoanDebt(loan: Loan): number {
 
 export class CreditLoanService {
   private readonly config: CreditLoanConfig;
+  private readonly configOverrides?: Partial<CreditLoanConfig>;
 
   constructor(
     private readonly db: Database.Database,
@@ -401,13 +402,22 @@ export class CreditLoanService {
     private readonly chaosRepo?: ChaosRepo,
     configOverrides?: Partial<CreditLoanConfig>,
   ) {
+    this.configOverrides = configOverrides;
     this.config = {
       ...DEFAULT_CREDIT_LOAN_CONFIG,
       ...configOverrides,
     };
   }
 
-  getConfig(): CreditLoanConfig {
+  getConfig(guildId?: string): CreditLoanConfig {
+    if (guildId) {
+      const guildCfg = this.configRepo.getOrCreate(guildId).creditLoan;
+      return {
+        ...DEFAULT_CREDIT_LOAN_CONFIG,
+        ...guildCfg,
+        ...this.configOverrides,
+      };
+    }
     return { ...this.config };
   }
 
@@ -520,17 +530,18 @@ export class CreditLoanService {
       return { ok: false, reason: 'self_target' };
     }
 
+    const cfg = this.getConfig(guildId);
     const dateKey = getDateKey(nowMs, this.timezone);
-    const cooldownMs = this.config.reviewTargetCooldownSec * 1000;
-    const cap = this.config.reviewTargetDailyCap;
+    const cooldownMs = cfg.reviewTargetCooldownSec * 1000;
+    const cap = cfg.reviewTargetDailyCap;
 
     return this.db.transaction((): ReviewResult => {
       const usedToday = this.repo.countReviewsByReviewerOnDate(guildId, reviewerId, dateKey);
-      if (usedToday >= this.config.dailyReviewLimit) {
+      if (usedToday >= cfg.dailyReviewLimit) {
         return {
           ok: false,
           reason: 'daily_limit_reached',
-          dailyLimit: this.config.dailyReviewLimit,
+          dailyLimit: cfg.dailyReviewLimit,
         };
       }
 
@@ -593,7 +604,7 @@ export class CreditLoanService {
         delta: effectiveDelta,
         targetScore: adjusted.account.score,
         targetTier: adjusted.tier,
-        remainingReviewsToday: Math.max(0, this.config.dailyReviewLimit - (usedToday + 1)),
+        remainingReviewsToday: Math.max(0, cfg.dailyReviewLimit - (usedToday + 1)),
         targetIsOverdue: targetOverdue,
       };
     })();
@@ -634,16 +645,17 @@ export class CreditLoanService {
         return { ok: false, reason: 'active_bank_loan_exists' };
       }
 
-      const maxAmount = Math.min(tier.bankLoanMax, this.config.bankLoanMaxCap);
+      const cfg = this.getConfig(guildId);
+      const maxAmount = Math.min(tier.bankLoanMax, cfg.bankLoanMaxCap);
       if (
         !Number.isFinite(cleanAmount) ||
-        cleanAmount < this.config.bankLoanMin ||
+        cleanAmount < cfg.bankLoanMin ||
         cleanAmount > maxAmount
       ) {
         return {
           ok: false,
           reason: 'invalid_amount',
-          minAmount: this.config.bankLoanMin,
+          minAmount: cfg.bankLoanMin,
           maxAmount,
         };
       }
@@ -704,16 +716,17 @@ export class CreditLoanService {
         return { ok: false, reason: 'active_usury_loan_exists' };
       }
 
+      const cfg = this.getConfig(guildId);
       if (
         !Number.isFinite(cleanAmount) ||
-        cleanAmount < this.config.usuryLoanMin ||
-        cleanAmount > this.config.usuryLoanMax
+        cleanAmount < cfg.usuryLoanMin ||
+        cleanAmount > cfg.usuryLoanMax
       ) {
         return {
           ok: false,
           reason: 'invalid_amount',
-          minAmount: this.config.usuryLoanMin,
-          maxAmount: this.config.usuryLoanMax,
+          minAmount: cfg.usuryLoanMin,
+          maxAmount: cfg.usuryLoanMax,
         };
       }
 
@@ -724,10 +737,10 @@ export class CreditLoanService {
         userId,
         loanType: 'usury',
         principal: cleanAmount,
-        dailyRate: this.config.usuryDailyRate,
-        termDays: this.config.usuryTermDays,
+        dailyRate: cfg.usuryDailyRate,
+        termDays: cfg.usuryTermDays,
         createdAt: nowMs,
-        dueAt: nowMs + this.config.usuryTermDays * DAY_MS,
+        dueAt: nowMs + cfg.usuryTermDays * DAY_MS,
         lastAccrualDate: dateKey,
       });
 
@@ -897,9 +910,10 @@ export class CreditLoanService {
         };
       }
 
+      const cfg = this.getConfig(guildId);
       const targetGarnish = Math.min(
         status.totalOverdueDebt,
-        Math.floor(cleanGross * this.config.garnishRate),
+        Math.floor(cleanGross * cfg.garnishRate),
       );
       if (targetGarnish <= 0) {
         return {
@@ -1136,8 +1150,9 @@ export class CreditLoanService {
     nowMs = Date.now(),
     rng: () => number = Math.random,
   ): SellButtResult {
+    const cfg = this.getConfig(guildId);
     const ecoCfg = this.configRepo.getOrCreate(guildId).economy;
-    const cooldownMs = this.config.hustleCooldownSec * 1000;
+    const cooldownMs = cfg.hustleCooldownSec * 1000;
 
     return this.db.transaction((): SellButtResult => {
       const stats = this.repo.getOrCreateHustleStats(guildId, userId);
@@ -1152,8 +1167,8 @@ export class CreditLoanService {
 
       const workMin = Math.max(1, Math.min(ecoCfg.workMin, ecoCfg.workMax));
       const workMax = Math.max(workMin, Math.max(ecoCfg.workMin, ecoCfg.workMax));
-      const minReward = Math.max(1, Math.floor(workMin * this.config.hustleMinMultiplier));
-      const maxReward = Math.max(minReward, Math.floor(workMax * this.config.hustleMaxMultiplier));
+      const minReward = Math.max(1, Math.floor(workMin * cfg.hustleMinMultiplier));
+      const maxReward = Math.max(minReward, Math.floor(workMax * cfg.hustleMaxMultiplier));
       const baseReward = minReward + Math.floor(clampUnit(rng()) * (maxReward - minReward + 1));
 
       const eventRoll = clampUnit(rng());
@@ -1178,7 +1193,7 @@ export class CreditLoanService {
       const creditAdj = this.adjustCredit(
         guildId,
         userId,
-        -this.config.hustleCreditPenalty,
+        -cfg.hustleCreditPenalty,
         '下海营业信用扣分',
         nowMs,
       );

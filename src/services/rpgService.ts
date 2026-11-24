@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3';
+import type { GuildConfigRepo } from '../db/repositories/guildConfigRepo.js';
 import type { ProfileRepo } from '../db/repositories/profileRepo.js';
 import type {
   RpgCharacter,
@@ -689,6 +690,7 @@ export type ActInRunResult =
 export interface RpgServiceOptions {
   timezone?: string;
   config?: Partial<RpgConfig>;
+  guildConfigRepo?: GuildConfigRepo;
   socialPetRepo?: SocialPetRepo;
   onCoinsEarned?: (
     guildId: string,
@@ -871,7 +873,9 @@ function parseRunState(raw: string): RpgRunState | null {
 
 export class RpgService {
   private readonly config: RpgConfig;
+  private readonly configOverrides?: Partial<RpgConfig>;
   private readonly timezone: string;
+  private readonly guildConfigRepo?: GuildConfigRepo;
   private readonly socialPetRepo?: SocialPetRepo;
   private readonly onCoinsEarned?: RpgServiceOptions['onCoinsEarned'];
   private readonly onCreditChange?: RpgServiceOptions['onCreditChange'];
@@ -882,14 +886,24 @@ export class RpgService {
     private readonly profileRepo: ProfileRepo,
     options: RpgServiceOptions = {},
   ) {
+    this.configOverrides = options.config;
     this.config = { ...DEFAULT_RPG_CONFIG, ...options.config };
     this.timezone = options.timezone ?? 'Asia/Shanghai';
+    this.guildConfigRepo = options.guildConfigRepo;
     this.socialPetRepo = options.socialPetRepo;
     this.onCoinsEarned = options.onCoinsEarned;
     this.onCreditChange = options.onCreditChange;
   }
 
-  getConfig(): RpgConfig {
+  getConfig(guildId?: string): RpgConfig {
+    if (guildId && this.guildConfigRepo) {
+      const guildCfg = this.guildConfigRepo.getOrCreate(guildId).rpg;
+      return {
+        ...DEFAULT_RPG_CONFIG,
+        ...guildCfg,
+        ...this.configOverrides,
+      };
+    }
     return { ...this.config };
   }
 
@@ -914,6 +928,7 @@ export class RpgService {
         this.rpgRepo.deleteRun(guildId, userId);
       }
 
+      const cfg = this.getConfig(guildId);
       const today = getDateKey(nowMs, this.timezone);
       const existing = this.rpgRepo.getCharacter(guildId, userId);
 
@@ -923,7 +938,7 @@ export class RpgService {
           userId,
           classKey,
           classSelected: true,
-          stamina: this.config.dailyStamina,
+          stamina: cfg.dailyStamina,
           lastStaminaDate: today,
           updatedAt: nowMs,
         });
@@ -961,7 +976,7 @@ export class RpgService {
         return { ok: false, reason: 'same_class' };
       }
 
-      const cost = Math.max(0, Math.floor(this.config.classSwitchCost));
+      const cost = Math.max(0, Math.floor(cfg.classSwitchCost));
       const profile = this.profileRepo.getOrCreate(guildId, userId);
       if (profile.coins < cost) {
         return { ok: false, reason: 'insufficient_funds', cost };
@@ -996,13 +1011,14 @@ export class RpgService {
     nowMs = Date.now(),
   ): BuyStaminaPotionResult {
     return this.db.transaction((): BuyStaminaPotionResult => {
+      const cfg = this.getConfig(guildId);
       const character = this.getOrCreateCharacterInTx(guildId, userId, nowMs);
-      const dailyLimit = Math.max(0, Math.floor(this.config.staminaPotionDailyLimit));
+      const dailyLimit = Math.max(0, Math.floor(cfg.staminaPotionDailyLimit));
       if (character.staminaBuysToday >= dailyLimit) {
         return { ok: false, reason: 'daily_limit_reached', dailyLimit };
       }
 
-      const cost = Math.max(0, Math.floor(this.config.staminaPotionPrice));
+      const cost = Math.max(0, Math.floor(cfg.staminaPotionPrice));
       const profile = this.profileRepo.getOrCreate(guildId, userId);
       if (profile.coins < cost) {
         return { ok: false, reason: 'insufficient_funds', cost };
@@ -1318,6 +1334,7 @@ export class RpgService {
     userId: string,
     nowMs: number,
   ): RpgCharacter {
+    const cfg = this.getConfig(guildId);
     const today = getDateKey(nowMs, this.timezone);
     const existing = this.rpgRepo.getCharacter(guildId, userId);
     if (!existing) {
@@ -1326,7 +1343,7 @@ export class RpgService {
         userId,
         classKey: 'warrior',
         classSelected: false,
-        stamina: this.config.dailyStamina,
+        stamina: cfg.dailyStamina,
         lastStaminaDate: today,
         updatedAt: nowMs,
       });
@@ -1342,9 +1359,10 @@ export class RpgService {
     if (character.lastStaminaDate === today) {
       return character;
     }
+    const cfg = this.getConfig(character.guildId);
     const updated: RpgCharacter = {
       ...character,
-      stamina: Math.max(character.stamina, this.config.dailyStamina),
+      stamina: Math.max(character.stamina, cfg.dailyStamina),
       lastStaminaDate: today,
       staminaBuysToday: 0,
       updatedAt: nowMs,
@@ -2022,8 +2040,9 @@ export class RpgService {
     updatedCharacter: RpgCharacter;
     balance: number;
   } {
+    const cfg = this.getConfig(input.guildId);
     const currentItemCount = this.rpgRepo.countItems(input.guildId, input.userId);
-    const availableSlots = Math.max(0, this.config.bagCapacity - currentItemCount);
+    const availableSlots = Math.max(0, cfg.bagCapacity - currentItemCount);
 
     // Prioritize higher rarity items for bag slots; auto-salvage overflow
     const sortedPending = [...input.pendingItems].sort(

@@ -49,10 +49,14 @@ import { LevelingService } from '../../src/services/levelingService.js';
 import { LlmClient } from '../../src/services/llmClient.js';
 import { MultiplayerService } from '../../src/services/multiplayerService.js';
 import { RolePanelService } from '../../src/services/rolePanelService.js';
+import { RpgService } from '../../src/services/rpgService.js';
 import { ShopService } from '../../src/services/shopService.js';
 import { SocialPetService } from '../../src/services/socialPetService.js';
 import { TicketService } from '../../src/services/ticketService.js';
 import { WorldEventService } from '../../src/services/worldEventService.js';
+import { CreditLoanRepo } from '../../src/db/repositories/creditLoanRepo.js';
+import { RpgRepo } from '../../src/db/repositories/rpgRepo.js';
+import { CreditLoanService } from '../../src/services/creditLoanService.js';
 import type { AppContext } from '../../src/ui/embeds.js';
 
 interface MockPayload {
@@ -79,7 +83,29 @@ function createCtx(llmClient?: LlmClient): AppContext {
   const worldEvent = new WorldEventRepo(db);
   const socialPet = new SocialPetRepo(db);
   const aiMemory = new AiMemoryRepo(db);
+  const creditLoanRepo = new CreditLoanRepo(db);
+  const rpgRepo = new RpgRepo(db);
   const client = llmClient ?? new LlmClient(undefined);
+  const creditLoan = new CreditLoanService(
+    db,
+    guildConfig,
+    profile,
+    creditLoanRepo,
+    'Asia/Shanghai',
+    chaos,
+  );
+  const rpg = new RpgService(db, rpgRepo, profile, {
+    timezone: 'Asia/Shanghai',
+    guildConfigRepo: guildConfig,
+    socialPetRepo: socialPet,
+    onCoinsEarned: (gId, uId, gross, src, now) => {
+      const r = creditLoan.garnishIncomingCoins(gId, uId, gross, src, now);
+      return { garnished: r.garnished, net: r.netAmount };
+    },
+    onCreditChange: (gId, uId, delta, reason, now) => {
+      creditLoan.adjustCredit(gId, uId, delta, reason, now);
+    },
+  });
 
   return {
     db,
@@ -98,15 +124,18 @@ function createCtx(llmClient?: LlmClient): AppContext {
       worldEvent,
       socialPet,
       aiMemory,
+      creditLoan: creditLoanRepo,
+      rpg: rpgRepo,
     },
     services: {
-      leveling: new LevelingService(guildConfig, profile, invite),
-      economy: new EconomyService(db, guildConfig, profile, 'Asia/Shanghai', chaos),
-      blackjack: new BlackjackManager(db, profile),
+      leveling: new LevelingService(guildConfig, profile, invite, creditLoan, rpg),
+      economy: new EconomyService(db, guildConfig, profile, 'Asia/Shanghai', chaos, creditLoan),
+      blackjack: new BlackjackManager(db, profile, creditLoan),
       shop: new ShopService(db, profile, shop, {
         guildConfigRepo: guildConfig,
         chaosRepo: chaos,
         socialPetRepo: socialPet,
+        creditLoanService: creditLoan,
         timezone: 'Asia/Shanghai',
       }),
       fun: new FunService(db, profile, shop, fun, 'Asia/Shanghai'),
@@ -114,11 +143,21 @@ function createCtx(llmClient?: LlmClient): AppContext {
       giveaway: new GiveawayService(giveaway),
       invite: new InviteService(invite),
       rolePanel: new RolePanelService(rolePanel),
-      multiplayer: new MultiplayerService(db, profile, redPacket, chaos),
-      chaos: new ChaosService(db, guildConfig, profile, chaos),
-      worldEvent: new WorldEventService(db, guildConfig, profile, worldEvent, socialPet),
-      socialPet: new SocialPetService(db, guildConfig, profile, shop, socialPet, 'Asia/Shanghai'),
+      multiplayer: new MultiplayerService(db, profile, redPacket, chaos, creditLoan),
+      chaos: new ChaosService(db, guildConfig, profile, chaos, creditLoan),
+      worldEvent: new WorldEventService(db, guildConfig, profile, worldEvent, socialPet, creditLoan),
+      socialPet: new SocialPetService(
+        db,
+        guildConfig,
+        profile,
+        shop,
+        socialPet,
+        'Asia/Shanghai',
+        creditLoan,
+      ),
       ai: new AiService(guildConfig, aiMemory, client),
+      creditLoan,
+      rpg,
     },
   };
 }

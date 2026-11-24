@@ -1,6 +1,8 @@
 import type { GuildConfigRepo } from '../db/repositories/guildConfigRepo.js';
 import type { InviteRepo } from '../db/repositories/inviteRepo.js';
 import type { MemberProfile, ProfileRepo } from '../db/repositories/profileRepo.js';
+import type { CreditLoanService } from './creditLoanService.js';
+import type { RpgService } from './rpgService.js';
 
 export type XpSkipReason =
   | 'module_disabled'
@@ -44,7 +46,17 @@ export interface RankCardData {
   boostExpiresAt: number;
 }
 
-export type LeaderboardType = 'xp' | 'coins' | 'invites' | 'stat';
+export type LeaderboardType =
+  | 'xp'
+  | 'coins'
+  | 'invites'
+  | 'stat'
+  | 'credit'
+  | 'deadbeat'
+  | 'hustle'
+  | 'gambling_profit'
+  | 'gambling_loss'
+  | 'rpg';
 
 export interface LeaderboardEntry {
   userId: string;
@@ -193,6 +205,8 @@ export class LevelingService {
     private readonly configRepo: GuildConfigRepo,
     private readonly profileRepo: ProfileRepo,
     private readonly inviteRepo: InviteRepo,
+    private readonly creditLoanService?: CreditLoanService,
+    private readonly rpgService?: RpgService,
   ) {}
 
   awardMessageXp(
@@ -389,6 +403,109 @@ export class LevelingService {
           userId: row.inviterId,
           primaryValue: row.inviteCount,
           secondaryValue: 0,
+          equippedTitle: null,
+        })),
+      };
+    }
+
+    if (type === 'credit') {
+      const res = this.creditLoanService?.getCreditLeaderboard(guildId, pageSize, offset) ?? {
+        items: [],
+        total: 0,
+      };
+      const totalPages = Math.max(1, Math.ceil(res.total / pageSize));
+      return {
+        type,
+        page: Math.min(safePage, totalPages),
+        totalPages,
+        totalItems: res.total,
+        items: res.items.map((row) => ({
+          userId: row.userId,
+          primaryValue: row.score,
+          secondaryValue: 0,
+          equippedTitle: null,
+        })),
+      };
+    }
+
+    if (type === 'deadbeat') {
+      const res = this.creditLoanService?.getDeadbeatLeaderboard(guildId, pageSize, offset) ?? {
+        items: [],
+        total: 0,
+      };
+      const totalPages = Math.max(1, Math.ceil(res.total / pageSize));
+      return {
+        type,
+        page: Math.min(safePage, totalPages),
+        totalPages,
+        totalItems: res.total,
+        items: res.items.map((row) => ({
+          userId: row.userId,
+          primaryValue: row.totalOverdueDebt,
+          secondaryValue: row.score,
+          equippedTitle: null,
+        })),
+      };
+    }
+
+    if (type === 'hustle') {
+      const res = this.creditLoanService?.getHustleLeaderboard(guildId, pageSize, offset) ?? {
+        items: [],
+        total: 0,
+      };
+      const totalPages = Math.max(1, Math.ceil(res.total / pageSize));
+      return {
+        type,
+        page: Math.min(safePage, totalPages),
+        totalPages,
+        totalItems: res.total,
+        items: res.items.map((row) => ({
+          userId: row.userId,
+          primaryValue: row.totalEarned,
+          secondaryValue: row.totalCount,
+          equippedTitle: null,
+        })),
+      };
+    }
+
+    if (type === 'gambling_profit' || type === 'gambling_loss') {
+      const sort = type === 'gambling_profit' ? 'profit' : 'loss';
+      const res = this.creditLoanService?.getGamblingLeaderboard(
+        guildId,
+        sort,
+        pageSize,
+        offset,
+      ) ?? { items: [], total: 0 };
+      const totalPages = Math.max(1, Math.ceil(res.total / pageSize));
+      return {
+        type,
+        page: Math.min(safePage, totalPages),
+        totalPages,
+        totalItems: res.total,
+        items: res.items.map((row) => ({
+          userId: row.userId,
+          primaryValue: row.netProfit,
+          secondaryValue: row.gamesPlayed,
+          equippedTitle: null,
+        })),
+      };
+    }
+
+    if (type === 'rpg') {
+      const res = this.rpgService?.getLeaderboard(guildId, pageSize, offset) ?? {
+        items: [],
+        total: 0,
+      };
+      const totalPages = Math.max(1, Math.ceil(res.total / pageSize));
+      return {
+        type,
+        page: Math.min(safePage, totalPages),
+        totalPages,
+        totalItems: res.total,
+        items: res.items.map((row) => ({
+          userId: row.userId,
+          primaryValue: row.maxChapterCleared,
+          secondaryValue: row.level,
           equippedTitle: null,
         })),
       };

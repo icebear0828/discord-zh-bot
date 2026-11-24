@@ -376,6 +376,7 @@ export async function handleWorldEventModal(
       invalid_option: '选项无效。',
       invalid_amount: '下注金额无效。',
       insufficient_funds: `你的口袋现金不足以押注 **${amount}** ${cfg.economy.currencyName}。`,
+      deadbeat_blocked: '你当前有逾期未还贷款，已被列入失信名单，还清逾期欠款前禁止参与吃瓜押注！',
     };
     await interaction.reply({
       embeds: [createErrorEmbed('❌ 下注失败', msgMap[res.reason])],

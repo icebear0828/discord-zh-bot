@@ -150,6 +150,12 @@ async function launchRouletteRoom(
     maxPlayers,
   });
   if (!res.ok) {
+    if (res.reason === 'deadbeat_blocked') {
+      return {
+        type: 'error',
+        text: '你当前有逾期未还贷款，已被列入失信名单，还清逾期欠款前禁止开轮盘局！',
+      };
+    }
     if (res.reason === 'insufficient_funds') {
       return {
         type: 'error',
@@ -206,13 +212,13 @@ async function launchNumberBomb(
     penalty,
   });
   if (!res.ok) {
-    return {
-      type: 'error',
-      text:
-        res.reason === 'insufficient_funds'
+    const text =
+      res.reason === 'deadbeat_blocked'
+        ? '你当前有逾期未还贷款，已被列入失信名单，还清逾期欠款前禁止发起数字炸弹！'
+        : res.reason === 'insufficient_funds'
           ? `你自己的口袋现金需 >= **${penalty}** ${cfg.currencyName} 才能发起该档位数字炸弹。`
-          : '数字炸弹罚金必须在 100 ~ 1,000,000,000 之间。',
-    };
+          : '数字炸弹罚金必须在 100 ~ 1,000,000,000 之间。';
+    return { type: 'error', text };
   }
 
   const broadcast = await sendPublicBroadcast(interaction, {
@@ -746,9 +752,11 @@ export async function tryHandleGamesMenuButton(
       const res = ctx.services.socialPet.pullPetGacha(guildId, actor.id);
       if (!res.ok) {
         const text =
-          res.reason === 'max_owned_reached'
-            ? `宠物栏已满（上限 **${res.maxOwned}** 只），先放生不需要的宠物再来抽吧！`
-            : `口袋现金不足！盲盒抽宠需要 **${res.price}** ${cfg.currencyName}。`;
+          res.reason === 'deadbeat_blocked'
+            ? '你当前有逾期未还贷款，已被列入失信名单，还清逾期欠款前禁止盲盒抽宠！'
+            : res.reason === 'max_owned_reached'
+              ? `宠物栏已满（上限 **${res.maxOwned}** 只），先放生不需要的宠物再来抽吧！`
+              : `口袋现金不足！盲盒抽宠需要 **${res.price}** ${cfg.currencyName}。`;
         await interaction.update(
           buildMenuMessage(ctx, guildId, actor, { page: 'pets' }, { type: 'error', text }),
         );
@@ -1160,13 +1168,17 @@ export async function tryHandleGamesMenuStringSelect(
         ),
       );
     } else {
+      const text =
+        res.reason === 'deadbeat_blocked'
+          ? '你当前有逾期未还贷款，已被列入失信名单，还清逾期欠款前禁止参加轮盘！'
+          : '无法加入该轮盘房间（可能已满员、已开局或现金不足）。';
       await interaction.update(
         buildMenuMessage(
           ctx,
           guildId,
           actor,
           { page: 'roulette' },
-          { type: 'error', text: '无法加入该轮盘房间（可能已满员、已开局或现金不足）。' },
+          { type: 'error', text },
         ),
       );
     }
@@ -1875,6 +1887,7 @@ export async function tryHandleGamesMenuModal(
         invalid_guess: `请输入当前区间 **${res.minBound} ~ ${res.maxBound}** 之间的整数！`,
         consecutive_guess: '不能连续猜两次，等别人猜一次吧！',
         insufficient_funds: `现金不足 **${res.penalty}** ${cfg.currencyName}，无法参与抢猜。`,
+        deadbeat_blocked: '你当前有逾期未还贷款，已被列入失信名单，还清逾期欠款前禁止参与数字炸弹！',
       };
       await respondFromModal(
         interaction,
@@ -2038,6 +2051,7 @@ export async function tryHandleGamesMenuModal(
         invalid_option: '无效选项。',
         invalid_amount: '下注金额无效。',
         insufficient_funds: `口袋现金不足 **${amount}** ${cfg.currencyName}。`,
+        deadbeat_blocked: '你当前有逾期未还贷款，已被列入失信名单，还清逾期欠款前禁止参与吃瓜押注！',
       };
       await respondFromModal(
         interaction,
@@ -2145,6 +2159,7 @@ export async function tryHandleGamesMenuModal(
         invalid_bet: '赌注无效。',
         no_active_pet: '你还没有出战宠物，先抽一只吧！',
         insufficient_funds: `口袋现金不足 **${bet}** ${cfg.currencyName}。`,
+        deadbeat_blocked: '你当前有逾期未还贷款，已被列入失信名单，还清逾期欠款前禁止发起带赌注斗兽场！',
       };
       await respondFromModal(
         interaction,

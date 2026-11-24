@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3';
 import type { ProfileRepo } from '../db/repositories/profileRepo.js';
+import type { CreditLoanService } from './creditLoanService.js';
 
 export type Suit = '♠' | '♥' | '♦' | '♣';
 export type Rank = 'A' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' | '10' | 'J' | 'Q' | 'K';
@@ -46,7 +47,8 @@ export type BlackjackActionResult =
         | 'insufficient_funds'
         | 'game_already_active'
         | 'no_active_game'
-        | 'cannot_double';
+        | 'cannot_double'
+        | 'deadbeat_blocked';
     };
 
 const SUITS: readonly Suit[] = ['♠', '♥', '♦', '♣'];
@@ -106,6 +108,7 @@ export class BlackjackManager {
   constructor(
     private readonly db: Database.Database,
     private readonly profileRepo: ProfileRepo,
+    private readonly creditLoanService?: CreditLoanService,
   ) {}
 
   private key(guildId: string, userId: string): string {
@@ -121,10 +124,14 @@ export class BlackjackManager {
     userId: string,
     bet: number,
     deckFactory: () => Card[] = () => createShuffledDeck(),
+    nowMs = Date.now(),
   ): BlackjackActionResult {
     const cleanBet = Math.floor(bet);
     if (!Number.isFinite(cleanBet) || cleanBet <= 0) {
       return { ok: false, reason: 'invalid_bet' };
+    }
+    if (this.creditLoanService?.isDeadbeatBlocked(guildId, userId, nowMs).blocked) {
+      return { ok: false, reason: 'deadbeat_blocked' };
     }
     const k = this.key(guildId, userId);
     if (this.games.has(k)) {
@@ -178,6 +185,13 @@ export class BlackjackManager {
         if (game.payout > 0) {
           this.profileRepo.save({ ...profile, coins: finalBalance });
         }
+        this.creditLoanService?.recordGamblingResult(
+          guildId,
+          userId,
+          game.bet,
+          game.payout - game.bet,
+          nowMs,
+        );
         return { ok: true, game, balance: finalBalance };
       }
 
@@ -205,6 +219,7 @@ export class BlackjackManager {
       game.status = 'player_bust';
       game.payout = 0;
       this.games.delete(k);
+      this.creditLoanService?.recordGamblingResult(guildId, userId, game.bet, -game.bet, Date.now());
       const balance = this.profileRepo.getOrCreate(guildId, userId).coins;
       return { ok: true, game, balance };
     }
@@ -252,6 +267,7 @@ export class BlackjackManager {
       game.status = 'player_bust';
       game.payout = 0;
       this.games.delete(k);
+      this.creditLoanService?.recordGamblingResult(guildId, userId, game.bet, -game.bet, Date.now());
       const balance = this.profileRepo.getOrCreate(guildId, userId).coins;
       return { ok: true, game, balance };
     }
@@ -292,11 +308,18 @@ export class BlackjackManager {
     this.games.delete(k);
 
     const balance = this.db.transaction((): number => {
-      if (game.payout > 0) {
-        const updated = this.profileRepo.addCoins(guildId, userId, game.payout);
-        return updated.coins;
-      }
-      return this.profileRepo.getOrCreate(guildId, userId).coins;
+      const nextBalance =
+        game.payout > 0
+          ? this.profileRepo.addCoins(guildId, userId, game.payout).coins
+          : this.profileRepo.getOrCreate(guildId, userId).coins;
+      this.creditLoanService?.recordGamblingResult(
+        guildId,
+        userId,
+        game.bet,
+        game.payout - game.bet,
+        Date.now(),
+      );
+      return nextBalance;
     })();
 
     return { ok: true, game, balance };

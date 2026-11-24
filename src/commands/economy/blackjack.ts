@@ -129,6 +129,7 @@ export const blackjackCommand: CommandDefinition = {
         game_already_active: '你还有一局未结束的二十一点，请先完成当前对局！',
         no_active_game: '当前没有进行中的对局。',
         cannot_double: '当前无法双倍下注。',
+        deadbeat_blocked: '你当前有逾期未还贷款，已被列入失信名单，还清逾期欠款前禁止参与博弈！',
       };
       await interaction.reply({
         embeds: [createErrorEmbed('❌ 无法开局', msgMap[res.reason])],

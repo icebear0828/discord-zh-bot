@@ -34,15 +34,13 @@ export const slotsCommand: CommandDefinition = {
     const res = ctx.services.economy.playSlots(guildCtx.guildId, interaction.user.id, bet);
 
     if (!res.ok) {
+      const msgMap: Record<typeof res.reason, string> = {
+        invalid_bet: '下注金额无效。',
+        insufficient_funds: `你的 ${cfg.currencyName} 不足以支付 **${bet}** 下注。`,
+        deadbeat_blocked: '你当前有逾期未还贷款，已被列入失信名单，还清逾期欠款前禁止参与博弈！',
+      };
       await interaction.reply({
-        embeds: [
-          createErrorEmbed(
-            '❌ 下注失败',
-            res.reason === 'insufficient_funds'
-              ? `你的 ${cfg.currencyName} 不足以支付 **${bet}** 下注。`
-              : '下注金额无效。',
-          ),
-        ],
+        embeds: [createErrorEmbed('❌ 下注失败', msgMap[res.reason])],
       });
       return;
     }

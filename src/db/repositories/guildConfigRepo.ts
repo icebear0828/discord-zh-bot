@@ -2,18 +2,22 @@ import type Database from 'better-sqlite3';
 import {
   createDefaultGuildConfig,
   DEFAULT_AI_CONFIG,
+  DEFAULT_CREDIT_LOAN_CONFIG,
   DEFAULT_ECONOMY_CONFIG,
   DEFAULT_GAMES_CONFIG,
   DEFAULT_LEVELING_CONFIG,
   DEFAULT_MODULES,
+  DEFAULT_RPG_CONFIG,
   DEFAULT_TICKET_CONFIG,
   DEFAULT_WELCOME_CONFIG,
   type AiConfig,
+  type CreditLoanConfig,
   type EconomyConfig,
   type GamesConfig,
   type GuildConfig,
   type LevelingConfig,
   type ModuleToggles,
+  type RpgConfig,
   type TicketConfig,
   type WelcomeConfig,
 } from '../../config/defaults.js';
@@ -29,6 +33,8 @@ interface GuildConfigRow {
   ticket_config_json: string;
   games_config_json?: string;
   ai_config_json?: string;
+  credit_loan_config_json?: string;
+  rpg_config_json?: string;
   updated_at: number;
 }
 
@@ -68,6 +74,25 @@ export class GuildConfigRepo {
         ignoredChannelIds: [],
         channelMultipliers: {},
       });
+      let economy = parseRecord<EconomyConfig>(row.economy_config_json, {
+        ...DEFAULT_ECONOMY_CONFIG,
+      });
+      if (economy.dailyBase <= 500 && economy.workMax <= 500) {
+        economy = {
+          ...economy,
+          dailyBase: 5000,
+          dailyStreakBonus: 1000,
+          dailyMaxStreakBonus: 10000,
+          workMin: 2000,
+          workMax: 5000,
+          bankInterestMax: Math.max(economy.bankInterestMax, 10000),
+        };
+        this.db
+          .prepare(
+            'UPDATE guild_configs SET economy_config_json = ?, updated_at = ? WHERE guild_id = ?',
+          )
+          .run(JSON.stringify(economy), Date.now(), row.guild_id);
+      }
       return {
         guildId: row.guild_id,
         modules: parseRecord<ModuleToggles>(row.modules_json, { ...DEFAULT_MODULES }),
@@ -87,9 +112,7 @@ export class GuildConfigRepo {
               ? levelingRaw.channelMultipliers
               : {},
         },
-        economy: parseRecord<EconomyConfig>(row.economy_config_json, {
-          ...DEFAULT_ECONOMY_CONFIG,
-        }),
+        economy,
         welcome: parseRecord<WelcomeConfig>(row.welcome_config_json, {
           ...DEFAULT_WELCOME_CONFIG,
           autoRoleIds: [],
@@ -121,6 +144,12 @@ export class GuildConfigRepo {
               : [],
           };
         })(),
+        creditLoan: parseRecord<CreditLoanConfig>(row.credit_loan_config_json ?? '{}', {
+          ...DEFAULT_CREDIT_LOAN_CONFIG,
+        }),
+        rpg: parseRecord<RpgConfig>(row.rpg_config_json ?? '{}', {
+          ...DEFAULT_RPG_CONFIG,
+        }),
         updatedAt: row.updated_at,
       };
     }
@@ -131,8 +160,9 @@ export class GuildConfigRepo {
         `INSERT INTO guild_configs (
           guild_id, modules_json, admin_role_ids_json, admin_user_ids_json,
           leveling_config_json, economy_config_json,
-          welcome_config_json, ticket_config_json, games_config_json, ai_config_json, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          welcome_config_json, ticket_config_json, games_config_json, ai_config_json,
+          credit_loan_config_json, rpg_config_json, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         created.guildId,
@@ -145,6 +175,8 @@ export class GuildConfigRepo {
         JSON.stringify(created.ticket),
         JSON.stringify(created.games),
         JSON.stringify(created.ai),
+        JSON.stringify(created.creditLoan),
+        JSON.stringify(created.rpg),
         created.updatedAt,
       );
     return created;
@@ -227,6 +259,24 @@ export class GuildConfigRepo {
         'UPDATE guild_configs SET ai_config_json = ?, updated_at = ? WHERE guild_id = ?',
       )
       .run(JSON.stringify(ai), Date.now(), guildId);
+  }
+
+  updateCreditLoan(guildId: string, creditLoan: CreditLoanConfig): void {
+    this.getOrCreate(guildId);
+    this.db
+      .prepare(
+        'UPDATE guild_configs SET credit_loan_config_json = ?, updated_at = ? WHERE guild_id = ?',
+      )
+      .run(JSON.stringify(creditLoan), Date.now(), guildId);
+  }
+
+  updateRpg(guildId: string, rpg: RpgConfig): void {
+    this.getOrCreate(guildId);
+    this.db
+      .prepare(
+        'UPDATE guild_configs SET rpg_config_json = ?, updated_at = ? WHERE guild_id = ?',
+      )
+      .run(JSON.stringify(rpg), Date.now(), guildId);
   }
 
   incrementTicketCounter(guildId: string): number {

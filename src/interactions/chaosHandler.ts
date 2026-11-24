@@ -86,6 +86,7 @@ export async function handleChaosButton(
         already_joined: '你已经在这桌牌局里啦！',
         room_full: '桌位已满！',
         insufficient_funds: '你的口袋现金不足以支付本桌入场费。',
+        deadbeat_blocked: '你当前有逾期未还贷款，已被列入失信名单，还清逾期欠款前禁止参加轮盘！',
       };
       await interaction.reply({
         embeds: [createErrorEmbed('❌ 无法上桌', msgMap[res.reason])],
@@ -304,6 +305,7 @@ export async function handleChaosModal(
       invalid_guess: `请输入当前区间 **${res.minBound} ~ ${res.maxBound}** 之间的整数！`,
       consecutive_guess: '规则规定不能连续猜两次，等别人先猜一次吧！',
       insufficient_funds: `你的口袋现金不足 **${res.penalty}** ${cfg.economy.currencyName}，无法参与抢猜（防白嫖）！`,
+      deadbeat_blocked: '你当前有逾期未还贷款，已被列入失信名单，还清逾期欠款前禁止参与数字炸弹！',
     };
     await interaction.reply({
       embeds: [createErrorEmbed('❌ 无法猜数', msgMap[res.reason])],

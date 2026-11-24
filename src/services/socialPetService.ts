@@ -11,6 +11,7 @@ import type {
   SocialPetRepo,
   UserPet,
 } from '../db/repositories/socialPetRepo.js';
+import type { CreditLoanService } from './creditLoanService.js';
 import { getDateKey } from './economyService.js';
 
 export interface PetSpecies {
@@ -250,7 +251,12 @@ export type PullPetGachaResult =
       balance: number;
       isHighRarity: boolean;
     }
-  | { ok: false; reason: 'max_owned_reached' | 'insufficient_funds'; price?: number; maxOwned?: number };
+  | {
+      ok: false;
+      reason: 'max_owned_reached' | 'insufficient_funds' | 'deadbeat_blocked';
+      price?: number;
+      maxOwned?: number;
+    };
 
 export type PetFeedResult =
   | { ok: true; pet: UserPet; cost: number; balance: number; leveledUp: boolean }
@@ -274,7 +280,15 @@ export type PetReleaseResult =
 
 export type CreatePetBattleResult =
   | { ok: true; battle: PetBattle; challengerPet: UserPet }
-  | { ok: false; reason: 'self_target' | 'invalid_bet' | 'no_active_pet' | 'insufficient_funds' };
+  | {
+      ok: false;
+      reason:
+        | 'self_target'
+        | 'invalid_bet'
+        | 'no_active_pet'
+        | 'insufficient_funds'
+        | 'deadbeat_blocked';
+    };
 
 export type AcceptPetBattleResult =
   | {
@@ -300,7 +314,8 @@ export type AcceptPetBattleResult =
         | 'no_active_pet'
         | 'challenger_no_pet'
         | 'challenger_insufficient_funds'
-        | 'opponent_insufficient_funds';
+        | 'opponent_insufficient_funds'
+        | 'deadbeat_blocked';
     };
 
 export type DeclinePetBattleResult =
@@ -315,6 +330,7 @@ export class SocialPetService {
     private readonly shopRepo: ShopRepo,
     private readonly socialPetRepo: SocialPetRepo,
     private readonly timezone = 'Asia/Shanghai',
+    private readonly creditLoanService?: CreditLoanService,
   ) {}
 
   // Relationships
@@ -626,6 +642,9 @@ export class SocialPetService {
     const maxOwned = Math.max(1, cfg.petMaxOwned);
 
     return this.db.transaction((): PullPetGachaResult => {
+      if (this.creditLoanService?.isDeadbeatBlocked(guildId, ownerId, nowMs).blocked) {
+        return { ok: false, reason: 'deadbeat_blocked' };
+      }
       const owned = this.socialPetRepo.listUserPets(guildId, ownerId);
       if (owned.length >= maxOwned) {
         return { ok: false, reason: 'max_owned_reached', maxOwned };
@@ -864,6 +883,9 @@ export class SocialPetService {
       return { ok: false, reason: 'invalid_bet' };
     }
     const nowMs = input.nowMs ?? Date.now();
+    if (bet > 0 && this.creditLoanService?.isDeadbeatBlocked(input.guildId, input.challengerId, nowMs).blocked) {
+      return { ok: false, reason: 'deadbeat_blocked' };
+    }
 
     const activePet = this.socialPetRepo.getActivePet(input.guildId, input.challengerId);
     if (!activePet) {
@@ -910,6 +932,13 @@ export class SocialPetService {
       if (battle.opponentId && acceptorId !== battle.opponentId) {
         return { ok: false, reason: 'not_opponent' };
       }
+      if (
+        battle.bet > 0 &&
+        (this.creditLoanService?.isDeadbeatBlocked(battle.guildId, acceptorId, nowMs).blocked ||
+          this.creditLoanService?.isDeadbeatBlocked(battle.guildId, battle.challengerId, nowMs).blocked)
+      ) {
+        return { ok: false, reason: 'deadbeat_blocked' };
+      }
 
       const challengerPet = this.socialPetRepo.getPetById(battle.challengerPetId);
       if (!challengerPet || challengerPet.ownerId !== battle.challengerId) {
@@ -941,6 +970,20 @@ export class SocialPetService {
       if (battle.bet > 0) {
         this.profileRepo.save({ ...challengerProfile, coins: challengerBalance });
         this.profileRepo.save({ ...opponentProfile, coins: opponentBalance });
+        this.creditLoanService?.recordGamblingResult(
+          battle.guildId,
+          winnerId,
+          battle.bet,
+          battle.bet,
+          nowMs,
+        );
+        this.creditLoanService?.recordGamblingResult(
+          battle.guildId,
+          loserId,
+          battle.bet,
+          -battle.bet,
+          nowMs,
+        );
       }
 
       const cXp = challengerWon ? 30 : 12;

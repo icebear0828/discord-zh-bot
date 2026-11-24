@@ -22,7 +22,7 @@ describe('economyService', () => {
     expect(c1.ok).toBe(true);
     if (c1.ok) {
       expect(c1.streak).toBe(1);
-      expect(c1.reward).toBe(200);
+      expect(c1.reward).toBe(5000);
     }
 
     // Same day fails
@@ -35,7 +35,7 @@ describe('economyService', () => {
     expect(c2.ok).toBe(true);
     if (c2.ok) {
       expect(c2.streak).toBe(2);
-      expect(c2.reward).toBe(230);
+      expect(c2.reward).toBe(6000);
     }
 
     // Skipped day resets streak to 1
@@ -44,7 +44,7 @@ describe('economyService', () => {
     expect(c4.ok).toBe(true);
     if (c4.ok) {
       expect(c4.streak).toBe(1);
-      expect(c4.reward).toBe(200);
+      expect(c4.reward).toBe(5000);
     }
 
     db.close();
@@ -165,27 +165,27 @@ describe('economyService', () => {
     const i2 = svc.claimBankInterest('g1', 'u1', day2);
     expect(i2).toEqual({ ok: true, interest: 10, bankCoins: 520 });
 
-    // Interest cap at bankInterestMax (500)
+    // Interest cap at bankInterestMax (10000)
     const p = profileRepo.getOrCreate('g1', 'u1');
-    profileRepo.save({ ...p, bankCoins: 100_000 });
+    profileRepo.save({ ...p, bankCoins: 1_000_000 });
     const day3 = day2 + 24 * 3600_000;
     const iCapped = svc.claimBankInterest('g1', 'u1', day3);
-    expect(iCapped).toEqual({ ok: true, interest: 500, bankCoins: 100_500 });
+    expect(iCapped).toEqual({ ok: true, interest: 10_000, bankCoins: 1_010_000 });
 
     // Withdraw validation and execution
     expect(svc.withdraw('g1', 'u1', 0)).toEqual({ ok: false, reason: 'invalid_amount' });
     expect(svc.withdraw('g1', 'u1', -5)).toEqual({ ok: false, reason: 'invalid_amount' });
-    expect(svc.withdraw('g1', 'u1', 100_501)).toEqual({
+    expect(svc.withdraw('g1', 'u1', 1_010_001)).toEqual({
       ok: false,
       reason: 'insufficient_funds',
     });
 
-    const w1 = svc.withdraw('g1', 'u1', 500);
-    expect(w1).toEqual({ ok: true, amount: 500, coins: 500, bankCoins: 100_000 });
+    const w1 = svc.withdraw('g1', 'u1', 10_000);
+    expect(w1).toEqual({ ok: true, amount: 10_000, coins: 10_000, bankCoins: 1_000_000 });
 
     const persisted = profileRepo.getOrCreate('g1', 'u1');
-    expect(persisted.coins).toBe(500);
-    expect(persisted.bankCoins).toBe(100_000);
+    expect(persisted.coins).toBe(10_000);
+    expect(persisted.bankCoins).toBe(1_000_000);
 
     db.close();
   });

@@ -15,8 +15,10 @@ import { WorldEventRepo } from './db/repositories/worldEventRepo.js';
 import { SocialPetRepo } from './db/repositories/socialPetRepo.js';
 import { AiMemoryRepo } from './db/repositories/aiMemoryRepo.js';
 import { BlackjackRepo } from './db/repositories/blackjackRepo.js';
+import { CreditLoanRepo } from './db/repositories/creditLoanRepo.js';
 import { DuelRepo } from './db/repositories/duelRepo.js';
 import { MonitorRepo } from './db/repositories/monitorRepo.js';
+import { RpgRepo } from './db/repositories/rpgRepo.js';
 import { LevelingService } from './services/levelingService.js';
 import { EconomyService } from './services/economyService.js';
 import { BlackjackManager } from './services/blackjackService.js';
@@ -32,6 +34,8 @@ import { WorldEventService } from './services/worldEventService.js';
 import { SocialPetService } from './services/socialPetService.js';
 import { LlmClient } from './services/llmClient.js';
 import { AiService } from './services/aiService.js';
+import { CreditLoanService } from './services/creditLoanService.js';
+import { RpgService } from './services/rpgService.js';
 import type { AppContext } from './ui/embeds.js';
 import { registerReadyEvent } from './events/ready.js';
 import { registerMessageCreateEvent } from './events/messageCreate.js';
@@ -60,7 +64,36 @@ function main(): void {
   const blackjackRepo = new BlackjackRepo(db);
   const duelRepo = new DuelRepo(db);
   const monitorRepo = new MonitorRepo(db);
+  const creditLoanRepo = new CreditLoanRepo(db);
+  const rpgRepo = new RpgRepo(db);
   const llmClient = new LlmClient(env.llm);
+
+  const creditLoanService = new CreditLoanService(
+    db,
+    guildConfigRepo,
+    profileRepo,
+    creditLoanRepo,
+    env.timezone,
+    chaosRepo,
+  );
+  const rpgService = new RpgService(db, rpgRepo, profileRepo, {
+    timezone: env.timezone,
+    guildConfigRepo,
+    socialPetRepo,
+    onCoinsEarned: (guildId, userId, grossCoins, source, nowMs) => {
+      const res = creditLoanService.garnishIncomingCoins(
+        guildId,
+        userId,
+        grossCoins,
+        source,
+        nowMs,
+      );
+      return { garnished: res.garnished, net: res.netAmount };
+    },
+    onCreditChange: (guildId, userId, delta, reason, nowMs) => {
+      creditLoanService.adjustCredit(guildId, userId, delta, reason, nowMs);
+    },
+  });
 
   const ctx: AppContext = {
     db,
@@ -79,18 +112,34 @@ function main(): void {
       worldEvent: worldEventRepo,
       socialPet: socialPetRepo,
       aiMemory: aiMemoryRepo,
+      creditLoan: creditLoanRepo,
+      rpg: rpgRepo,
       blackjack: blackjackRepo,
       duel: duelRepo,
       monitor: monitorRepo,
     },
     services: {
-      leveling: new LevelingService(guildConfigRepo, profileRepo, inviteRepo),
-      economy: new EconomyService(db, guildConfigRepo, profileRepo, env.timezone, chaosRepo),
-      blackjack: new BlackjackManager(db, profileRepo),
+      leveling: new LevelingService(
+        guildConfigRepo,
+        profileRepo,
+        inviteRepo,
+        creditLoanService,
+        rpgService,
+      ),
+      economy: new EconomyService(
+        db,
+        guildConfigRepo,
+        profileRepo,
+        env.timezone,
+        chaosRepo,
+        creditLoanService,
+      ),
+      blackjack: new BlackjackManager(db, profileRepo, creditLoanService),
       shop: new ShopService(db, profileRepo, shopRepo, {
         guildConfigRepo,
         chaosRepo,
         socialPetRepo,
+        creditLoanService,
         timezone: env.timezone,
       }),
       fun: new FunService(db, profileRepo, shopRepo, funRepo, env.timezone),
@@ -98,14 +147,21 @@ function main(): void {
       giveaway: new GiveawayService(giveawayRepo),
       invite: new InviteService(inviteRepo),
       rolePanel: new RolePanelService(rolePanelRepo),
-      multiplayer: new MultiplayerService(db, profileRepo, redPacketRepo, chaosRepo),
-      chaos: new ChaosService(db, guildConfigRepo, profileRepo, chaosRepo),
+      multiplayer: new MultiplayerService(
+        db,
+        profileRepo,
+        redPacketRepo,
+        chaosRepo,
+        creditLoanService,
+      ),
+      chaos: new ChaosService(db, guildConfigRepo, profileRepo, chaosRepo, creditLoanService),
       worldEvent: new WorldEventService(
         db,
         guildConfigRepo,
         profileRepo,
         worldEventRepo,
         socialPetRepo,
+        creditLoanService,
       ),
       socialPet: new SocialPetService(
         db,
@@ -114,8 +170,11 @@ function main(): void {
         shopRepo,
         socialPetRepo,
         env.timezone,
+        creditLoanService,
       ),
       ai: new AiService(guildConfigRepo, aiMemoryRepo, llmClient),
+      creditLoan: creditLoanService,
+      rpg: rpgService,
     },
   };
 

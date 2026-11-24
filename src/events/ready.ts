@@ -13,7 +13,12 @@ import { buildGiveawayMessage } from '../commands/giveaways/giveaway.js';
 import { editChannelMessage, sendToChannel } from '../interactions/menuHelpers.js';
 import { renderLevelUpTemplate, type AwardXpResult } from '../services/levelingService.js';
 import { buildNumberBombCard, buildRouletteCard } from '../ui/chaosMenuBuilder.js';
-import { createInfoEmbed, createSuccessEmbed, type AppContext } from '../ui/embeds.js';
+import {
+  createErrorEmbed,
+  createInfoEmbed,
+  createSuccessEmbed,
+  type AppContext,
+} from '../ui/embeds.js';
 import { buildRedPacketMessage } from '../ui/menuBuilder.js';
 import { truncateText } from '../ui/menuShared.js';
 import { buildPetBattleCard, buildProposalCard } from '../ui/socialPetMenuBuilder.js';
@@ -119,9 +124,11 @@ export function registerReadyEvent(client: Client, ctx: AppContext): BackgroundS
   let giveawayTimer: NodeJS.Timeout | null = null;
   let redPacketTimer: NodeJS.Timeout | null = null;
   let gamesTimer: NodeJS.Timeout | null = null;
+  let overdueTimer: NodeJS.Timeout | null = null;
   let giveawayRunning = false;
   let redPacketRunning = false;
   let gamesRunning = false;
+  let overdueRunning = false;
 
   client.once(Events.ClientReady, async (readyClient) => {
     console.log(`[bot] 已登录为 ${readyClient.user.tag}，正在守护 ${readyClient.guilds.cache.size} 个服务器`);
@@ -350,6 +357,55 @@ export function registerReadyEvent(client: Client, ctx: AppContext): BackgroundS
         }
       })();
     }, 5_000);
+
+    // Overdue loan collection & public shaming tick (every 60s, with overlap guard)
+    overdueTimer = setInterval(() => {
+      if (overdueRunning) return;
+      overdueRunning = true;
+      void (async () => {
+        try {
+          const notices = ctx.services.creditLoan.processOverdueLoans(Date.now());
+          for (const notice of notices) {
+            const guild = readyClient.guilds.cache.get(notice.guildId);
+            if (!guild) continue;
+            const guildCfg = ctx.repos.guildConfig.getOrCreate(notice.guildId);
+            const targetChannelId =
+              guildCfg.games.eventChannelId ?? guildCfg.leveling.announceChannelId;
+            if (!targetChannelId) continue;
+
+            const currency = guildCfg.economy.currencyName;
+            const loanLabel = notice.loanType === 'bank' ? '🏦 银行贷款' : '🩸 黑市高利贷';
+            const lines = [
+              `债务人：<@${notice.userId}> ｜ 借据：**${loanLabel} #${notice.loanId}**`,
+              `💸 今日罚息：**+${notice.penaltyAdded.toLocaleString()}** ${currency}`,
+              `📉 信用扣分：**${notice.creditDelta}**（当前信用分 **${notice.creditScore}**）`,
+            ];
+            if (notice.totalSeized > 0) {
+              lines.push(
+                `🚨 强制划扣：**${notice.totalSeized.toLocaleString()}** ${currency}（口袋 ${notice.seizedFromPocket.toLocaleString()} / 银行 ${notice.seizedFromBank.toLocaleString()}）`,
+              );
+            }
+            lines.push(
+              notice.clearedBySeize
+                ? '✅ 本次强扣已将全部欠款结清！'
+                : `⚠️ 剩余欠款：**${notice.remainingDebt.toLocaleString()}** ${currency}（逾期期间禁赌禁转账，收益自动强扣还债）`,
+            );
+            if (notice.bountyPostedNow) {
+              lines.push(
+                `🎯 **黑市追杀令已发布**：系统已对其追加悬赏 **${notice.bountyAmount.toLocaleString()}** ${currency}！`,
+              );
+            }
+
+            await sendToChannel(readyClient, targetChannelId, {
+              content: `📢 <@${notice.userId}> 贷款逾期催收通告！`,
+              embeds: [createErrorEmbed('📢 失信老赖催收大字报', lines.join('\n'))],
+            });
+          }
+        } finally {
+          overdueRunning = false;
+        }
+      })();
+    }, 60_000);
   });
 
   return {
@@ -358,10 +414,12 @@ export function registerReadyEvent(client: Client, ctx: AppContext): BackgroundS
       if (giveawayTimer) clearInterval(giveawayTimer);
       if (redPacketTimer) clearInterval(redPacketTimer);
       if (gamesTimer) clearInterval(gamesTimer);
+      if (overdueTimer) clearInterval(overdueTimer);
       voiceTimer = null;
       giveawayTimer = null;
       redPacketTimer = null;
       gamesTimer = null;
+      overdueTimer = null;
     },
   };
 }

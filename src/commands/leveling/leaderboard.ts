@@ -11,6 +11,26 @@ import { COLORS, type AppContext, type CommandDefinition } from '../../ui/embeds
 import { applyZh } from '../../ui/localization.js';
 import { requireGuildMember } from '../guards.js';
 
+const ALL_LEADERBOARD_TYPES: ReadonlySet<string> = new Set<LeaderboardType>([
+  'xp',
+  'coins',
+  'invites',
+  'stat',
+  'credit',
+  'deadbeat',
+  'hustle',
+  'gambling_profit',
+  'gambling_loss',
+  'rpg',
+]);
+
+export function parseLeaderboardType(raw: string | null | undefined): LeaderboardType {
+  if (raw && ALL_LEADERBOARD_TYPES.has(raw)) {
+    return raw as LeaderboardType;
+  }
+  return 'xp';
+}
+
 export function buildLeaderboardMessage(
   ctx: AppContext,
   guildId: string,
@@ -28,6 +48,12 @@ export function buildLeaderboardMessage(
     coins: `💰 服务器${cfg.economy.currencyName}富豪榜`,
     invites: '📨 服务器邀请贡献排行榜',
     stat: `📏 服务器${cfg.leveling.statName}排行榜`,
+    credit: '🏦 服务器信用分红榜',
+    deadbeat: '💀 服务器失信老赖黑榜',
+    hustle: '🪩 服务器下海捞金榜',
+    gambling_profit: '🎰 服务器赌神盈利榜',
+    gambling_loss: '🪦 服务器慈善赌圣亏损榜',
+    rpg: '⚔️ 服务器奇幻RPG地牢榜',
   };
 
   const lines = res.items.map((item, idx) => {
@@ -42,6 +68,22 @@ export function buildLeaderboardMessage(
     }
     if (type === 'stat') {
       return `${medal} <@${item.userId}> ${titleTag} — 📏 **${item.primaryValue}** ${cfg.leveling.statUnit}（Lv.${item.secondaryValue}）`;
+    }
+    if (type === 'credit') {
+      return `${medal} <@${item.userId}> — 🏦 信用分 **${item.primaryValue}**`;
+    }
+    if (type === 'deadbeat') {
+      return `${medal} <@${item.userId}> — 💀 逾期欠款 **${item.primaryValue.toLocaleString()}** ${cfg.economy.currencyName}（信用分 ${item.secondaryValue}）`;
+    }
+    if (type === 'hustle') {
+      return `${medal} <@${item.userId}> — 🪩 累计营收 **${item.primaryValue.toLocaleString()}** ${cfg.economy.currencyName}（营业 ${item.secondaryValue} 次）`;
+    }
+    if (type === 'gambling_profit' || type === 'gambling_loss') {
+      const sign = item.primaryValue >= 0 ? '+' : '';
+      return `${medal} <@${item.userId}> — 🎰 净盈亏 **${sign}${item.primaryValue.toLocaleString()}** ${cfg.economy.currencyName}（${item.secondaryValue} 局）`;
+    }
+    if (type === 'rpg') {
+      return `${medal} <@${item.userId}> — ⚔️ 已通第 **${item.primaryValue}** 章（Lv.${item.secondaryValue}）`;
     }
     return `${medal} <@${item.userId}> — 成功邀请 **${item.primaryValue}** 人`;
   });
@@ -104,6 +146,12 @@ export const leaderboardCommand: CommandDefinition = {
               { name: '星币富豪榜', value: 'coins' },
               { name: '成长数值榜', value: 'stat' },
               { name: '邀请贡献榜', value: 'invites' },
+              { name: '信用分红榜', value: 'credit' },
+              { name: '失信老赖黑榜', value: 'deadbeat' },
+              { name: '下海捞金榜', value: 'hustle' },
+              { name: '赌神盈利榜', value: 'gambling_profit' },
+              { name: '慈善赌圣亏损榜', value: 'gambling_loss' },
+              { name: 'RPG地牢榜', value: 'rpg' },
             ),
           '类型',
           '选择要查看的排行榜类型',
@@ -116,9 +164,7 @@ export const leaderboardCommand: CommandDefinition = {
     const guildCtx = await requireGuildMember(interaction);
     if (!guildCtx) return;
 
-    const rawType = interaction.options.getString('type');
-    const type: LeaderboardType =
-      rawType === 'coins' || rawType === 'invites' || rawType === 'stat' ? rawType : 'xp';
+    const type = parseLeaderboardType(interaction.options.getString('type'));
 
     await interaction.reply(buildLeaderboardMessage(ctx, guildCtx.guildId, type, 1));
   },

@@ -31,6 +31,7 @@ export async function handleBlackjackButton(
       game_already_active: '对局仍在进行中。',
       no_active_game: '该局游戏已结束或已过期。',
       cannot_double: '只能在首轮两张牌时双倍下注。',
+      deadbeat_blocked: '你当前有逾期未还贷款，已被列入失信名单，还清逾期欠款前禁止参与博弈！',
     };
     await interaction.reply({
       embeds: [createErrorEmbed('❌ 操作失败', msgMap[res.reason])],
