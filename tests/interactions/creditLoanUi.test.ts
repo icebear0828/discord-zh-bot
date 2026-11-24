@@ -389,8 +389,8 @@ describe('Credit, Loan & Hustle UI builders, handlers and slash commands', () =>
         'cl:nav:review:endorse',
         'cl:nav:review:report',
         'menu:nav:loan',
-        'menu:lb:credit:1',
-        'menu:lb:deadbeat:1',
+        'menu:rank:credit:1',
+        'menu:rank:deadbeat:1',
         'menu:nav:home',
       ]);
 
@@ -468,7 +468,7 @@ describe('Credit, Loan & Hustle UI builders, handlers and slash commands', () =>
       expect(cdBtn?.disabled).toBe(true);
       expect(cdParsed.buttons.map((b) => b.custom_id)).toEqual([
         'cl:act:sell_butt',
-        'menu:lb:hustle:1',
+        'menu:rank:hustle:1',
         'menu:nav:loan',
         'menu:nav:home',
       ]);

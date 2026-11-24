@@ -92,7 +92,10 @@ export function buildCreditView(
   const currencyEmoji = cfg.economy.currencyEmoji;
   const progressBar = renderProgressBar(account.score / CREDIT_SCORE_MAX, 14);
   const effectiveBankCap = Math.min(tier.bankLoanMax, creditCfg.bankLoanMaxCap);
-  const effectiveInterestMax = Math.floor(cfg.economy.bankInterestMax * tier.bankInterestCapMult);
+  const effectiveInterestMax = Math.max(
+    1,
+    Math.round(cfg.economy.bankInterestMax * tier.bankInterestCapMult),
+  );
 
   const bankPerkLine =
     effectiveBankCap > 0 && tier.bankMaxDays > 0
@@ -156,8 +159,8 @@ export function buildCreditView(
   );
 
   const row2 = buttonRow(
-    makeButton('menu:lb:credit:1', '🏆 信用榜', ButtonStyle.Secondary),
-    makeButton('menu:lb:deadbeat:1', '💀 老赖榜', ButtonStyle.Secondary),
+    makeButton('menu:rank:credit:1', '🏆 信用榜', ButtonStyle.Secondary),
+    makeButton('menu:rank:deadbeat:1', '💀 老赖榜', ButtonStyle.Secondary),
     makeButton('menu:nav:home', '🔙 返回主菜单', ButtonStyle.Secondary),
   );
 
@@ -428,7 +431,7 @@ export function buildHustleView(
 
   const row = buttonRow(
     makeButton('cl:act:sell_butt', '🍑 立刻上街卖屁股', ButtonStyle.Danger, onCooldown),
-    makeButton('menu:lb:hustle:1', '🏆 卖屁股榜', ButtonStyle.Secondary),
+    makeButton('menu:rank:hustle:1', '🏆 卖屁股榜', ButtonStyle.Secondary),
     makeButton('menu:nav:loan', '💳 去还贷款', ButtonStyle.Primary),
     makeButton('menu:nav:home', '🔙 返回主菜单', ButtonStyle.Secondary),
   );
