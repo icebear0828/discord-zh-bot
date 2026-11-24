@@ -11,6 +11,18 @@ export interface RoleDiff {
   toRemove: string[];
 }
 
+const CUSTOM_DISCORD_EMOJI_RE = /^<a?:[a-zA-Z0-9_]{2,32}:\d{17,20}>$/;
+const UNICODE_EMOJI_RE =
+  /^(?:[0-9#*]\uFE0F?\u20E3|\p{Regional_Indicator}{2}|\u{1F3F4}[\u{E0020}-\u{E007E}]+\u{E007F}|(?:\p{Extended_Pictographic}(?:\uFE0F|\p{Emoji_Modifier})?)(?:\u200D(?:\p{Extended_Pictographic}(?:\uFE0F|\p{Emoji_Modifier})?))*)$/u;
+
+export function isValidDiscordEmoji(raw: string): boolean {
+  const trimmed = raw.trim();
+  if (!trimmed || trimmed.length > 64) {
+    return false;
+  }
+  return CUSTOM_DISCORD_EMOJI_RE.test(trimmed) || UNICODE_EMOJI_RE.test(trimmed);
+}
+
 export function computeRoleDiff(
   panelRoleIds: readonly string[],
   currentMemberRoleIds: readonly string[],

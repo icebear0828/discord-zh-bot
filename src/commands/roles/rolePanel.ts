@@ -11,6 +11,7 @@ import {
   type TextChannel,
 } from 'discord.js';
 import type { RolePanel, RolePanelDisplayMode, RolePanelOption, RolePanelSelectionMode } from '../../db/repositories/rolePanelRepo.js';
+import { isValidDiscordEmoji } from '../../services/rolePanelService.js';
 import {
   COLORS,
   createErrorEmbed,
@@ -58,7 +59,7 @@ export function buildRolePanelMessage(
           label: o.label.slice(0, 100),
           value: o.roleId,
           ...(o.description ? { description: o.description.slice(0, 100) } : {}),
-          ...(o.emoji ? { emoji: o.emoji } : {}),
+          ...(o.emoji && isValidDiscordEmoji(o.emoji) ? { emoji: o.emoji.trim() } : {}),
         })),
       );
 
@@ -77,8 +78,8 @@ export function buildRolePanelMessage(
           .setCustomId(`rolepanel:btn:${panel.id}:${o.roleId}`)
           .setLabel(o.label.slice(0, 80))
           .setStyle(ButtonStyle.Secondary);
-        if (o.emoji) {
-          btn.setEmoji(o.emoji);
+        if (o.emoji && isValidDiscordEmoji(o.emoji)) {
+          btn.setEmoji(o.emoji.trim());
         }
         return btn;
       }),
@@ -256,8 +257,22 @@ export const rolePanelCommand: CommandDefinition = {
       const panelId = interaction.options.getInteger('panel-id', true);
       const role = interaction.options.getRole('role', true);
       const label = interaction.options.getString('label', true);
-      const emoji = interaction.options.getString('emoji');
+      const emojiRaw = interaction.options.getString('emoji');
+      const emoji = emojiRaw?.trim() || null;
       const description = interaction.options.getString('description');
+
+      if (emoji && !isValidDiscordEmoji(emoji)) {
+        await interaction.reply({
+          embeds: [
+            createErrorEmbed(
+              '❌ 无效的 Emoji 图标',
+              '图标必须是单个标准 Unicode 表情（如 `🎮`）或自定义表情（如 `<:name:123456789012345678>`），不能填普通文字。',
+            ),
+          ],
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
 
       const res = ctx.services.rolePanel.addOption(guildId, panelId, {
         roleId: role.id,

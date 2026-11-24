@@ -3,7 +3,8 @@ import {
   SlashCommandBuilder,
   type ChatInputCommandInteraction,
 } from 'discord.js';
-import type { AiMemoryScopeType } from '../../db/repositories/aiMemoryRepo.js';
+import type { AiMemoryRecord, AiMemoryScopeType } from '../../db/repositories/aiMemoryRepo.js';
+import { truncateText } from '../../ui/menuShared.js';
 import {
   createErrorEmbed,
   createInfoEmbed,
@@ -39,6 +40,48 @@ function resolveScopeId(
   if (scope === 'guild') return guildId;
   if (scope === 'channel') return channelId;
   return userId;
+}
+
+export function formatMemoryListDescription(
+  items: readonly AiMemoryRecord[],
+  maxLen = 4096,
+): string {
+  if (items.length === 0) {
+    return '当前作用域下暂无记忆条目。';
+  }
+
+  const lines: string[] = [];
+  let usedLen = 0;
+  let omitted = 0;
+
+  for (let i = 0; i < items.length; i++) {
+    const m = items[i]!;
+    const line = `• \`#${m.id}\` **[${m.category}]** ${m.content}`;
+    const remainingAfterThis = items.length - (i + 1);
+    const footerReserve =
+      remainingAfterThis > 0
+        ? `\n… 另有 ${remainingAfterThis} 条记忆因长度限制已省略（共 ${items.length} 条）`.length
+        : 0;
+    const sep = lines.length > 0 ? 1 : 0;
+
+    if (usedLen + sep + line.length + footerReserve > maxLen) {
+      omitted = items.length - i;
+      break;
+    }
+
+    lines.push(line);
+    usedLen += sep + line.length;
+  }
+
+  if (omitted > 0) {
+    const footer = `… 另有 ${omitted} 条记忆因长度限制已省略（共 ${items.length} 条）`;
+    if (lines.length === 0) {
+      return truncateText(footer, maxLen);
+    }
+    return truncateText(`${lines.join('\n')}\n${footer}`, maxLen);
+  }
+
+  return truncateText(lines.join('\n'), maxLen);
 }
 
 export const aiCommand: CommandDefinition = {
@@ -99,7 +142,7 @@ export const aiCommand: CommandDefinition = {
                     applyZh(
                       opt
                         .setName('category')
-                        .setDescription('记忆分类（默认 general）')
+                        .setDescription('记忆分类（默认 manual）')
                         .setMaxLength(24),
                       '分类',
                       '可选分类标签，如 preference / identity',
@@ -201,16 +244,13 @@ export const aiCommand: CommandDefinition = {
 
       if (sub === 'list') {
         const items = ctx.services.ai.listMemories(guildId, scope, scopeId, 30);
-        const lines =
-          items.length > 0
-            ? items.map((m) => `• \`#${m.id}\` **[${m.category}]** ${m.content}`)
-            : ['当前作用域下暂无记忆条目。'];
+        const description = formatMemoryListDescription(items, 4096);
 
         await interaction.reply({
           embeds: [
             createInfoEmbed(
               `🧠 AI 长期记忆（${formatScopeLabel(scope)} · 共 ${items.length} 条）`,
-              lines.join('\n'),
+              description,
             ),
           ],
           flags: MessageFlags.Ephemeral,

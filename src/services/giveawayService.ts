@@ -89,6 +89,19 @@ export type ToggleEntryResult =
       requiredRoleId?: string;
     };
 
+export type JoinEntryResult =
+  | { ok: true; joined: true; alreadyJoined: boolean; entryCount: number }
+  | {
+      ok: false;
+      reason: 'not_found' | 'ended' | 'level_too_low' | 'missing_role';
+      minLevel?: number;
+      requiredRoleId?: string;
+    };
+
+export type LeaveEntryResult =
+  | { ok: true; left: boolean; entryCount: number }
+  | { ok: false; reason: 'not_found' | 'ended' };
+
 export class GiveawayService {
   constructor(private readonly giveawayRepo: GiveawayRepo) {}
 
@@ -137,7 +150,7 @@ export class GiveawayService {
     if (!gw) {
       return { ok: false, reason: 'not_found' };
     }
-    if (gw.ended) {
+    if (gw.ended || nowMs >= gw.endsAt) {
       return { ok: false, reason: 'ended' };
     }
 
@@ -167,6 +180,76 @@ export class GiveawayService {
     return {
       ok: true,
       joined: true,
+      entryCount: this.giveawayRepo.countEntries(gw.id),
+    };
+  }
+
+  joinEntry(
+    giveawayId: number,
+    userId: string,
+    memberLevel: number,
+    memberRoleIds: readonly string[],
+    nowMs = Date.now(),
+  ): JoinEntryResult {
+    const gw = this.giveawayRepo.getById(giveawayId);
+    if (!gw) {
+      return { ok: false, reason: 'not_found' };
+    }
+    if (gw.ended || nowMs >= gw.endsAt) {
+      return { ok: false, reason: 'ended' };
+    }
+
+    if (this.giveawayRepo.hasEntry(gw.id, userId)) {
+      return {
+        ok: true,
+        joined: true,
+        alreadyJoined: true,
+        entryCount: this.giveawayRepo.countEntries(gw.id),
+      };
+    }
+
+    if (gw.minLevel > 0 && memberLevel < gw.minLevel) {
+      return { ok: false, reason: 'level_too_low', minLevel: gw.minLevel };
+    }
+
+    if (gw.requiredRoleId && !memberRoleIds.includes(gw.requiredRoleId)) {
+      return {
+        ok: false,
+        reason: 'missing_role',
+        requiredRoleId: gw.requiredRoleId,
+      };
+    }
+
+    this.giveawayRepo.addEntry(gw.id, userId, nowMs);
+    return {
+      ok: true,
+      joined: true,
+      alreadyJoined: false,
+      entryCount: this.giveawayRepo.countEntries(gw.id),
+    };
+  }
+
+  leaveEntry(giveawayId: number, userId: string, nowMs = Date.now()): LeaveEntryResult {
+    const gw = this.giveawayRepo.getById(giveawayId);
+    if (!gw) {
+      return { ok: false, reason: 'not_found' };
+    }
+    if (gw.ended || nowMs >= gw.endsAt) {
+      return { ok: false, reason: 'ended' };
+    }
+
+    if (!this.giveawayRepo.hasEntry(gw.id, userId)) {
+      return {
+        ok: true,
+        left: false,
+        entryCount: this.giveawayRepo.countEntries(gw.id),
+      };
+    }
+
+    this.giveawayRepo.removeEntry(gw.id, userId);
+    return {
+      ok: true,
+      left: true,
       entryCount: this.giveawayRepo.countEntries(gw.id),
     };
   }

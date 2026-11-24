@@ -1,12 +1,10 @@
 import {
   ChannelType,
   MessageFlags,
-  PermissionFlagsBits,
   SlashCommandBuilder,
   type ChatInputCommandInteraction,
   type TextChannel,
 } from 'discord.js';
-import { isBotAdmin } from '../../services/permissionService.js';
 import {
   createErrorEmbed,
   createSuccessEmbed,
@@ -14,7 +12,7 @@ import {
   type CommandDefinition,
 } from '../../ui/embeds.js';
 import { applyZh } from '../../ui/localization.js';
-import { requireGuildMember } from '../guards.js';
+import { checkMemberIsBotAdmin, requireGuildMember } from '../guards.js';
 
 export const ticketCommand: CommandDefinition = {
   name: 'ticket',
@@ -68,12 +66,8 @@ export const ticketCommand: CommandDefinition = {
     const cfg = ctx.repos.guildConfig.getOrCreate(guildCtx.guildId);
     const memberRoles = [...guildCtx.member.roles.cache.keys()];
     const isAdminOrStaff =
-      isBotAdmin({
-        isGuildAdmin: guildCtx.member.permissions.has(PermissionFlagsBits.Administrator),
-        hasManageGuild: guildCtx.member.permissions.has(PermissionFlagsBits.ManageGuild),
-        memberRoleIds: memberRoles,
-        configuredAdminRoleIds: cfg.adminRoleIds,
-      }) || cfg.ticket.staffRoleIds.some((id) => memberRoles.includes(id));
+      checkMemberIsBotAdmin(guildCtx.member, cfg) ||
+      cfg.ticket.staffRoleIds.some((id) => memberRoles.includes(id));
 
     if (!isAdminOrStaff && interaction.user.id !== ticket.creatorId) {
       await interaction.reply({
@@ -138,9 +132,11 @@ export const ticketCommand: CommandDefinition = {
         embeds: [createSuccessEmbed('🔒 工单即将关闭', '本工单已标记关闭，频道将在 5 秒后删除。')],
       });
 
-      if (cfg.ticket.logChannelId) {
-        const logCh = interaction.guild?.channels.cache.get(cfg.ticket.logChannelId);
-        if (logCh && logCh.type === ChannelType.GuildText) {
+      if (cfg.ticket.logChannelId && interaction.guild) {
+        const logCh =
+          interaction.guild.channels.cache.get(cfg.ticket.logChannelId) ??
+          (await interaction.guild.channels.fetch(cfg.ticket.logChannelId).catch(() => null));
+        if (logCh && logCh.isSendable()) {
           await logCh
             .send({
               embeds: [

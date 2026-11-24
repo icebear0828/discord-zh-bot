@@ -404,4 +404,124 @@ describe('aiService helpers & AiMemoryRepo', () => {
     expect(prompt).toContain('黑吊王「草莓布丁酱」');
     expect(prompt).toContain('冰吊王「icebear」');
   });
+
+  it('restricts auto-extracted [MEMORY:] tags strictly to user scope and provides natural empty fallback', async () => {
+    const db = createDatabase(':memory:');
+    const guildConfigRepo = new GuildConfigRepo(db);
+    const aiMemoryRepo = new AiMemoryRepo(db);
+
+    const llmClient = new LlmClient(
+      {
+        baseUrl: 'https://gateway.local/v1',
+        apiKey: 'sk-test',
+        model: 'demo-model',
+        timeoutMs: 10_000,
+      },
+      {
+        fetchFn: async () =>
+          new Response(
+            JSON.stringify({
+              model: 'demo-model',
+              choices: [
+                {
+                  message: {
+                    content:
+                      '[MEMORY:全服: 全服都归我管]\n[MEMORY:频道: 频道归我管]\n[MEMORY:preference: 爱吃拉面]',
+                  },
+                },
+              ],
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          ),
+      },
+    );
+
+    const aiService = new AiService(guildConfigRepo, aiMemoryRepo, llmClient);
+    const res = await aiService.generateReply({
+      guildId: 'g1',
+      channelId: 'c1',
+      userId: 'u1',
+      userName: '测试君',
+      messageId: 'm_sec',
+      userContent: '帮我记住一些事情',
+    });
+
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.storedMemoryCount).toBe(1);
+      // Must NOT return stiff '（空回复）' when body becomes empty after stripping tags
+      expect(res.replyText).not.toBe('（空回复）');
+      expect(res.replyText.length).toBeGreaterThan(0);
+      expect(res.chunks[0]).not.toBe('（空回复）');
+    }
+
+    expect(aiService.listMemories('g1', 'guild', 'g1')).toHaveLength(0);
+    expect(aiService.listMemories('g1', 'channel', 'c1')).toHaveLength(0);
+    expect(aiService.listMemories('g1', 'user', 'u1')).toHaveLength(1);
+    expect(aiService.listMemories('g1', 'user', 'u1')[0]?.content).toBe('爱吃拉面');
+
+    db.close();
+  });
+
+  it('closes and reopens fenced code blocks cleanly across chunks in splitDiscordMessage', () => {
+    const codeLines = Array.from({ length: 20 }, (_, i) => `const line_${i} = "value_${i}_padding";`);
+    const text = ['前置说明', '```ts', ...codeLines, '```', '收尾说明'].join('\n');
+    const chunks = splitDiscordMessage(text, 160);
+
+    expect(chunks.length).toBeGreaterThan(2);
+    for (const chunk of chunks) {
+      expect(chunk.length).toBeLessThanOrEqual(160);
+      // Every chunk must have an even number of ``` fence markers
+      const fenceCount = (chunk.match(/^```/gm) ?? []).length;
+      expect(fenceCount % 2).toBe(0);
+    }
+    // Reopened code chunk preserves language tag
+    expect(chunks[1]?.startsWith('```ts\n')).toBe(true);
+
+    // Empty string returns natural fallback instead of '（空回复）'
+    expect(splitDiscordMessage('   ')[0]).not.toBe('（空回复）');
+  });
+
+  it('filters bot embed broadcast messages from entering AI assistant conversation history', () => {
+    const messages = mergeConversationHistory({
+      botId: 'bot1',
+      currentMessageId: 'm_cur',
+      resetAt: 0,
+      maxMessages: 10,
+      replyChain: [],
+      channelWindow: [
+        {
+          id: 'm1',
+          authorId: 'u1',
+          authorName: 'Alice',
+          isBot: false,
+          content: '发个红包',
+          createdTimestamp: 1000,
+        },
+        {
+          id: 'm2',
+          authorId: 'bot1',
+          authorName: 'Bot',
+          isBot: true,
+          content: '🧧 大红包来啦！',
+          createdTimestamp: 1100,
+          hasEmbeds: true,
+        },
+        {
+          id: 'm3',
+          authorId: 'bot1',
+          authorName: 'Bot',
+          isBot: true,
+          content: '正常聊天回复',
+          createdTimestamp: 1200,
+          hasEmbeds: false,
+        },
+      ],
+    });
+
+    expect(messages).toEqual([
+      { role: 'user', content: '[Alice]: 发个红包' },
+      { role: 'assistant', content: '正常聊天回复' },
+    ]);
+  });
 });

@@ -1,6 +1,7 @@
-import { ChannelType, EmbedBuilder, Events, type Client, type TextChannel } from 'discord.js';
+import { EmbedBuilder, Events, type Client } from 'discord.js';
 import { renderTemplate } from '../services/welcomeService.js';
 import { COLORS, type AppContext } from '../ui/embeds.js';
+import { truncateText } from '../ui/menuShared.js';
 
 export function registerGuildMemberRemoveEvent(client: Client, ctx: AppContext): void {
   client.on(Events.GuildMemberRemove, async (member) => {
@@ -11,12 +12,15 @@ export function registerGuildMemberRemoveEvent(client: Client, ctx: AppContext):
       return;
     }
 
-    const ch = member.guild.channels.cache.get(cfg.welcome.leaveChannelId);
-    if (!ch || ch.type !== ChannelType.GuildText) return;
+    const ch =
+      member.guild.channels.cache.get(cfg.welcome.leaveChannelId) ??
+      (await member.guild.channels.fetch(cfg.welcome.leaveChannelId).catch(() => null));
+    if (!ch || !ch.isSendable()) return;
 
+    const username = member.user?.username ?? '未知成员';
     const body = renderTemplate(cfg.welcome.leaveTemplate, {
-      user: member.user.username,
-      username: member.user.username,
+      user: username,
+      username,
       server: member.guild.name,
       memberCount: member.guild.memberCount,
       inviter: '未知',
@@ -24,9 +28,9 @@ export function registerGuildMemberRemoveEvent(client: Client, ctx: AppContext):
 
     const embed = new EmbedBuilder()
       .setColor(COLORS.WARNING)
-      .setDescription(body)
+      .setDescription(truncateText(body, 4096))
       .setTimestamp();
 
-    await (ch as TextChannel).send({ embeds: [embed] }).catch(() => undefined);
+    await ch.send({ embeds: [embed] }).catch(() => undefined);
   });
 }

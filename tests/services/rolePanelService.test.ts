@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { createDatabase } from '../../src/db/database.js';
 import { RolePanelRepo } from '../../src/db/repositories/rolePanelRepo.js';
-import { computeRoleDiff, RolePanelService } from '../../src/services/rolePanelService.js';
+import {
+  computeRoleDiff,
+  isValidDiscordEmoji,
+  RolePanelService,
+} from '../../src/services/rolePanelService.js';
 
 describe('rolePanelService', () => {
   it('computes single-select and multi-select diffs for buttons and select menus', () => {
@@ -74,5 +78,41 @@ describe('rolePanelService', () => {
     expect(updatedModes?.selectionMode).toBe('multi');
 
     db.close();
+  });
+
+  it('validates standard Unicode emojis and Discord custom emojis while rejecting plain text', () => {
+    const valid = [
+      '🔴',
+      '🎉',
+      '❤️',
+      '1️⃣',
+      '🇨🇳',
+      '👨‍👩‍👧‍👦',
+      '👍🏽',
+      '🏳️‍🌈',
+      '<:party:123456789012345678>',
+      '<a:spin_1:1234567890123456789>',
+    ];
+    for (const emoji of valid) {
+      expect(isValidDiscordEmoji(emoji), `expected valid: ${emoji}`).toBe(true);
+    }
+
+    const invalid = [
+      '',
+      '   ',
+      'hello',
+      '123',
+      '星星',
+      ':smile:',
+      '<:a:123>',
+      '<:bad-name:123456789012345678>',
+      '🔥火',
+      '🔥🔥',
+      '#',
+      '1',
+    ];
+    for (const bad of invalid) {
+      expect(isValidDiscordEmoji(bad), `expected invalid: ${bad}`).toBe(false);
+    }
   });
 });
