@@ -15,9 +15,13 @@ import { slotsCommand } from './economy/slots.js';
 import { blackjackCommand } from './economy/blackjack.js';
 import { shopCommand } from './economy/shop.js';
 import { inventoryCommand } from './economy/inventory.js';
+import { creditCommand } from './economy/credit.js';
+import { loanCommand } from './economy/loan.js';
+import { hustleCommand } from './economy/hustle.js';
 import { fortuneCommand } from './fun/fortune.js';
 import { interactCommand } from './fun/interact.js';
 import { titleCommand } from './fun/title.js';
+import { adventureCommand } from './fun/adventure.js';
 import { welcomeConfigCommand } from './welcome/welcomeConfig.js';
 import { ticketConfigCommand } from './tickets/ticketConfig.js';
 import { ticketCommand } from './tickets/ticket.js';
@@ -43,9 +47,13 @@ export const commands: readonly CommandDefinition[] = [
   blackjackCommand,
   shopCommand,
   inventoryCommand,
+  creditCommand,
+  loanCommand,
+  hustleCommand,
   fortuneCommand,
   interactCommand,
   titleCommand,
+  adventureCommand,
   welcomeConfigCommand,
   ticketConfigCommand,
   ticketCommand,

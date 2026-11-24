@@ -632,6 +632,7 @@ export async function handleMenuButton(
       target === 'admin_lvl' ||
       target === 'admin_mod' ||
       target === 'admin_ops' ||
+      target === 'admin_credit_rpg' ||
       target === 'admin_monitor'
     ) {
       if (!actor.isAdmin) {
@@ -641,6 +642,30 @@ export async function handleMenuButton(
         return;
       }
       await interaction.update(buildMenuMessage(ctx, guildId, actor, { page: target }));
+      return;
+    }
+
+    if (target === 'credit' || target === 'loan' || target === 'hustle') {
+      const disabledMsg = checkModuleDisabled(ctx, guildId, 'creditLoan', '信用与借贷');
+      if (disabledMsg) {
+        await interaction.update(
+          buildMenuMessage(ctx, guildId, actor, { page: 'home' }, { type: 'error', text: disabledMsg }),
+        );
+        return;
+      }
+      await interaction.update(buildMenuMessage(ctx, guildId, actor, { page: target }));
+      return;
+    }
+
+    if (target === 'rpg') {
+      const disabledMsg = checkModuleDisabled(ctx, guildId, 'rpg', '奇幻RPG地牢');
+      if (disabledMsg) {
+        await interaction.update(
+          buildMenuMessage(ctx, guildId, actor, { page: 'home' }, { type: 'error', text: disabledMsg }),
+        );
+        return;
+      }
+      await interaction.update(buildMenuMessage(ctx, guildId, actor, { page: 'rpg' }));
       return;
     }
 
@@ -1404,6 +1429,57 @@ export async function handleMenuStringSelect(
   }
 
   if (await tryHandleAiMenuStringSelect(interaction, ctx, guildId, actor, parts)) {
+    return;
+  }
+
+  if (section === 'lb_select') {
+    if (!selected) return;
+    if (selected === 'cp_lb') {
+      const disabledMsg = checkModuleDisabled(ctx, guildId, 'petsAndCp', '关系与宠物');
+      if (disabledMsg) {
+        await interaction.update(
+          buildMenuMessage(ctx, guildId, actor, { page: 'home' }, { type: 'error', text: disabledMsg }),
+        );
+        return;
+      }
+      await interaction.update(buildMenuMessage(ctx, guildId, actor, { page: 'cp_lb', lbPage: 1 }));
+      return;
+    }
+    if (selected === 'bounty') {
+      const disabledMsg = checkModuleDisabled(ctx, guildId, 'socialGames', '整蛊与博弈');
+      if (disabledMsg) {
+        await interaction.update(
+          buildMenuMessage(ctx, guildId, actor, { page: 'home' }, { type: 'error', text: disabledMsg }),
+        );
+        return;
+      }
+      await interaction.update(buildMenuMessage(ctx, guildId, actor, { page: 'bounty' }));
+      return;
+    }
+    const lbType = parseLeaderboardType(selected);
+    const moduleMap: Record<LeaderboardType, { key: ModuleKey; name: string }> = {
+      xp: { key: 'leveling', name: '等级与热度' },
+      coins: { key: 'economy', name: '经济系统' },
+      invites: { key: 'invites', name: '邀请追踪' },
+      stat: { key: 'leveling', name: '等级与热度' },
+      credit: { key: 'creditLoan', name: '征信与借贷' },
+      deadbeat: { key: 'creditLoan', name: '征信与借贷' },
+      hustle: { key: 'creditLoan', name: '征信与借贷' },
+      gambling_profit: { key: 'creditLoan', name: '征信与借贷' },
+      gambling_loss: { key: 'creditLoan', name: '征信与借贷' },
+      rpg: { key: 'rpg', name: '奇幻RPG地牢' },
+    };
+    const mod = moduleMap[lbType];
+    const disabledMsg = checkModuleDisabled(ctx, guildId, mod.key, mod.name);
+    if (disabledMsg) {
+      await interaction.update(
+        buildMenuMessage(ctx, guildId, actor, { page: 'home' }, { type: 'error', text: disabledMsg }),
+      );
+      return;
+    }
+    await interaction.update(
+      buildMenuMessage(ctx, guildId, actor, { page: 'leaderboard', lbType, lbPage: 1 }),
+    );
     return;
   }
 

@@ -7,7 +7,10 @@ import {
 } from '../db/repositories/monitorRepo.js';
 import { createErrorEmbed, type AppContext } from '../ui/embeds.js';
 import { handleHelpSelect } from './helpHandler.js';
-import { handleLeaderboardButton } from './leaderboardHandler.js';
+import {
+  handleLeaderboardButton,
+  handleLeaderboardSelect,
+} from './leaderboardHandler.js';
 import { handleBlackjackButton } from './blackjackHandler.js';
 import { handleTicketButton, handleTicketModal } from './ticketHandler.js';
 import { handleGiveawayButton } from './giveawayHandler.js';
@@ -28,6 +31,12 @@ import {
   handleWorldEventStringSelect,
 } from './worldEventHandler.js';
 import { handleSocialPetButton } from './socialPetHandler.js';
+import {
+  handleCreditLoanButton,
+  handleCreditLoanModal,
+  handleCreditLoanUserSelect,
+} from './creditLoanHandler.js';
+import { handleRpgButton, handleRpgStringSelect } from './rpgHandler.js';
 
 const SLOW_INTERACTION_THRESHOLD_MS = 1500;
 
@@ -218,6 +227,10 @@ export async function routeInteraction(
         await handleWorldEventButton(interaction, ctx);
       } else if (prefix === 'sp') {
         await handleSocialPetButton(interaction, ctx);
+      } else if (prefix === 'cl') {
+        await handleCreditLoanButton(interaction, ctx);
+      } else if (prefix === 'rpg') {
+        await handleRpgButton(interaction, ctx);
       }
     } else if (interaction.isStringSelectMenu()) {
       const prefix = interaction.customId.split(':')[0];
@@ -229,11 +242,17 @@ export async function routeInteraction(
         await handleMenuStringSelect(interaction, ctx);
       } else if (prefix === 'ev') {
         await handleWorldEventStringSelect(interaction, ctx);
+      } else if (prefix === 'rpg') {
+        await handleRpgStringSelect(interaction, ctx);
+      } else if (prefix === 'lb') {
+        await handleLeaderboardSelect(interaction, ctx);
       }
     } else if (interaction.isUserSelectMenu()) {
       const prefix = interaction.customId.split(':')[0];
       if (prefix === 'menu') {
         await handleMenuUserSelect(interaction, ctx);
+      } else if (prefix === 'cl') {
+        await handleCreditLoanUserSelect(interaction, ctx);
       }
     } else if (interaction.isRoleSelectMenu()) {
       const prefix = interaction.customId.split(':')[0];
@@ -255,6 +274,8 @@ export async function routeInteraction(
         await handleChaosModal(interaction, ctx);
       } else if (prefix === 'ev') {
         await handleWorldEventModal(interaction, ctx);
+      } else if (prefix === 'cl') {
+        await handleCreditLoanModal(interaction, ctx);
       }
     }
 

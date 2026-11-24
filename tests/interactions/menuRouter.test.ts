@@ -2586,4 +2586,167 @@ describe('menu router & multiplayer interaction flows', () => {
 
     ctx.db.close();
   });
+
+  it('routes cl:/rpg:/lb: interactions, menu credit/loan/hustle/rpg navigation, 12-board leaderboard selector, and admin_credit_rpg modals', async () => {
+    const ctx = createTestCtx();
+    ctx.repos.guildConfig.updateAdminUsers('g1', ['admin1']);
+    ctx.repos.profile.addCoins('g1', 'u1', 50_000);
+    ctx.repos.profile.addCoins('g1', 'u2', 50_000);
+
+    // 1. menu:nav:credit / loan / hustle / rpg
+    for (const nav of ['credit', 'loan', 'hustle', 'rpg'] as const) {
+      const btn = createButtonMock({ customId: `menu:nav:${nav}`, userId: 'u1' });
+      await routeInteraction(btn.interaction, ctx);
+      expect(btn.update).toHaveBeenCalledTimes(1);
+    }
+
+    // 2. Module toggle blocks credit/rpg nav cleanly
+    const origCfg = ctx.repos.guildConfig.getOrCreate('g1');
+    ctx.repos.guildConfig.updateModules('g1', { ...origCfg.modules, creditLoan: false, rpg: false });
+    const blockedCredit = createButtonMock({ customId: 'menu:nav:loan', userId: 'u1' });
+    await routeInteraction(blockedCredit.interaction, ctx);
+    expect(blockedCredit.update.mock.calls[0]![0].embeds?.[0]?.toJSON().description).toContain(
+      '已关闭',
+    );
+    const blockedRpg = createButtonMock({ customId: 'menu:nav:rpg', userId: 'u1' });
+    await routeInteraction(blockedRpg.interaction, ctx);
+    expect(blockedRpg.update.mock.calls[0]![0].embeds?.[0]?.toJSON().description).toContain('已关闭');
+    ctx.repos.guildConfig.updateModules('g1', origCfg.modules);
+
+    // 3. Router dispatches cl: button & rpg: button -> active run -> menu:nav:rpg opens run view
+    const clBtn = createButtonMock({ customId: 'cl:nav:review:endorse', userId: 'u1' });
+    await routeInteraction(clBtn.interaction, ctx);
+    expect(clBtn.update).toHaveBeenCalledTimes(1);
+
+    const pickClass = createButtonMock({ customId: 'rpg:pick_class:warrior', userId: 'u1' });
+    await routeInteraction(pickClass.interaction, ctx);
+    expect(pickClass.update).toHaveBeenCalledTimes(1);
+    expect(ctx.repos.rpg.getCharacter('g1', 'u1')?.classSelected).toBe(true);
+
+    const startCh1 = createButtonMock({ customId: 'rpg:start:1', userId: 'u1' });
+    await routeInteraction(startCh1.interaction, ctx);
+    expect(startCh1.update).toHaveBeenCalledTimes(1);
+    expect(ctx.services.rpg.getActiveRun('g1', 'u1')).not.toBeNull();
+
+    // Navigating menu:nav:rpg while run is active opens active run view
+    const resumeRpg = createButtonMock({ customId: 'menu:nav:rpg', userId: 'u1' });
+    await routeInteraction(resumeRpg.interaction, ctx);
+    expect(resumeRpg.update.mock.calls[0]![0].embeds?.[0]?.toJSON().title).toContain('第 1 章');
+
+    // 4. 12-board leaderboard StringSelectMenu (menu:lb_select) & public lb:select
+    ctx.services.creditLoan.recordGamblingResult('g1', 'u1', 2000, 1500);
+    const lbGambling = createStringSelectMock({
+      customId: 'menu:lb_select',
+      userId: 'u1',
+      values: ['gambling_profit'],
+    });
+    await routeInteraction(lbGambling.interaction, ctx);
+    const lbDesc = lbGambling.update.mock.calls[0]![0].embeds?.[0]?.toJSON().description ?? '';
+    expect(lbDesc).toContain('总赢 +1,500');
+    expect(lbDesc).toContain('总亏 -0');
+
+    const lbCp = createStringSelectMock({
+      customId: 'menu:lb_select',
+      userId: 'u1',
+      values: ['cp_lb'],
+    });
+    await routeInteraction(lbCp.interaction, ctx);
+    expect(lbCp.update.mock.calls[0]![0].embeds?.[0]?.toJSON().title).toContain('亲密');
+
+    const lbBounty = createStringSelectMock({
+      customId: 'menu:lb_select',
+      userId: 'u1',
+      values: ['bounty'],
+    });
+    await routeInteraction(lbBounty.interaction, ctx);
+    expect(lbBounty.update.mock.calls[0]![0].embeds?.[0]?.toJSON().title).toContain('悬赏');
+
+    const publicLbSelect = createStringSelectMock({
+      customId: 'lb:select',
+      userId: 'u1',
+      values: ['rpg'],
+    });
+    await routeInteraction(publicLbSelect.interaction, ctx);
+    expect(publicLbSelect.update.mock.calls[0]![0].embeds?.[0]?.toJSON().title).toContain('RPG');
+
+    // 5. Admin credit/loan/RPG tuning panel & modals
+    const navAdminCr = createButtonMock({ customId: 'menu:nav:admin_credit_rpg', userId: 'admin1' });
+    await routeInteraction(navAdminCr.interaction, ctx);
+    expect(navAdminCr.update.mock.calls[0]![0].embeds?.[0]?.toJSON().title).toContain('信用 / 借贷 / 西幻 RPG');
+
+    for (const modalId of ['admin_cl_loan', 'admin_cl_hustle', 'admin_rpg_cfg'] as const) {
+      const openBtn = createButtonMock({ customId: `menu:modal:${modalId}`, userId: 'admin1' });
+      await routeInteraction(openBtn.interaction, ctx);
+      expect(openBtn.showModal).toHaveBeenCalledTimes(1);
+    }
+
+    const subLoan = createModalMock({
+      customId: 'menu:modal_sub:admin_cl_loan',
+      userId: 'admin1',
+      fields: {
+        bankLoanMaxCap: '800000',
+        usuryLoanMax: '200000',
+        usuryDailyRatePct: '15',
+        usuryTermDays: '3',
+        garnishRatePct: '60',
+      },
+    });
+    await routeInteraction(subLoan.interaction, ctx);
+    const afterLoan = ctx.repos.guildConfig.getOrCreate('g1').creditLoan;
+    expect(afterLoan.bankLoanMaxCap).toBe(800_000);
+    expect(afterLoan.usuryLoanMax).toBe(200_000);
+    expect(afterLoan.usuryDailyRate).toBe(0.15);
+    expect(afterLoan.usuryTermDays).toBe(3);
+    expect(afterLoan.garnishRate).toBe(0.6);
+
+    const subHustle = createModalMock({
+      customId: 'menu:modal_sub:admin_cl_hustle',
+      userId: 'admin1',
+      fields: {
+        hustleCooldownSec: '43200',
+        hustleMinMultiplier: '3',
+        hustleMaxMultiplier: '6',
+        hustleCreditPenalty: '12',
+        dailyReviewLimit: '5',
+      },
+    });
+    await routeInteraction(subHustle.interaction, ctx);
+    const afterHustle = ctx.repos.guildConfig.getOrCreate('g1').creditLoan;
+    expect(afterHustle.hustleCooldownSec).toBe(43_200);
+    expect(afterHustle.hustleMinMultiplier).toBe(3);
+    expect(afterHustle.hustleMaxMultiplier).toBe(6);
+    expect(afterHustle.hustleCreditPenalty).toBe(12);
+    expect(afterHustle.dailyReviewLimit).toBe(5);
+
+    const subRpg = createModalMock({
+      customId: 'menu:modal_sub:admin_rpg_cfg',
+      userId: 'admin1',
+      fields: {
+        dailyStamina: '8',
+        staminaPotionPrice: '2500',
+        staminaPotionDailyLimit: '5',
+        classSwitchCost: '8000',
+        bagCapacity: '50',
+      },
+    });
+    await routeInteraction(subRpg.interaction, ctx);
+    const afterRpg = ctx.repos.guildConfig.getOrCreate('g1').rpg;
+    expect(afterRpg).toEqual({
+      dailyStamina: 8,
+      staminaPotionPrice: 2500,
+      staminaPotionDailyLimit: 5,
+      classSwitchCost: 8000,
+      bagCapacity: 50,
+    });
+
+    const resetBtn = createButtonMock({
+      customId: 'menu:admin:reset_credit_rpg',
+      userId: 'admin1',
+    });
+    await routeInteraction(resetBtn.interaction, ctx);
+    expect(ctx.repos.guildConfig.getOrCreate('g1').rpg.dailyStamina).toBe(5);
+    expect(ctx.repos.guildConfig.getOrCreate('g1').creditLoan.garnishRate).toBe(0.5);
+
+    ctx.db.close();
+  });
 });

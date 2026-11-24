@@ -9,7 +9,11 @@ import {
   type StringSelectMenuInteraction,
 } from 'discord.js';
 import { buildRolePanelMessage } from '../commands/roles/rolePanel.js';
-import { DEFAULT_LEVELING_CONFIG } from '../config/defaults.js';
+import {
+  DEFAULT_CREDIT_LOAN_CONFIG,
+  DEFAULT_LEVELING_CONFIG,
+  DEFAULT_RPG_CONFIG,
+} from '../config/defaults.js';
 import { parseCardColor, renderLevelUpTemplate } from '../services/levelingService.js';
 import { computeRoleDiff } from '../services/rolePanelService.js';
 import type { AppContext } from '../ui/embeds.js';
@@ -19,6 +23,7 @@ import {
   ADMIN_DENIED_FEEDBACK,
   checkModuleDisabled,
   parseIntInRange,
+  parseNumberInRange,
   parsePositiveInt,
   prefilledField,
   respondFromModal,
@@ -357,6 +362,7 @@ export async function tryHandleConfigMenuButton(
       'rp_toggle_display',
       'rp_toggle_mode',
       'rp_delete',
+      'reset_credit_rpg',
     ]);
     if (!action || !handledActions.has(action)) {
       return false;
@@ -370,6 +376,21 @@ export async function tryHandleConfigMenuButton(
     }
 
     const cfg = ctx.repos.guildConfig.getOrCreate(guildId);
+
+    if (action === 'reset_credit_rpg') {
+      ctx.repos.guildConfig.updateCreditLoan(guildId, { ...DEFAULT_CREDIT_LOAN_CONFIG });
+      ctx.repos.guildConfig.updateRpg(guildId, { ...DEFAULT_RPG_CONFIG });
+      await interaction.update(
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'admin_credit_rpg' },
+          { type: 'success', text: '已将信用借贷、卖屁股与西幻 RPG 参数全部恢复为默认值！' },
+        ),
+      );
+      return true;
+    }
 
     if (action === 'toggle_announce_channel') {
       const nextChannelId = cfg.leveling.announceChannelId ? null : interaction.channelId;
@@ -594,6 +615,75 @@ export async function tryHandleConfigMenuButton(
         return true;
       }
       await interaction.showModal(buildShopCreateModal(modalType, ctx, guildId));
+      return true;
+    }
+
+    if (
+      modalType === 'admin_cl_loan' ||
+      modalType === 'admin_cl_hustle' ||
+      modalType === 'admin_rpg_cfg'
+    ) {
+      if (!actor.isAdmin) {
+        await interaction.update(
+          buildMenuMessage(ctx, guildId, actor, { page: 'home' }, ADMIN_DENIED_FEEDBACK),
+        );
+        return true;
+      }
+      const cfg = ctx.repos.guildConfig.getOrCreate(guildId);
+      if (modalType === 'admin_cl_loan') {
+        const cl = cfg.creditLoan;
+        const modal = new ModalBuilder()
+          .setCustomId('menu:modal_sub:admin_cl_loan')
+          .setTitle(truncateText('🏦 编辑贷款与逾期强扣参数', 45))
+          .addComponents(
+            prefilledField('bankLoanMaxCap', '银行贷款全局上限（1000~1000000000）', cl.bankLoanMaxCap, 12),
+            prefilledField('usuryLoanMax', '黑市高利贷上限（1000~1000000000）', cl.usuryLoanMax, 12),
+            prefilledField(
+              'usuryDailyRatePct',
+              '高利贷日利率 %（1 ~ 100）',
+              Number((cl.usuryDailyRate * 100).toFixed(2)),
+              8,
+            ),
+            prefilledField('usuryTermDays', '高利贷期限天数（1 ~ 30）', cl.usuryTermDays, 6),
+            prefilledField(
+              'garnishRatePct',
+              '逾期收益强扣比例 %（10 ~ 100）',
+              Number((cl.garnishRate * 100).toFixed(2)),
+              8,
+            ),
+          );
+        await interaction.showModal(modal);
+        return true;
+      }
+
+      if (modalType === 'admin_cl_hustle') {
+        const cl = cfg.creditLoan;
+        const modal = new ModalBuilder()
+          .setCustomId('menu:modal_sub:admin_cl_hustle')
+          .setTitle(truncateText('🍑 编辑卖屁股与信用互评参数', 45))
+          .addComponents(
+            prefilledField('hustleCooldownSec', '卖屁股冷却秒数（60 ~ 604800）', cl.hustleCooldownSec, 10),
+            prefilledField('hustleMinMultiplier', '收益下限倍率（1 ~ 20）', cl.hustleMinMultiplier, 8),
+            prefilledField('hustleMaxMultiplier', '收益上限倍率（1 ~ 50）', cl.hustleMaxMultiplier, 8),
+            prefilledField('hustleCreditPenalty', '每次卖屁股信用扣分（0 ~ 100）', cl.hustleCreditPenalty, 6),
+            prefilledField('dailyReviewLimit', '每人每日评价上限（1 ~ 20）', cl.dailyReviewLimit, 6),
+          );
+        await interaction.showModal(modal);
+        return true;
+      }
+
+      const rpg = cfg.rpg;
+      const modal = new ModalBuilder()
+        .setCustomId('menu:modal_sub:admin_rpg_cfg')
+        .setTitle(truncateText('⚔️ 编辑西幻 RPG 地牢参数', 45))
+        .addComponents(
+          prefilledField('dailyStamina', '每日免费体力（1 ~ 50）', rpg.dailyStamina, 6),
+          prefilledField('staminaPotionPrice', '体力药水售价（0 ~ 10000000）', rpg.staminaPotionPrice, 12),
+          prefilledField('staminaPotionDailyLimit', '体力药水每日限购（0 ~ 20）', rpg.staminaPotionDailyLimit, 6),
+          prefilledField('classSwitchCost', '职业转职费用（0 ~ 10000000）', rpg.classSwitchCost, 12),
+          prefilledField('bagCapacity', '装备背包容量上限（10 ~ 200）', rpg.bagCapacity, 6),
+        );
+      await interaction.showModal(modal);
       return true;
     }
   }
@@ -1018,6 +1108,221 @@ export async function tryHandleConfigMenuModal(
   parts: readonly string[],
 ): Promise<boolean> {
   const modalType = parts[2];
+
+  if (
+    modalType === 'admin_cl_loan' ||
+    modalType === 'admin_cl_hustle' ||
+    modalType === 'admin_rpg_cfg'
+  ) {
+    if (!actor.isAdmin) {
+      await respondFromModal(
+        interaction,
+        buildMenuMessage(ctx, guildId, actor, { page: 'home' }, ADMIN_DENIED_FEEDBACK),
+      );
+      return true;
+    }
+    const cfg = ctx.repos.guildConfig.getOrCreate(guildId);
+
+    if (modalType === 'admin_cl_loan') {
+      const bankLoanMaxCap = parseIntInRange(
+        interaction.fields.getTextInputValue('bankLoanMaxCap'),
+        1_000,
+        1_000_000_000,
+      );
+      const usuryLoanMax = parseIntInRange(
+        interaction.fields.getTextInputValue('usuryLoanMax'),
+        1_000,
+        1_000_000_000,
+      );
+      const usuryDailyRatePct = parseNumberInRange(
+        interaction.fields.getTextInputValue('usuryDailyRatePct'),
+        1,
+        100,
+      );
+      const usuryTermDays = parseIntInRange(
+        interaction.fields.getTextInputValue('usuryTermDays'),
+        1,
+        30,
+      );
+      const garnishRatePct = parseNumberInRange(
+        interaction.fields.getTextInputValue('garnishRatePct'),
+        10,
+        100,
+      );
+      if (
+        bankLoanMaxCap === null ||
+        usuryLoanMax === null ||
+        usuryDailyRatePct === null ||
+        usuryTermDays === null ||
+        garnishRatePct === null
+      ) {
+        await respondFromModal(
+          interaction,
+          buildMenuMessage(
+            ctx,
+            guildId,
+            actor,
+            { page: 'admin_credit_rpg' },
+            { type: 'error', text: '参数格式或范围无效，请检查各栏数值要求后重试。' },
+          ),
+        );
+        return true;
+      }
+
+      ctx.repos.guildConfig.updateCreditLoan(guildId, {
+        ...cfg.creditLoan,
+        bankLoanMaxCap,
+        usuryLoanMax,
+        usuryDailyRate: Number((usuryDailyRatePct / 100).toFixed(4)),
+        usuryTermDays,
+        garnishRate: Number((garnishRatePct / 100).toFixed(4)),
+      });
+      await respondFromModal(
+        interaction,
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'admin_credit_rpg' },
+          { type: 'success', text: '已保存银行贷款、高利贷与逾期强扣参数！' },
+        ),
+      );
+      return true;
+    }
+
+    if (modalType === 'admin_cl_hustle') {
+      const hustleCooldownSec = parseIntInRange(
+        interaction.fields.getTextInputValue('hustleCooldownSec'),
+        60,
+        604_800,
+      );
+      const hustleMinMultiplier = parseNumberInRange(
+        interaction.fields.getTextInputValue('hustleMinMultiplier'),
+        1,
+        20,
+      );
+      const hustleMaxMultiplier = parseNumberInRange(
+        interaction.fields.getTextInputValue('hustleMaxMultiplier'),
+        1,
+        50,
+      );
+      const hustleCreditPenalty = parseIntInRange(
+        interaction.fields.getTextInputValue('hustleCreditPenalty'),
+        0,
+        100,
+      );
+      const dailyReviewLimit = parseIntInRange(
+        interaction.fields.getTextInputValue('dailyReviewLimit'),
+        1,
+        20,
+      );
+      if (
+        hustleCooldownSec === null ||
+        hustleMinMultiplier === null ||
+        hustleMaxMultiplier === null ||
+        hustleCreditPenalty === null ||
+        dailyReviewLimit === null ||
+        hustleMaxMultiplier < hustleMinMultiplier
+      ) {
+        await respondFromModal(
+          interaction,
+          buildMenuMessage(
+            ctx,
+            guildId,
+            actor,
+            { page: 'admin_credit_rpg' },
+            { type: 'error', text: '卖屁股/评价参数无效（上限倍率须 >= 下限倍率）。' },
+          ),
+        );
+        return true;
+      }
+
+      ctx.repos.guildConfig.updateCreditLoan(guildId, {
+        ...cfg.creditLoan,
+        hustleCooldownSec,
+        hustleMinMultiplier,
+        hustleMaxMultiplier,
+        hustleCreditPenalty,
+        dailyReviewLimit,
+      });
+      await respondFromModal(
+        interaction,
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'admin_credit_rpg' },
+          { type: 'success', text: '已保存卖屁股与信用互评参数！' },
+        ),
+      );
+      return true;
+    }
+
+    const dailyStamina = parseIntInRange(
+      interaction.fields.getTextInputValue('dailyStamina'),
+      1,
+      50,
+    );
+    const staminaPotionPrice = parseIntInRange(
+      interaction.fields.getTextInputValue('staminaPotionPrice'),
+      0,
+      10_000_000,
+    );
+    const staminaPotionDailyLimit = parseIntInRange(
+      interaction.fields.getTextInputValue('staminaPotionDailyLimit'),
+      0,
+      20,
+    );
+    const classSwitchCost = parseIntInRange(
+      interaction.fields.getTextInputValue('classSwitchCost'),
+      0,
+      10_000_000,
+    );
+    const bagCapacity = parseIntInRange(
+      interaction.fields.getTextInputValue('bagCapacity'),
+      10,
+      200,
+    );
+    if (
+      dailyStamina === null ||
+      staminaPotionPrice === null ||
+      staminaPotionDailyLimit === null ||
+      classSwitchCost === null ||
+      bagCapacity === null
+    ) {
+      await respondFromModal(
+        interaction,
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'admin_credit_rpg' },
+          { type: 'error', text: '西幻 RPG 参数格式或范围无效，请检查后重试。' },
+        ),
+      );
+      return true;
+    }
+
+    ctx.repos.guildConfig.updateRpg(guildId, {
+      ...cfg.rpg,
+      dailyStamina,
+      staminaPotionPrice,
+      staminaPotionDailyLimit,
+      classSwitchCost,
+      bagCapacity,
+    });
+    await respondFromModal(
+      interaction,
+      buildMenuMessage(
+        ctx,
+        guildId,
+        actor,
+        { page: 'admin_credit_rpg' },
+        { type: 'success', text: '已保存西幻 RPG 地牢参数！' },
+      ),
+    );
+    return true;
+  }
 
   if (modalType === 'edit_card') {
     const rawNickname = interaction.fields.getTextInputValue('cardNickname').trim();

@@ -34,6 +34,14 @@ export const rankCommand: CommandDefinition = {
     const target = interaction.options.getUser('user') ?? interaction.user;
     const cfg = ctx.repos.guildConfig.getOrCreate(guildCtx.guildId);
     const data = ctx.services.leveling.getRankCardData(guildCtx.guildId, target.id);
+    const creditProfile = ctx.services.creditLoan.getCreditProfile(guildCtx.guildId, target.id);
+    const gamblingStats = ctx.services.creditLoan.getGamblingStats(guildCtx.guildId, target.id);
+    const hustleStats = ctx.services.creditLoan.getHustleStats(guildCtx.guildId, target.id);
+    const rpgChar = ctx.repos.rpg.getCharacter(guildCtx.guildId, target.id);
+    const netSign = gamblingStats.netProfit >= 0 ? '+' : '';
+    const rpgProgress = rpgChar
+      ? `Lv.**${rpgChar.level}**（已通第 **${rpgChar.maxChapterCleared}** 章）`
+      : '尚未踏入地下城';
 
     const titleBadge = data.profile.equippedTitle ? `「${data.profile.equippedTitle}」 ` : '';
     const displayCardName = data.profile.cardNickname || target.displayName;
@@ -103,6 +111,14 @@ export const rankCommand: CommandDefinition = {
         {
           name: '💬 活跃统计',
           value: `有效发言 **${data.profile.messageCount}** 条 ｜ 语音挂机 **${data.profile.voiceMinutes}** 分钟`,
+        },
+        {
+          name: '📜 征信与江湖档案',
+          value: [
+            `信用分：**${creditProfile.account.score}**（${creditProfile.tier.label}）${creditProfile.overdueLoans.length > 0 ? ' ⚠️ 逾期老赖' : ''}`,
+            `博弈战绩：净盈亏 **${netSign}${gamblingStats.netProfit.toLocaleString()}** ${cfg.economy.currencyName}（${gamblingStats.gamesPlayed} 局） ｜ 卖屁股：**${hustleStats.totalCount}** 次`,
+            `⚔️ 西幻RPG：${rpgProgress}`,
+          ].join('\n'),
         },
       )
       .setTimestamp();

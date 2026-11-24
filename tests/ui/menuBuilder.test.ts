@@ -375,6 +375,10 @@ describe('menuBuilder Discord component constraints & schema integration', () =>
       { page: 'dice', choice: 'triple' },
       { page: 'bj' },
       { page: 'bank' },
+      { page: 'credit' },
+      { page: 'loan' },
+      { page: 'hustle' },
+      { page: 'rpg' },
       { page: 'multi' },
       { page: 'rob' },
       { page: 'pay' },
@@ -420,6 +424,7 @@ describe('menuBuilder Discord component constraints & schema integration', () =>
       { page: 'admin_mod' },
       { page: 'admin_ops' },
       { page: 'admin_ai' },
+      { page: 'admin_credit_rpg' },
       { page: 'admin_monitor', filter: 'issues' },
       { page: 'admin_monitor', filter: 'all' },
     ];

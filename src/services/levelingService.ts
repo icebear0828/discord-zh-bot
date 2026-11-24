@@ -63,6 +63,8 @@ export interface LeaderboardEntry {
   primaryValue: number;
   secondaryValue: number;
   equippedTitle: string | null;
+  totalWon?: number;
+  totalLost?: number;
 }
 
 export interface LeaderboardPage {
@@ -487,6 +489,8 @@ export class LevelingService {
           primaryValue: row.netProfit,
           secondaryValue: row.gamesPlayed,
           equippedTitle: null,
+          totalWon: row.totalWon,
+          totalLost: row.totalLost,
         })),
       };
     }

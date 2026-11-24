@@ -41,6 +41,10 @@ export type MenuView =
   | { page: 'dice'; choice: DiceChoice }
   | { page: 'bj'; finishedGame?: BlackjackGame; balanceAfterFinish?: number }
   | { page: 'bank' }
+  | { page: 'credit' }
+  | { page: 'loan' }
+  | { page: 'hustle' }
+  | { page: 'rpg' }
   | { page: 'multi' }
   | { page: 'rob' }
   | { page: 'pay' }
@@ -74,6 +78,7 @@ export type MenuView =
   | { page: 'admin_mod' }
   | { page: 'admin_ops' }
   | { page: 'admin_ai' }
+  | { page: 'admin_credit_rpg' }
   | { page: 'admin_monitor'; filter?: 'issues' | 'all' };
 
 export type MenuComponentRow =

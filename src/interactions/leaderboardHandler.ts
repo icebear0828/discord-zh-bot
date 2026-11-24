@@ -1,4 +1,8 @@
-import { MessageFlags, type ButtonInteraction } from 'discord.js';
+import {
+  MessageFlags,
+  type ButtonInteraction,
+  type StringSelectMenuInteraction,
+} from 'discord.js';
 import {
   buildLeaderboardMessage,
   parseLeaderboardType,
@@ -22,6 +26,24 @@ export async function handleLeaderboardButton(
   } catch {
     await interaction.reply({
       embeds: [createErrorEmbed('❌ 翻页失败', '无法更新排行榜消息，请重新执行 `/排行榜`。')],
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+}
+
+export async function handleLeaderboardSelect(
+  interaction: StringSelectMenuInteraction,
+  ctx: AppContext,
+): Promise<void> {
+  if (!interaction.guildId) return;
+  const selected = interaction.values[0];
+  const type = parseLeaderboardType(selected);
+
+  try {
+    await interaction.update(buildLeaderboardMessage(ctx, interaction.guildId, type, 1));
+  } catch {
+    await interaction.reply({
+      embeds: [createErrorEmbed('❌ 切换榜单失败', '无法更新排行榜消息，请重新执行 `/排行榜`。')],
       flags: MessageFlags.Ephemeral,
     });
   }

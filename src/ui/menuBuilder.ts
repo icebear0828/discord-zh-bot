@@ -32,6 +32,15 @@ import {
   buildRouletteView,
 } from './chaosMenuBuilder.js';
 import {
+  buildCreditView,
+  buildHustleView,
+  buildLoanView,
+} from './creditLoanMenuBuilder.js';
+import {
+  buildRpgHomeView,
+  buildRpgRunView,
+} from './rpgMenuBuilder.js';
+import {
   COLORS,
   formatDurationZh,
   renderProgressBar,
@@ -106,10 +115,10 @@ export function buildLobbyMessage(guildName?: string): BuiltButtonMessage {
         '点击下方按钮即可打开**仅你自己可见**的一站式互动面板，无需记忆指令也不刷屏频道！',
         '',
         '• 🎮 **独立游玩**：每日签到、打工赚币、今日运势、老虎机、猜大小、二十一点',
-        '• 👥 **多人博弈**：偷钱打劫、转账、骰子决斗、拼手气红包、黑市道具、悬赏、轮盘、数字炸弹',
-        '• 🎯 **吃瓜事件**：自由开盘押注、天降宝箱、合力讨伐世界 Boss（含尾刀暴击大奖）',
-        '• 💞 **关系宠物**：结婚/结拜 CP 打卡称号、盲盒电子宠物与公开斗兽场 PVP',
-        '• 🏦 **银行与商店**：存钱防偷每日领息、购买身份组/称号/经验卡与查看榜单',
+        '• ⚔️ **西幻 RPG 冒险**：4 大职业、6 大地下城 Roguelike 闯关、装备强化与宠物协同助战',
+        '• 💳 **信用借贷与卖屁股**：信用分权益、银行信用贷/黑市高利贷、24h 卖屁股赚快钱与老赖通缉',
+        '• 👥 **多人博弈与事件**：偷钱劫金库、转账、决斗、红包、黑市道具、悬赏、轮盘、数字炸弹、吃瓜开盘与世界 Boss',
+        '• 💞 **关系宠物与榜单**：结婚/结拜 CP、盲盒宠物斗兽场、商店背包与全服 12 大排行榜',
       ].join('\n'),
     )
     .setFooter({ text: '提示：也可随时发送斜杠指令 /菜单 打开个人面板' })
@@ -144,18 +153,24 @@ function buildHomeView(
   const titleBadge = profile.equippedTitle ? `「${profile.equippedTitle}」` : '';
   const bar = renderProgressBar(rankData.progress.progressRatio, 12);
   const pct = Math.round(rankData.progress.progressRatio * 100);
+  const creditProfile = ctx.services.creditLoan.getCreditProfile(guildId, actor.id, nowMs);
+  const deadbeatAlert =
+    creditProfile.overdueLoans.length > 0
+      ? ` ｜ 🚨 **失信老赖（逾期欠款 ${creditProfile.totalOverdueDebt.toLocaleString()}，禁赌禁转账）**`
+      : '';
 
   const description = [
     `🏅 **Lv.${rankData.progress.level}**（全服第 **#${rankData.rank}** / ${rankData.totalMembers} 名）`,
     `\`${bar}\` **${pct}%**（${rankData.progress.currentLevelXp} / ${rankData.progress.nextLevelXp} XP）`,
+    `📜 信用档案：**${creditProfile.account.score}** 分（${creditProfile.tier.label}）${deadbeatAlert}`,
     '',
     `📅 每日签到：${checkedInToday ? `✅ 今日已签（连签 ${profile.dailyStreak} 天）` : '⏰ 今日未签到'}`,
     `💼 打工状态：${workRemainMs > 0 ? `⏳ 冷却剩余 ${formatDurationZh(workRemainMs)}` : '✅ 当前可打工'}`,
     `🎴 今日运势：${fortuneToday ? `🎋 【${fortuneToday.luckTier}】幸运数 ${fortuneToday.luckyNumber}` : '✨ 今日未抽签'}`,
     `🛡️ 防盗护盾：${shieldRemainMs > 0 ? `剩余 ${formatDurationZh(shieldRemainMs)}` : '未开启（现金可能被偷）'}`,
     '',
-    '🔒 **仅自己可见**：银行存/取、领利息、日常签到/打工、单人小游戏（高倍大奖自动全群播报）、商店背包',
-    '📢 **全群公开**：偷钱打劫、群友转账、骰子决斗、抢红包、趣味互动、名片/排行榜晒出',
+    '🔒 **仅自己可见**：银行借贷、日常签到/打工、单人小游戏、西幻 RPG 探险、商店背包',
+    '📢 **全群公开**：偷钱打劫、群友转账、骰子决斗、抢红包、卖屁股播报、名片/排行榜晒出',
   ].join('\n');
 
   const embed = new EmbedBuilder()
@@ -191,7 +206,7 @@ function buildHomeView(
     makeButton('menu:nav:multi', '👥 多人博弈', ButtonStyle.Primary),
     makeButton('menu:nav:events', '🎯 吃瓜事件', ButtonStyle.Primary),
     makeButton('menu:nav:social_hub', '💞 关系宠物', ButtonStyle.Primary),
-    makeButton('menu:nav:bank', '🏦 银行存钱', ButtonStyle.Success),
+    makeButton('menu:nav:bank', '🏦 银行与借贷', ButtonStyle.Success),
   );
 
   const quickButtons = [
@@ -206,6 +221,8 @@ function buildHomeView(
   const quickRow = buttonRow(...quickButtons);
 
   const extraRow = buttonRow(
+    makeButton('menu:nav:rpg', '⚔️ 西幻冒险', ButtonStyle.Primary),
+    makeButton('menu:nav:hustle', '🍑 卖屁股', ButtonStyle.Danger),
     makeButton('menu:nav:shop', '🛒 商店与黑市', ButtonStyle.Secondary),
     makeButton('menu:nav:rank', '🏆 排行名片', ButtonStyle.Secondary),
     makeButton('menu:nav:self_roles', '🎭 自助身份组', ButtonStyle.Secondary),
@@ -480,13 +497,18 @@ function buildBankView(
 ): BuiltMenuMessage {
   const cfg = ctx.repos.guildConfig.getOrCreate(guildId).economy;
   const profile = ctx.repos.profile.getOrCreate(guildId, actor.id);
+  const creditProfile = ctx.services.creditLoan.getCreditProfile(guildId, actor.id, nowMs);
+  const effectiveInterestCap = Math.max(
+    1,
+    Math.round(cfg.bankInterestMax * creditProfile.tier.bankInterestCapMult),
+  );
   const today = getDateKey(nowMs, ctx.timezone);
   const interestClaimed = profile.lastBankInterestDate === today;
   const estimatedInterest =
     profile.bankCoins >= cfg.bankInterestMinDeposit
       ? Math.max(
           1,
-          Math.min(cfg.bankInterestMax, Math.floor(profile.bankCoins * cfg.bankInterestRate)),
+          Math.min(effectiveInterestCap, Math.floor(profile.bankCoins * cfg.bankInterestRate)),
         )
       : 0;
 
@@ -496,10 +518,17 @@ function buildBankView(
       ? `✨ 今日可领预计 **+${estimatedInterest}** ${cfg.currencyName}`
       : `🔒 存款需满 **${cfg.bankInterestMinDeposit}** ${cfg.currencyName} 才能领息`;
 
+  const debtLine =
+    creditProfile.totalDebt > 0
+      ? `💳 **在途贷款**：共 **${creditProfile.openLoans.length}** 笔，待还 **${creditProfile.totalDebt.toLocaleString()}** ${cfg.currencyName}${creditProfile.totalOverdueDebt > 0 ? `（🚨 含逾期 **${creditProfile.totalOverdueDebt.toLocaleString()}**）` : ''}`
+      : '💳 **在途贷款**：当前无欠款，信用记录良好';
+
   const description = [
-    `• 日利率：**${formatRatePercent(cfg.bankInterestRate)}**（每日上限 **${cfg.bankInterestMax}** ${cfg.currencyName}，起息门槛 **${cfg.bankInterestMinDeposit}**）`,
+    `• 日利率：**${formatRatePercent(cfg.bankInterestRate)}**（基础上限 **${cfg.bankInterestMax}** × 信用倍率 **${creditProfile.tier.bankInterestCapMult}x** = **${effectiveInterestCap}** ${cfg.currencyName}，起息门槛 **${cfg.bankInterestMinDeposit}**）`,
     `• 利息状态：${interestStatus}`,
-    `• 银行金库有重兵把守（强抢成功率仅 **${formatRatePercent(cfg.robBankSuccessRate)}** 且每次最多被刮走少量零头，翻车高额重罚）；游玩游戏、发红包、决斗、转账均使用**口袋现金**。`,
+    `• 📜 信用评级：**${creditProfile.account.score}** 分（${creditProfile.tier.label}）`,
+    `• ${debtLine}`,
+    `• 银行金库有重兵把守（强抢成功率仅 **${formatRatePercent(cfg.robBankSuccessRate)}**）；游玩游戏、发红包、决斗、转账均使用**口袋现金**。`,
   ].join('\n');
 
   const embed = new EmbedBuilder()
@@ -544,8 +573,10 @@ function buildBankView(
       ),
       buttonRow(
         makeButton('menu:bank:interest', '💹 领取今日利息', ButtonStyle.Success),
+        makeButton('menu:nav:loan', '💳 信用贷款中心', ButtonStyle.Primary),
+        makeButton('menu:nav:credit', '📜 我的信用档案', ButtonStyle.Secondary),
         makeButton('menu:nav:solo', '🎮 独立游玩', ButtonStyle.Secondary),
-        makeButton('menu:nav:home', '🏠 返回主菜单', ButtonStyle.Secondary),
+        makeButton('menu:nav:home', '🏠 主菜单', ButtonStyle.Secondary),
       ),
     ],
   };
@@ -1040,6 +1071,14 @@ function createRankEmbed(
   const petPart = activePet
     ? `${activeSp?.emoji ?? '🐾'} **${activePet.nickname}** [${activePet.rarity} Lv.${activePet.level}]`
     : '暂无出战宠';
+  const creditProfile = ctx.services.creditLoan.getCreditProfile(guildId, actor.id, nowMs);
+  const gamblingStats = ctx.services.creditLoan.getGamblingStats(guildId, actor.id);
+  const hustleStats = ctx.services.creditLoan.getHustleStats(guildId, actor.id);
+  const rpgChar = ctx.repos.rpg.getCharacter(guildId, actor.id);
+  const netSign = gamblingStats.netProfit >= 0 ? '+' : '';
+  const rpgPart = rpgChar
+    ? `Lv.**${rpgChar.level}**（已通第 **${rpgChar.maxChapterCleared}** 章）`
+    : '尚未踏入地下城';
 
   const parsedColor = parseCardColor(data.profile.cardColor);
   const customColor = parsedColor.ok ? parsedColor.colorInt : null;
@@ -1087,6 +1126,14 @@ function createRankEmbed(
       {
         name: '💬 活跃统计',
         value: `有效发言 **${data.profile.messageCount}** 条 ｜ 语音挂机 **${data.profile.voiceMinutes}** 分钟`,
+      },
+      {
+        name: '📜 征信与江湖档案',
+        value: [
+          `信用分：**${creditProfile.account.score}**（${creditProfile.tier.label}）${creditProfile.overdueLoans.length > 0 ? ' ⚠️ 逾期老赖' : ''}`,
+          `博弈战绩：净盈亏 **${netSign}${gamblingStats.netProfit.toLocaleString()}** ${cfg.currencyName}（${gamblingStats.gamesPlayed} 局） ｜ 卖屁股：**${hustleStats.totalCount}** 次`,
+          `⚔️ 西幻RPG：${rpgPart}`,
+        ].join('\n'),
       },
     )
     .setTimestamp();
@@ -1149,12 +1196,12 @@ function createLeaderboardEmbedAndMeta(
     coins: `💰 服务器${cfg.currencyName}富豪榜`,
     invites: '📨 服务器邀请贡献排行榜',
     stat: `📏 服务器${lvlCfg.statName}排行榜`,
-    credit: '🏦 服务器信用分红榜',
-    deadbeat: '💀 服务器失信老赖黑榜',
-    hustle: '🪩 服务器下海捞金榜',
+    credit: '📜 服务器信用分红榜',
+    deadbeat: '💀 服务器老赖黑名单',
+    hustle: '🍑 服务器卖屁股营收榜',
     gambling_profit: '🎰 服务器赌神盈利榜',
-    gambling_loss: '🪦 服务器慈善赌圣亏损榜',
-    rpg: '⚔️ 服务器奇幻RPG地牢榜',
+    gambling_loss: '🪦 服务器冤大头亏损榜',
+    rpg: '⚔️ 服务器西幻RPG地牢榜',
   };
 
   const lines = res.items.map((item, idx) => {
@@ -1172,17 +1219,19 @@ function createLeaderboardEmbedAndMeta(
       return `${medal} <@${item.userId}> ${titleTag} — 📏 **${item.primaryValue}** ${lvlCfg.statUnit}（Lv.${item.secondaryValue}）`;
     }
     if (lbType === 'credit') {
-      return `${medal} <@${item.userId}> — 🏦 信用分 **${item.primaryValue}**`;
+      return `${medal} <@${item.userId}> — 📜 信用分 **${item.primaryValue}**`;
     }
     if (lbType === 'deadbeat') {
       return `${medal} <@${item.userId}> — 💀 逾期欠款 **${item.primaryValue.toLocaleString()}** ${cfg.currencyName}（信用分 ${item.secondaryValue}）`;
     }
     if (lbType === 'hustle') {
-      return `${medal} <@${item.userId}> — 🪩 累计营收 **${item.primaryValue.toLocaleString()}** ${cfg.currencyName}（营业 ${item.secondaryValue} 次）`;
+      return `${medal} <@${item.userId}> — 🍑 累计营收 **${item.primaryValue.toLocaleString()}** ${cfg.currencyName}（营业 ${item.secondaryValue} 次）`;
     }
     if (lbType === 'gambling_profit' || lbType === 'gambling_loss') {
       const sign = item.primaryValue >= 0 ? '+' : '';
-      return `${medal} <@${item.userId}> — 🎰 净盈亏 **${sign}${item.primaryValue.toLocaleString()}** ${cfg.currencyName}（${item.secondaryValue} 局）`;
+      const won = (item.totalWon ?? 0).toLocaleString();
+      const lost = (item.totalLost ?? 0).toLocaleString();
+      return `${medal} <@${item.userId}> — 🎰 净盈亏 **${sign}${item.primaryValue.toLocaleString()}** ${cfg.currencyName}（总赢 +${won} / 总亏 -${lost} · ${item.secondaryValue} 局）`;
     }
     if (lbType === 'rpg') {
       return `${medal} <@${item.userId}> — ⚔️ 已通第 **${item.primaryValue}** 章（Lv.${item.secondaryValue}）`;
@@ -1249,7 +1298,9 @@ function buildLeaderboardView(
     makeButton('menu:nav:home', '🏠 主菜单', ButtonStyle.Secondary),
   );
 
-  const lvlCfg = ctx.repos.guildConfig.getOrCreate(guildId).leveling;
+  const guildCfg = ctx.repos.guildConfig.getOrCreate(guildId);
+  const lvlCfg = guildCfg.leveling;
+  const ecoCfg = guildCfg.economy;
   const prevPage = Math.max(1, page - 1);
   const nextPage = Math.min(totalPages, page + 1);
   const pagerRow = buttonRow(
@@ -1273,7 +1324,61 @@ function buildLeaderboardView(
     makeButton(`menu:share:lb:${lbType}:${page}`, '📢 晒出排行榜', ButtonStyle.Success),
   );
 
-  return { embeds: [embed], components: [tabRow, pagerRow] };
+  const boardSelect = new StringSelectMenuBuilder()
+    .setCustomId('menu:lb_select')
+    .setPlaceholder('🔀 切换全服 12 大排行榜...')
+    .addOptions(
+      new StringSelectMenuOptionBuilder()
+        .setLabel('📈 等级经验榜')
+        .setValue('xp')
+        .setDefault(lbType === 'xp'),
+      new StringSelectMenuOptionBuilder()
+        .setLabel(truncateText(`💰 ${ecoCfg.currencyName}富豪榜`, 100))
+        .setValue('coins')
+        .setDefault(lbType === 'coins'),
+      new StringSelectMenuOptionBuilder()
+        .setLabel(truncateText(`📏 ${lvlCfg.statName}榜`, 100))
+        .setValue('stat')
+        .setDefault(lbType === 'stat'),
+      new StringSelectMenuOptionBuilder()
+        .setLabel('📨 邀请贡献榜')
+        .setValue('invites')
+        .setDefault(lbType === 'invites'),
+      new StringSelectMenuOptionBuilder()
+        .setLabel('📜 信用分红榜')
+        .setValue('credit')
+        .setDefault(lbType === 'credit'),
+      new StringSelectMenuOptionBuilder()
+        .setLabel('💀 老赖黑名单')
+        .setValue('deadbeat')
+        .setDefault(lbType === 'deadbeat'),
+      new StringSelectMenuOptionBuilder()
+        .setLabel('🍑 卖屁股营收榜')
+        .setValue('hustle')
+        .setDefault(lbType === 'hustle'),
+      new StringSelectMenuOptionBuilder()
+        .setLabel('🎰 赌神盈利榜')
+        .setValue('gambling_profit')
+        .setDefault(lbType === 'gambling_profit'),
+      new StringSelectMenuOptionBuilder()
+        .setLabel('🪦 冤大头亏损榜')
+        .setValue('gambling_loss')
+        .setDefault(lbType === 'gambling_loss'),
+      new StringSelectMenuOptionBuilder()
+        .setLabel('⚔️ 西幻RPG地牢榜')
+        .setValue('rpg')
+        .setDefault(lbType === 'rpg'),
+      new StringSelectMenuOptionBuilder()
+        .setLabel('💕 CP 亲密度榜')
+        .setValue('cp_lb'),
+      new StringSelectMenuOptionBuilder()
+        .setLabel('🎯 悬赏通缉榜')
+        .setValue('bounty'),
+    );
+
+  const selectRow = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(boardSelect);
+
+  return { embeds: [embed], components: [tabRow, pagerRow, selectRow] };
 }
 
 const MODULE_META: ReadonlyArray<{ key: ModuleKey; label: string; emoji: string }> = [
@@ -1321,6 +1426,8 @@ function buildAdminOverviewView(
     `👑 **Bot 管理员用户**：${adminUsersText}`,
     `🛡️ **Bot 管理员身份组**：${adminRolesText}`,
     `🎯 **事件与宠物**：事件每 **${cfg.games.eventMsgThreshold}** 发言/冷却 **${cfg.games.eventCooldownSec}s**（${cfg.games.eventAutoEnabled ? '自动开' : '自动关'}）｜ Boss HP **${cfg.games.bossBaseHp}** / 池 **${cfg.games.bossRewardPool}** ｜ 宠盲盒 **${cfg.games.petGachaPrice}** / 求婚 **${cfg.games.cpProposeCost}**`,
+    `💳 **信用与借贷**：银行贷上限 **${cfg.creditLoan.bankLoanMaxCap.toLocaleString()}** ｜ 高利贷上限 **${cfg.creditLoan.usuryLoanMax.toLocaleString()}**（日息 ${formatRatePercent(cfg.creditLoan.usuryDailyRate)} / ${cfg.creditLoan.usuryTermDays}天）｜ 强扣比例 ${formatRatePercent(cfg.creditLoan.garnishRate)} ｜ 卖屁股冷却 ${cfg.creditLoan.hustleCooldownSec}s`,
+    `⚔️ **西幻 RPG**：每日体力 **${cfg.rpg.dailyStamina}** ｜ 体力药 **${cfg.rpg.staminaPotionPrice}**（日限 ${cfg.rpg.staminaPotionDailyLimit}）｜ 转职费 **${cfg.rpg.classSwitchCost}** ｜ 背包上限 **${cfg.rpg.bagCapacity}**`,
   ].join('\n');
 
   const embed = new EmbedBuilder()
@@ -1349,7 +1456,52 @@ function buildAdminOverviewView(
         makeButton('menu:admin:send_lobby', '📌 发送频道大厅入口', ButtonStyle.Success),
       ),
       buttonRow(
+        makeButton('menu:nav:admin_credit_rpg', '💳 信用/借贷/RPG', ButtonStyle.Primary),
         makeButton('menu:nav:admin', '🔄 刷新配置', ButtonStyle.Secondary),
+        makeButton('menu:nav:home', '🏠 主菜单', ButtonStyle.Secondary),
+      ),
+    ],
+  };
+}
+
+function buildAdminCreditRpgView(
+  ctx: AppContext,
+  guildId: string,
+  actor: MenuActor,
+  feedback: MenuFeedback | undefined,
+): BuiltMenuMessage {
+  const cfg = ctx.repos.guildConfig.getOrCreate(guildId);
+  const cl = cfg.creditLoan;
+  const rpg = cfg.rpg;
+  const currency = cfg.economy.currencyName;
+
+  const description = [
+    '点击下方对应按钮打开预填参数的弹窗，实时调整信用借贷、卖屁股与西幻 RPG 参数：',
+    '',
+    `🏦 **银行与高利贷参数**：银行贷全局上限 **${cl.bankLoanMaxCap.toLocaleString()}** ${currency} ｜ 高利贷上限 **${cl.usuryLoanMax.toLocaleString()}** ${currency}（日息 **${formatRatePercent(cl.usuryDailyRate)}** · 期限 **${cl.usuryTermDays}** 天）｜ 逾期强扣比例 **${formatRatePercent(cl.garnishRate)}**`,
+    `🍑 **卖屁股与评价参数**：营业冷却 **${cl.hustleCooldownSec}** 秒 ｜ 基础倍率 **${cl.hustleMinMultiplier}x ~ ${cl.hustleMaxMultiplier}x** 打工档位 ｜ 每次信用扣分 **-${cl.hustleCreditPenalty}** ｜ 每日互评次数上限 **${cl.dailyReviewLimit}**`,
+    `⚔️ **西幻 RPG 参数**：每日免费体力 **${rpg.dailyStamina}** ｜ 体力药售价 **${rpg.staminaPotionPrice.toLocaleString()}** ${currency}（日限购 **${rpg.staminaPotionDailyLimit}** 瓶）｜ 转职费用 **${rpg.classSwitchCost.toLocaleString()}** ${currency} ｜ 装备背包上限 **${rpg.bagCapacity}** 格`,
+  ].join('\n');
+
+  const embed = new EmbedBuilder()
+    .setColor(resolveColor(COLORS.PRIMARY, feedback))
+    .setAuthor({ name: `${actor.displayName} · 信用/借贷/RPG 调校`, iconURL: actor.avatarUrl })
+    .setTitle('💳 信用 / 借贷 / 西幻 RPG 参数管理')
+    .setDescription(withFeedback(description, feedback))
+    .setFooter({ text: '🔒 修改后立即保存至 SQLite 并对全服生效' })
+    .setTimestamp();
+
+  return {
+    embeds: [embed],
+    components: [
+      buttonRow(
+        makeButton('menu:modal:admin_cl_loan', '🏦 贷款与强扣参数', ButtonStyle.Primary),
+        makeButton('menu:modal:admin_cl_hustle', '🍑 卖屁股与评价', ButtonStyle.Primary),
+        makeButton('menu:modal:admin_rpg_cfg', '⚔️ 西幻RPG参数', ButtonStyle.Primary),
+      ),
+      buttonRow(
+        makeButton('menu:admin:reset_credit_rpg', '♻️ 恢复默认参数', ButtonStyle.Danger),
+        makeButton('menu:nav:admin', '⬅️ 管理后台', ButtonStyle.Secondary),
         makeButton('menu:nav:home', '🏠 主菜单', ButtonStyle.Secondary),
       ),
     ],
@@ -1684,6 +1836,18 @@ export function buildMenuMessage(
       return buildBlackjackView(ctx, guildId, actor, view, feedback);
     case 'bank':
       return buildBankView(ctx, guildId, actor, feedback, nowMs);
+    case 'credit':
+      return buildCreditView(ctx, guildId, actor, feedback, nowMs);
+    case 'loan':
+      return buildLoanView(ctx, guildId, actor, feedback, nowMs);
+    case 'hustle':
+      return buildHustleView(ctx, guildId, actor, feedback, nowMs);
+    case 'rpg': {
+      const activeRun = ctx.services.rpg.getActiveRun(guildId, actor.id);
+      return activeRun
+        ? buildRpgRunView(ctx, guildId, actor, feedback)
+        : buildRpgHomeView(ctx, guildId, actor, feedback, nowMs);
+    }
     case 'multi':
       return buildMultiView(ctx, guildId, actor, feedback, nowMs);
     case 'rob':
@@ -1750,6 +1914,8 @@ export function buildMenuMessage(
       return buildAdminOpsView(ctx, guildId, actor, feedback);
     case 'admin_ai':
       return buildAdminAiView(ctx, guildId, actor, feedback);
+    case 'admin_credit_rpg':
+      return buildAdminCreditRpgView(ctx, guildId, actor, feedback);
     case 'admin_monitor':
       return buildAdminMonitorView(ctx, guildId, actor, view.filter ?? 'issues', feedback, nowMs);
   }
