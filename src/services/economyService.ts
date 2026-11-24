@@ -14,11 +14,14 @@ import {
   BANK_ROB_TRAP_FINE_MAX,
   BANK_ROB_TRAP_FINE_MIN,
   BANK_ROB_TRAP_FINE_RATE,
+  DEFAULT_ROB_PROTECTED_KEYWORDS,
   MAX_SOLO_GAMBLE_BET,
   ROB_ATTACKER_MIN_ASSETS,
+  ROB_EASTER_EGG_FINE_RATE,
   ROB_FINE_MAX,
   ROB_FINE_MIN,
   ROB_FINE_RATE,
+  ROB_KING_EASTER_EGG_STORIES,
   ROB_LOCKPICK_BONUS,
   ROB_LOCKPICK_CAP,
   ROB_STEAL_MAX_AMOUNT,
@@ -55,6 +58,67 @@ export type WorkResult =
   | { ok: true; reward: number; story: string; balance: number; cursed?: boolean }
   | { ok: false; reason: 'cooldown'; retryAfterSec: number };
 
+export interface RobTargetHints {
+  displayNames?: readonly string[];
+  roleNames?: readonly string[];
+}
+
+export function matchesRobProtectedTarget(
+  targetProfile: { equippedTitle: string | null; cardNickname: string | null },
+  targetHints?: RobTargetHints,
+  keywords: readonly string[] = DEFAULT_ROB_PROTECTED_KEYWORDS,
+): boolean {
+  const loweredKeywords = keywords
+    .map((kw) => kw.trim().toLowerCase())
+    .filter((kw) => kw.length > 0);
+  if (loweredKeywords.length === 0) return false;
+
+  const candidates: string[] = [];
+  if (targetProfile.equippedTitle) candidates.push(targetProfile.equippedTitle);
+  if (targetProfile.cardNickname) candidates.push(targetProfile.cardNickname);
+  if (targetHints?.displayNames) {
+    for (const name of targetHints.displayNames) {
+      if (name) candidates.push(name);
+    }
+  }
+  if (targetHints?.roleNames) {
+    for (const roleName of targetHints.roleNames) {
+      if (roleName) candidates.push(roleName);
+    }
+  }
+
+  for (const raw of candidates) {
+    const normalized = raw.toLowerCase();
+    for (const kw of loweredKeywords) {
+      if (normalized.includes(kw)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function renderRobEasterEggStory(
+  attackerId: string,
+  targetId: string,
+  fine: number,
+  currencyName: string,
+  rng: () => number,
+): string {
+  const raw = rng();
+  const r = Number.isFinite(raw) ? Math.min(0.999999, Math.max(0, raw)) : 0;
+  const idx = Math.min(
+    ROB_KING_EASTER_EGG_STORIES.length - 1,
+    Math.floor(r * ROB_KING_EASTER_EGG_STORIES.length),
+  );
+  const template = ROB_KING_EASTER_EGG_STORIES[idx]!;
+  return template
+    .replaceAll('{attacker}', `<@${attackerId}>`)
+    .replaceAll('{target}', `<@${targetId}>`)
+    .replaceAll('{fine}', `**${fine}**`)
+    .replaceAll('{currency}', currencyName);
+}
+
 export type RobResult =
   | {
       ok: true;
@@ -68,6 +132,8 @@ export type RobResult =
       trapped?: boolean;
       usedLockpick?: boolean;
       bountyClaimed?: number;
+      easterEggTriggered?: boolean;
+      easterEggStory?: string;
     }
   | {
       ok: false;
@@ -93,6 +159,8 @@ export type BankRobResult =
       trapped?: boolean;
       usedLockpick?: boolean;
       bountyClaimed?: number;
+      easterEggTriggered?: boolean;
+      easterEggStory?: string;
     }
   | {
       ok: false;
@@ -267,6 +335,7 @@ export class EconomyService {
     targetId: string,
     nowMs = Date.now(),
     rng: () => number = Math.random,
+    targetHints?: RobTargetHints,
   ): RobResult {
     if (attackerId === targetId) {
       return { ok: false, reason: 'self_target' };
@@ -284,6 +353,50 @@ export class EconomyService {
           ok: false,
           reason: 'cooldown',
           retryAfterSec: Math.ceil((cooldownMs - elapsed) / 1000),
+        };
+      }
+
+      if (matchesRobProtectedTarget(target, targetHints)) {
+        const attackerTotal = attacker.coins + attacker.bankCoins;
+        const rawFine =
+          attackerTotal > 0 ? Math.max(1, Math.floor(attackerTotal * ROB_EASTER_EGG_FINE_RATE)) : 0;
+        const actualFine = Math.min(rawFine, attackerTotal);
+        const fineFromPocket = Math.min(attacker.coins, actualFine);
+        const fineFromBank = actualFine - fineFromPocket;
+        const nextAttackerCoins = attacker.coins - fineFromPocket;
+        const nextAttackerBank = attacker.bankCoins - fineFromBank;
+        const nextTargetCoins = target.coins + actualFine;
+
+        this.profileRepo.save({
+          ...attacker,
+          coins: nextAttackerCoins,
+          bankCoins: nextAttackerBank,
+          lastRobAt: nowMs,
+        });
+        this.profileRepo.save({
+          ...target,
+          coins: nextTargetCoins,
+        });
+
+        const easterEggStory = renderRobEasterEggStory(
+          attackerId,
+          targetId,
+          actualFine,
+          cfg.currencyName,
+          rng,
+        );
+
+        return {
+          ok: true,
+          success: false,
+          amount: actualFine,
+          fineFromPocket,
+          fineFromBank,
+          attackerBalance: nextAttackerCoins,
+          attackerBankBalance: nextAttackerBank,
+          targetBalance: nextTargetCoins,
+          easterEggTriggered: true,
+          easterEggStory,
         };
       }
 
@@ -440,6 +553,7 @@ export class EconomyService {
     targetId: string,
     nowMs = Date.now(),
     rng: () => number = Math.random,
+    targetHints?: RobTargetHints,
   ): BankRobResult {
     if (attackerId === targetId) {
       return { ok: false, reason: 'self_target' };
@@ -457,6 +571,50 @@ export class EconomyService {
           ok: false,
           reason: 'cooldown',
           retryAfterSec: Math.ceil((cooldownMs - elapsed) / 1000),
+        };
+      }
+
+      if (matchesRobProtectedTarget(target, targetHints)) {
+        const attackerTotal = attacker.coins + attacker.bankCoins;
+        const rawFine =
+          attackerTotal > 0 ? Math.max(1, Math.floor(attackerTotal * ROB_EASTER_EGG_FINE_RATE)) : 0;
+        const actualFine = Math.min(rawFine, attackerTotal);
+        const fineFromPocket = Math.min(attacker.coins, actualFine);
+        const fineFromBank = actualFine - fineFromPocket;
+        const nextAttackerCoins = attacker.coins - fineFromPocket;
+        const nextAttackerBank = attacker.bankCoins - fineFromBank;
+        const nextTargetBank = target.bankCoins + actualFine;
+
+        this.profileRepo.save({
+          ...attacker,
+          coins: nextAttackerCoins,
+          bankCoins: nextAttackerBank,
+          lastRobAt: nowMs,
+        });
+        this.profileRepo.save({
+          ...target,
+          bankCoins: nextTargetBank,
+        });
+
+        const easterEggStory = renderRobEasterEggStory(
+          attackerId,
+          targetId,
+          actualFine,
+          cfg.currencyName,
+          rng,
+        );
+
+        return {
+          ok: true,
+          success: false,
+          amount: actualFine,
+          fineFromPocket,
+          fineFromBank,
+          attackerBalance: nextAttackerCoins,
+          attackerBankBalance: nextAttackerBank,
+          targetBankBalance: nextTargetBank,
+          easterEggTriggered: true,
+          easterEggStory,
         };
       }
 

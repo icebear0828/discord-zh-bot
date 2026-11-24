@@ -6,6 +6,7 @@ import {
 } from '../../ui/embeds.js';
 import { applyZh } from '../../ui/localization.js';
 import {
+  buildRobTargetHints,
   formatBankRobError,
   formatBankRobResultEmbed,
   formatPocketRobError,
@@ -59,9 +60,18 @@ export const robCommand: CommandDefinition = {
     }
 
     const cfg = ctx.repos.guildConfig.getOrCreate(guildCtx.guildId).economy;
+    const targetMember = interaction.guild?.members?.cache?.get(target.id);
+    const targetHints = buildRobTargetHints(target, targetMember);
 
     if (mode === 'bank') {
-      const bankRes = ctx.services.economy.robBank(guildCtx.guildId, interaction.user.id, target.id);
+      const bankRes = ctx.services.economy.robBank(
+        guildCtx.guildId,
+        interaction.user.id,
+        target.id,
+        Date.now(),
+        Math.random,
+        targetHints,
+      );
       if (!bankRes.ok) {
         await interaction.reply({
           allowedMentions: { parse: [] },
@@ -83,7 +93,14 @@ export const robCommand: CommandDefinition = {
       return;
     }
 
-    const res = ctx.services.economy.rob(guildCtx.guildId, interaction.user.id, target.id);
+    const res = ctx.services.economy.rob(
+      guildCtx.guildId,
+      interaction.user.id,
+      target.id,
+      Date.now(),
+      Math.random,
+      targetHints,
+    );
 
     if (!res.ok) {
       await interaction.reply({

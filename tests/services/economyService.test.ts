@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  DEFAULT_ROB_PROTECTED_KEYWORDS,
   MAX_SOLO_GAMBLE_BET,
   ROB_ATTACKER_MIN_ASSETS,
+  ROB_EASTER_EGG_FINE_RATE,
+  ROB_KING_EASTER_EGG_STORIES,
 } from '../../src/config/economyConstants.js';
 import { createDatabase } from '../../src/db/database.js';
 import { ChaosRepo } from '../../src/db/repositories/chaosRepo.js';
@@ -422,6 +425,129 @@ describe('economyService', () => {
       ok: false,
       reason: 'bet_too_large',
     });
+
+    db.close();
+  });
+
+  it('triggers 100%-fail 10%-total-asset easter egg when robbing protected targets via title/nickname/role in rob() and robBank()', () => {
+    const db = createDatabase(':memory:');
+    const configRepo = new GuildConfigRepo(db);
+    const profileRepo = new ProfileRepo(db);
+    const chaosRepo = new ChaosRepo(db);
+    const svc = new EconomyService(db, configRepo, profileRepo, 'Asia/Shanghai', chaosRepo);
+    const now = 1_700_000_000_000;
+
+    expect(ROB_EASTER_EGG_FINE_RATE).toBe(0.1);
+    expect(DEFAULT_ROB_PROTECTED_KEYWORDS).toContain('黑吊王');
+    expect(DEFAULT_ROB_PROTECTED_KEYWORDS).toContain('草莓布丁酱');
+    expect(ROB_KING_EASTER_EGG_STORIES.length).toBeGreaterThanOrEqual(8);
+
+    // 1. Target has 0 coins + active shield + armed trap, matched via equippedTitle ("黑吊王")
+    // Attacker has lockpick + 100% robSuccessRate + 40 pocket + 960 bank (total 1000 -> 10% fine = 100)
+    const cfg = configRepo.getOrCreate('g1');
+    configRepo.updateEconomy('g1', {
+      ...cfg.economy,
+      robSuccessRate: 1.0,
+      robBankSuccessRate: 1.0,
+      robCooldownSec: 60,
+    });
+    profileRepo.save({
+      ...profileRepo.getOrCreate('g1', 'king1'),
+      coins: 0,
+      bankCoins: 0,
+      robShieldUntil: now + 3600_000,
+      equippedTitle: '至高黑吊王',
+    });
+    chaosRepo.setEffect({
+      guildId: 'g1',
+      userId: 'king1',
+      effectKey: 'trap_armed',
+      charges: 1,
+      expiresAt: now + 3600_000,
+      sourceUserId: null,
+      updatedAt: now,
+    });
+    chaosRepo.setEffect({
+      guildId: 'g1',
+      userId: 'thief1',
+      effectKey: 'lockpick_ready',
+      charges: 1,
+      expiresAt: now + 3600_000,
+      sourceUserId: null,
+      updatedAt: now,
+    });
+    profileRepo.save({
+      ...profileRepo.getOrCreate('g1', 'thief1'),
+      coins: 40,
+      bankCoins: 960,
+    });
+
+    const pocketEgg = svc.rob('g1', 'thief1', 'king1', now, () => 0.0);
+    expect(pocketEgg.ok).toBe(true);
+    if (pocketEgg.ok) {
+      expect(pocketEgg.success).toBe(false);
+      expect(pocketEgg.easterEggTriggered).toBe(true);
+      expect(pocketEgg.easterEggStory).toContain('<@thief1>');
+      expect(pocketEgg.easterEggStory).toContain('<@king1>');
+      expect(pocketEgg.amount).toBe(100);
+      expect(pocketEgg.fineFromPocket).toBe(40);
+      expect(pocketEgg.fineFromBank).toBe(60);
+      expect(pocketEgg.attackerBalance).toBe(0);
+      expect(pocketEgg.attackerBankBalance).toBe(900);
+      expect(pocketEgg.targetBalance).toBe(100);
+    }
+    // Trap was NOT wasted, and attacker entered cooldown
+    expect(chaosRepo.getActiveEffect('g1', 'king1', 'trap_armed', now)).not.toBeNull();
+    expect(svc.rob('g1', 'thief1', 'king1', now + 5_000)).toMatchObject({
+      ok: false,
+      reason: 'cooldown',
+    });
+
+    // 2. robBank matched via targetHints.displayNames ("草莓布丁酱") even when target bank is 0 & shielded
+    profileRepo.save({
+      ...profileRepo.getOrCreate('g1', 'king2'),
+      coins: 0,
+      bankCoins: 0,
+      robShieldUntil: now + 3600_000,
+    });
+    profileRepo.save({
+      ...profileRepo.getOrCreate('g1', 'thief2'),
+      coins: 200,
+      bankCoins: 2300, // total 2500 -> 10% fine = 250 (200 pocket + 50 bank)
+    });
+    const bankEgg = svc.robBank('g1', 'thief2', 'king2', now, () => 0.4, {
+      displayNames: ['草莓布丁酱'],
+    });
+    expect(bankEgg.ok).toBe(true);
+    if (bankEgg.ok) {
+      expect(bankEgg.success).toBe(false);
+      expect(bankEgg.easterEggTriggered).toBe(true);
+      expect(bankEgg.easterEggStory).toContain('<@thief2>');
+      expect(bankEgg.amount).toBe(250);
+      expect(bankEgg.fineFromPocket).toBe(200);
+      expect(bankEgg.fineFromBank).toBe(50);
+      expect(bankEgg.attackerBalance).toBe(0);
+      expect(bankEgg.attackerBankBalance).toBe(2250);
+      expect(bankEgg.targetBankBalance).toBe(250);
+    }
+
+    // 3. Matched via targetHints.roleNames ("黑吊王亲卫") even when attacker is below min assets (total 50 -> fine 5)
+    profileRepo.save({
+      ...profileRepo.getOrCreate('g1', 'thief3'),
+      coins: 50,
+      bankCoins: 0,
+    });
+    const roleEgg = svc.rob('g1', 'thief3', 'king3', now, () => 0.7, {
+      roleNames: ['黑吊王'],
+    });
+    expect(roleEgg.ok).toBe(true);
+    if (roleEgg.ok) {
+      expect(roleEgg.success).toBe(false);
+      expect(roleEgg.easterEggTriggered).toBe(true);
+      expect(roleEgg.amount).toBe(5);
+      expect(roleEgg.attackerBalance).toBe(45);
+      expect(roleEgg.targetBalance).toBe(5);
+    }
 
     db.close();
   });

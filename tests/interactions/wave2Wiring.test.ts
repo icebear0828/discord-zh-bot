@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import {
   Events,
   type ButtonInteraction,
+  type ChatInputCommandInteraction,
   type Client,
   type Interaction,
   type ModalSubmitInteraction,
@@ -34,6 +35,7 @@ import { ShopRepo } from '../../src/db/repositories/shopRepo.js';
 import { SocialPetRepo } from '../../src/db/repositories/socialPetRepo.js';
 import { TicketRepo } from '../../src/db/repositories/ticketRepo.js';
 import { WorldEventRepo } from '../../src/db/repositories/worldEventRepo.js';
+import { robCommand } from '../../src/commands/economy/rob.js';
 import { registerReadyEvent, runGamesTick } from '../../src/events/ready.js';
 import { routeInteraction } from '../../src/interactions/router.js';
 import { AiService } from '../../src/services/aiService.js';
@@ -767,6 +769,133 @@ describe('Wave 2 final wiring: persistent repos, expiry timers, and unified menu
     expect(match).not.toBeNull();
     expect(match?.inviterId).toBe('inviter-42');
     expect(match?.inviteCode).toBe('once-code');
+
+    ctx.db.close();
+  });
+
+  it('broadcasts royal easter egg publicly in both /rob slash command and /menu rob & rob_bank handlers', async () => {
+    const ctx = createPersistentCtx();
+    const cfg = ctx.repos.guildConfig.getOrCreate('g1');
+    ctx.repos.guildConfig.updateEconomy('g1', {
+      ...cfg.economy,
+      robSuccessRate: 1.0,
+      robBankSuccessRate: 1.0,
+      robCooldownSec: 0,
+    });
+
+    // Attacker A: 50 pocket + 950 bank (total 1000 -> 10% = 100: 50 pocket + 50 bank)
+    ctx.repos.profile.save({
+      ...ctx.repos.profile.getOrCreate('g1', 'atk-slash'),
+      coins: 50,
+      bankCoins: 950,
+    });
+    const kingUser = {
+      id: 'royal-target',
+      username: 'strawberry',
+      displayName: '草莓布丁酱',
+      bot: false,
+      displayAvatarURL: () => 'https://cdn.discordapp.com/embed/avatars/0.png',
+    };
+    const kingMember = {
+      id: 'royal-target',
+      displayName: '草莓布丁酱',
+      nickname: '黑吊王',
+      roles: {
+        cache: new Map([['r-king', { id: 'r-king', name: '黑吊王' }]]),
+      },
+    };
+
+    // 1. /rob slash command (pocket mode) -> public non-ephemeral reply with easter egg embed
+    const slashReply = vi.fn(async (_p: MockPayload & { flags?: number }) => undefined);
+    const slashInteraction = {
+      guildId: 'g1',
+      guild: {
+        id: 'g1',
+        members: { cache: new Map([['royal-target', kingMember]]) },
+      },
+      user: makeUser('atk-slash'),
+      member: { id: 'atk-slash', permissions: makePerms(), roles: { cache: new Map() } },
+      inCachedGuild: () => true,
+      options: {
+        getUser: () => kingUser,
+        getString: () => 'pocket',
+      },
+      reply: slashReply,
+    } as unknown as ChatInputCommandInteraction;
+
+    await robCommand.execute(slashInteraction, ctx);
+    expect(slashReply).toHaveBeenCalledTimes(1);
+    const slashPayload = slashReply.mock.calls[0]![0];
+    expect(slashPayload.flags).toBeUndefined();
+    expect(slashPayload.allowedMentions).toEqual({ parse: [] });
+    expect(slashPayload.embeds?.[0]?.toJSON().title).toContain('王者反噬');
+    expect(slashPayload.embeds?.[0]?.toJSON().description).toContain('联动划扣银行存款');
+    expect(ctx.repos.profile.getOrCreate('g1', 'atk-slash').coins).toBe(0);
+    expect(ctx.repos.profile.getOrCreate('g1', 'atk-slash').bankCoins).toBe(900);
+    expect(ctx.repos.profile.getOrCreate('g1', 'royal-target').coins).toBe(100);
+
+    // 2. /menu rob & rob_bank handlers -> public channel broadcast + private feedback
+    ctx.repos.profile.save({
+      ...ctx.repos.profile.getOrCreate('g1', 'atk-menu'),
+      coins: 100,
+      bankCoins: 1900, // total 2000 -> 10% = 200 (100 pocket + 100 bank)
+    });
+
+    const send = vi.fn(async (_p: MockPayload) => ({ id: 'egg-pub-1' }));
+    const editReply = vi.fn(async (_p: MockPayload) => undefined);
+    const channel = { id: 'c1', isSendable: () => true, send };
+    const makeMenuRobSelect = (customId: 'menu:user:rob' | 'menu:user:rob_bank') =>
+      ({
+        customId,
+        values: ['royal-target'],
+        users: new Map([['royal-target', kingUser]]),
+        guildId: 'g1',
+        guild: {
+          id: 'g1',
+          name: 'Test',
+          channels: { cache: new Map([['c1', channel]]) },
+          members: { cache: new Map([['royal-target', kingMember]]) },
+        },
+        channelId: 'c1',
+        channel,
+        client: {
+          channels: { cache: new Map([['c1', channel]]), fetch: vi.fn(async () => channel) },
+        },
+        user: makeUser('atk-menu'),
+        member: { id: 'atk-menu', permissions: makePerms(), roles: { cache: new Map() } },
+        replied: false,
+        deferred: false,
+        inCachedGuild: () => true,
+        isChatInputCommand: () => false,
+        isButton: () => false,
+        isStringSelectMenu: () => false,
+        isUserSelectMenu: () => true,
+        isRoleSelectMenu: () => false,
+        isChannelSelectMenu: () => false,
+        isModalSubmit: () => false,
+        isRepliable: () => true,
+        deferUpdate: vi.fn(async () => undefined),
+        editReply,
+        update: vi.fn(async () => undefined),
+        reply: vi.fn(async () => undefined),
+        followUp: vi.fn(async () => undefined),
+      }) as unknown as UserSelectMenuInteraction & Interaction;
+
+    await routeInteraction(makeMenuRobSelect('menu:user:rob'), ctx);
+    expect(send).toHaveBeenCalledTimes(1);
+    const menuPocketBroadcast = send.mock.calls[0]![0];
+    expect(menuPocketBroadcast.content).toContain('王者反噬');
+    expect(menuPocketBroadcast.embeds?.[0]?.toJSON().title).toContain('王者反噬');
+    expect(editReply.mock.calls[0]![0].embeds?.[0]?.toJSON().description).toContain('罚没总资产 10%');
+
+    // Now atk-menu has 0 pocket + 1800 bank -> rob_bank takes 180 from bank -> target bank gains 180
+    await routeInteraction(makeMenuRobSelect('menu:user:rob_bank'), ctx);
+    expect(send).toHaveBeenCalledTimes(2);
+    const menuBankBroadcast = send.mock.calls[1]![0];
+    expect(menuBankBroadcast.content).toContain('皇家金库');
+    expect(menuBankBroadcast.embeds?.[0]?.toJSON().title).toContain('皇家金库禁令');
+    expect(ctx.repos.profile.getOrCreate('g1', 'atk-menu').bankCoins).toBe(1620);
+    expect(ctx.repos.profile.getOrCreate('g1', 'royal-target').bankCoins).toBe(180);
 
     ctx.db.close();
   });

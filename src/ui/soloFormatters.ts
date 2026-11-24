@@ -17,6 +17,7 @@ import type {
   DiceChoice,
   DiceResult,
   RobResult,
+  RobTargetHints,
   SlotsResult,
   WorkResult,
 } from '../services/economyService.js';
@@ -128,6 +129,48 @@ export function formatBankRobError(
   }
 }
 
+export interface RobTargetUserLike {
+  username?: string | null;
+  displayName?: string | null;
+  globalName?: string | null;
+}
+
+export interface RobTargetMemberLike {
+  displayName?: string | null;
+  nickname?: string | null;
+  roles?: {
+    cache?: {
+      values?: () => Iterable<{ name?: string | null }>;
+    };
+  };
+}
+
+export function buildRobTargetHints(
+  user?: RobTargetUserLike | null,
+  member?: RobTargetMemberLike | null,
+): RobTargetHints {
+  const displayNames: string[] = [];
+  const pushUnique = (list: string[], value: string | null | undefined): void => {
+    const trimmed = value?.trim();
+    if (trimmed && !list.includes(trimmed)) {
+      list.push(trimmed);
+    }
+  };
+  pushUnique(displayNames, user?.displayName);
+  pushUnique(displayNames, user?.username);
+  pushUnique(displayNames, user?.globalName);
+  pushUnique(displayNames, member?.displayName);
+  pushUnique(displayNames, member?.nickname);
+
+  const roleNames: string[] = [];
+  if (member?.roles?.cache?.values) {
+    for (const role of member.roles.cache.values()) {
+      pushUnique(roleNames, role?.name);
+    }
+  }
+  return { displayNames, roleNames };
+}
+
 export function formatPocketRobResultEmbed(
   res: Extract<RobResult, { ok: true }>,
   targetId: string,
@@ -151,9 +194,21 @@ export function formatPocketRobResultEmbed(
       ? `（扣口袋现金 **${fineFromPocket}** + 联动划扣银行存款 **${fineFromBank}**）`
       : '';
   const bankSuffix =
-    typeof res.attackerBankBalance === 'number' && fineFromBank > 0
+    typeof res.attackerBankBalance === 'number' && (fineFromBank > 0 || res.easterEggTriggered)
       ? `（银行 **${res.attackerBankBalance}**）`
       : '';
+
+  if (res.easterEggTriggered) {
+    const story =
+      res.easterEggStory ??
+      `👑 试图打劫 <@${targetId}> 触发王者反噬，被当场罚没总资产 10%（**${res.amount}** ${cfg.currencyName}）！`;
+    const lines = [
+      story,
+      `💸 罚没总资产 10%：${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}${fineDetail}`,
+      `劫匪当前现金：**${res.attackerBalance}** ${cfg.currencyName}${bankSuffix} ｜ 对方当前现金：**${res.targetBalance}** ${cfg.currencyName}`,
+    ];
+    return createErrorEmbed('👑 王者反噬！敢动黑吊王？', lines.join('\n'));
+  }
 
   const lines = [
     res.trapped
@@ -188,6 +243,19 @@ export function formatBankRobResultEmbed(
     res.fineFromBank > 0
       ? `（扣口袋现金 **${res.fineFromPocket}** + 联动划扣银行存款 **${res.fineFromBank}**）`
       : '';
+
+  if (res.easterEggTriggered) {
+    const story =
+      res.easterEggStory ??
+      `👑 试图强抢 <@${targetId}> 的皇家金库触发王者反噬，被当场罚没总资产 10%（**${res.amount}** ${cfg.currencyName}）！`;
+    const lines = [
+      story,
+      `💸 罚没总资产 10%：${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}${fineDetail}`,
+      `劫匪当前现金：**${res.attackerBalance}**（银行 **${res.attackerBankBalance}**）｜ 对方当前金库：**${res.targetBankBalance}** ${cfg.currencyName}`,
+    ];
+    return createErrorEmbed('👑 皇家金库禁令触发！敢抢黑吊王？', lines.join('\n'));
+  }
+
   const lines = [
     res.trapped
       ? `潜入金库一脚踩中 <@${targetId}> 预设的【🪤 防盗捕兽夹】！重罚赔偿 ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}${fineDetail}！`

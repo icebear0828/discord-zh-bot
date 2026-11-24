@@ -55,7 +55,12 @@ import {
   type MenuFeedback,
   type MenuView,
 } from '../ui/menuShared.js';
-import { buildBlackjackPublicReportEmbed } from '../ui/soloFormatters.js';
+import {
+  buildBlackjackPublicReportEmbed,
+  buildRobTargetHints,
+  formatBankRobResultEmbed,
+  formatPocketRobResultEmbed,
+} from '../ui/soloFormatters.js';
 import {
   tryHandleConfigMenuButton,
   tryHandleConfigMenuChannelSelect,
@@ -1982,7 +1987,16 @@ export async function handleMenuUserSelect(
 
     await interaction.deferUpdate();
     const cfg = ctx.repos.guildConfig.getOrCreate(guildId).economy;
-    const res = ctx.services.economy.rob(guildId, actor.id, targetId);
+    const targetMember = interaction.guild?.members?.cache?.get(targetId);
+    const targetHints = buildRobTargetHints(targetUser, targetMember);
+    const res = ctx.services.economy.rob(
+      guildId,
+      actor.id,
+      targetId,
+      Date.now(),
+      Math.random,
+      targetHints,
+    );
     if (!res.ok) {
       const msgMap: Record<string, string> = {
         self_target: '不能打劫自己！',
@@ -2013,7 +2027,9 @@ export async function handleMenuUserSelect(
         ? `（扣口袋现金 **${fineFromPocket}** + 联动划扣银行存款 **${fineFromBank}**）`
         : '';
     const bankSuffix =
-      !res.success && typeof res.attackerBankBalance === 'number' && fineFromBank > 0
+      !res.success &&
+      typeof res.attackerBankBalance === 'number' &&
+      (fineFromBank > 0 || res.easterEggTriggered)
         ? `（银行 **${res.attackerBankBalance}**）`
         : '';
     const broadcast = await sendPublicBroadcast(
@@ -2038,24 +2054,30 @@ export async function handleMenuUserSelect(
               ),
             ],
           }
-        : {
-            allowedMentions: { parse: [] },
-            content: res.trapped
-              ? `🪤 **${actor.displayName}** 偷 **${targetName}** 时一脚踩中防盗捕兽夹，双倍赔了 **${res.amount}** ${cfg.currencyName}！`
-              : `🚨 **${actor.displayName}** 抢 **${targetName}** 翻车被抓，反赔了 **${res.amount}** ${cfg.currencyName}！`,
-            embeds: [
-              createErrorEmbed(
-                res.trapped ? '🪤 频道快报：捕兽夹反抓小偷！' : '🚨 频道快报：抢钱翻车现场！',
-                [
-                  res.trapped
-                    ? `<@${actor.id}> 偷钱时一头撞进 <@${targetId}> 预设的【🪤 捕兽夹】，被反抓双倍赔款 ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}${fineDetail}！`
-                    : `<@${actor.id}> 企图打劫 <@${targetId}> 时翻车被抓，现场赔偿了 ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}${fineDetail}！`,
-                  ...(res.usedLockpick ? ['🗝️ 本次行动已消耗【万能撬锁】。'] : []),
-                  `抢劫者当前现金：**${res.attackerBalance}**${bankSuffix} ｜ 受害者当前现金：**${res.targetBalance}**`,
-                ].join('\n'),
-              ),
-            ],
-          },
+        : res.easterEggTriggered
+          ? {
+              allowedMentions: { parse: [] },
+              content: `👑 频道吃瓜！**${actor.displayName}** 竟敢打劫 **${targetName}**，触发王者反噬被当场罚没 10% 总资产（**${res.amount}** ${cfg.currencyName}）！`,
+              embeds: [formatPocketRobResultEmbed(res, targetId, cfg)],
+            }
+          : {
+              allowedMentions: { parse: [] },
+              content: res.trapped
+                ? `🪤 **${actor.displayName}** 偷 **${targetName}** 时一脚踩中防盗捕兽夹，双倍赔了 **${res.amount}** ${cfg.currencyName}！`
+                : `🚨 **${actor.displayName}** 抢 **${targetName}** 翻车被抓，反赔了 **${res.amount}** ${cfg.currencyName}！`,
+              embeds: [
+                createErrorEmbed(
+                  res.trapped ? '🪤 频道快报：捕兽夹反抓小偷！' : '🚨 频道快报：抢钱翻车现场！',
+                  [
+                    res.trapped
+                      ? `<@${actor.id}> 偷钱时一头撞进 <@${targetId}> 预设的【🪤 捕兽夹】，被反抓双倍赔款 ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}${fineDetail}！`
+                      : `<@${actor.id}> 企图打劫 <@${targetId}> 时翻车被抓，现场赔偿了 ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}${fineDetail}！`,
+                    ...(res.usedLockpick ? ['🗝️ 本次行动已消耗【万能撬锁】。'] : []),
+                    `抢劫者当前现金：**${res.attackerBalance}**${bankSuffix} ｜ 受害者当前现金：**${res.targetBalance}**`,
+                  ].join('\n'),
+                ),
+              ],
+            },
     );
 
     const warnSuffix = broadcast.sent
@@ -2067,12 +2089,17 @@ export async function handleMenuUserSelect(
           type: 'success',
           text: `🥷 打劫得手！${res.usedLockpick ? '（🗝️ 撬锁生效）' : ''}从 <@${targetId}> 口袋顺走了 ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}${res.bountyClaimed ? `，并兑现悬赏 **+${res.bountyClaimed}**` : ''}，你的现金：**${res.attackerBalance}**。${warnSuffix}`,
         }
-      : {
-          type: 'error',
-          text: res.trapped
-            ? `🪤 踩雷了！对方提前埋了【捕兽夹】，强制翻倍赔偿 <@${targetId}> ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}${fineDetail}，你的现金：**${res.attackerBalance}**${bankSuffix}。${warnSuffix}`
-            : `🚨 打劫翻车被抓现行！向 <@${targetId}> 赔偿了 ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}${fineDetail}，你的现金：**${res.attackerBalance}**${bankSuffix}。${warnSuffix}`,
-        };
+      : res.easterEggTriggered
+        ? {
+            type: 'error',
+            text: `${res.easterEggStory ?? '👑 触发王者反噬，以下犯上必遭天谴！'}\n💸 罚没总资产 10%（${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}${fineDetail}），你的现金：**${res.attackerBalance}**${bankSuffix}。${warnSuffix}`,
+          }
+        : {
+            type: 'error',
+            text: res.trapped
+              ? `🪤 踩雷了！对方提前埋了【捕兽夹】，强制翻倍赔偿 <@${targetId}> ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}${fineDetail}，你的现金：**${res.attackerBalance}**${bankSuffix}。${warnSuffix}`
+              : `🚨 打劫翻车被抓现行！向 <@${targetId}> 赔偿了 ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}${fineDetail}，你的现金：**${res.attackerBalance}**${bankSuffix}。${warnSuffix}`,
+          };
 
     await safeEditOrFollowUp(
       interaction,
@@ -2111,7 +2138,16 @@ export async function handleMenuUserSelect(
 
     await interaction.deferUpdate();
     const cfg = ctx.repos.guildConfig.getOrCreate(guildId).economy;
-    const res = ctx.services.economy.robBank(guildId, actor.id, targetId);
+    const targetMember = interaction.guild?.members?.cache?.get(targetId);
+    const targetHints = buildRobTargetHints(targetUser, targetMember);
+    const res = ctx.services.economy.robBank(
+      guildId,
+      actor.id,
+      targetId,
+      Date.now(),
+      Math.random,
+      targetHints,
+    );
     if (!res.ok) {
       const msgMap: Record<string, string> = {
         self_target: '不能抢自己的银行金库！',
@@ -2162,23 +2198,29 @@ export async function handleMenuUserSelect(
               ),
             ],
           }
-        : {
-            allowedMentions: { parse: [] },
-            content: res.trapped
-              ? `🪤🏦 **${actor.displayName}** 强闯 **${targetName}** 的银行金库一脚踩中防盗捕兽夹，被重罚 **${res.amount}** ${cfg.currencyName}！`
-              : `🚨🏦 **${actor.displayName}** 强抢 **${targetName}** 的银行金库触发警报被捕，重罚赔偿 **${res.amount}** ${cfg.currencyName}！`,
-            embeds: [
-              createErrorEmbed(
-                res.trapped ? '🪤 频道快报：金库捕兽夹重创劫匪！' : '🚨 频道快报：抢银行金库翻车被捕！',
-                [
-                  res.trapped
-                    ? `<@${actor.id}> 潜入 <@${targetId}> 的银行金库时触发【🪤 捕兽夹】与金库电网，被强制重罚 ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}${fineDetail}！`
-                    : `<@${actor.id}> 企图爆破 <@${targetId}> 的银行金库时被巡逻警卫当场抓获，重罚赔偿 ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}${fineDetail}！`,
-                  `劫匪剩余现金：**${res.attackerBalance}**（银行 **${res.attackerBankBalance}**）｜ 受害者当前金库：**${res.targetBankBalance}**`,
-                ].join('\n'),
-              ),
-            ],
-          },
+        : res.easterEggTriggered
+          ? {
+              allowedMentions: { parse: [] },
+              content: `👑🏦 频道吃瓜！**${actor.displayName}** 竟敢强抢 **${targetName}** 的皇家金库，触发王者反噬被当场罚没 10% 总资产（**${res.amount}** ${cfg.currencyName}）！`,
+              embeds: [formatBankRobResultEmbed(res, targetId, cfg)],
+            }
+          : {
+              allowedMentions: { parse: [] },
+              content: res.trapped
+                ? `🪤🏦 **${actor.displayName}** 强闯 **${targetName}** 的银行金库一脚踩中防盗捕兽夹，被重罚 **${res.amount}** ${cfg.currencyName}！`
+                : `🚨🏦 **${actor.displayName}** 强抢 **${targetName}** 的银行金库触发警报被捕，重罚赔偿 **${res.amount}** ${cfg.currencyName}！`,
+              embeds: [
+                createErrorEmbed(
+                  res.trapped ? '🪤 频道快报：金库捕兽夹重创劫匪！' : '🚨 频道快报：抢银行金库翻车被捕！',
+                  [
+                    res.trapped
+                      ? `<@${actor.id}> 潜入 <@${targetId}> 的银行金库时触发【🪤 捕兽夹】与金库电网，被强制重罚 ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}${fineDetail}！`
+                      : `<@${actor.id}> 企图爆破 <@${targetId}> 的银行金库时被巡逻警卫当场抓获，重罚赔偿 ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}${fineDetail}！`,
+                    `劫匪剩余现金：**${res.attackerBalance}**（银行 **${res.attackerBankBalance}**）｜ 受害者当前金库：**${res.targetBankBalance}**`,
+                  ].join('\n'),
+                ),
+              ],
+            },
     );
 
     const warnSuffix = broadcast.sent
@@ -2190,12 +2232,17 @@ export async function handleMenuUserSelect(
           type: 'success',
           text: `🏦 金库劫案得手！${res.usedLockpick ? '（🗝️ 撬锁生效）' : ''}从 <@${targetId}> 银行金库撬走 ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}${res.bountyClaimed ? `，并兑现悬赏 **+${res.bountyClaimed}**` : ''}，你的现金：**${res.attackerBalance}**。${warnSuffix}`,
         }
-      : {
-          type: 'error',
-          text: res.trapped
-            ? `🪤 金库踩雷！触发对方【捕兽夹】，重罚赔偿 <@${targetId}> ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}${fineDetail}，你的现金：**${res.attackerBalance}**（银行 **${res.attackerBankBalance}**）。${warnSuffix}`
-            : `🚨 抢金库触发警报被抓！向 <@${targetId}> 赔偿了 ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}${fineDetail}，你的现金：**${res.attackerBalance}**（银行 **${res.attackerBankBalance}**）。${warnSuffix}`,
-        };
+      : res.easterEggTriggered
+        ? {
+            type: 'error',
+            text: `${res.easterEggStory ?? '👑 触发皇家金库禁令！'}\n💸 罚没总资产 10%（${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}${fineDetail}），你的现金：**${res.attackerBalance}**（银行 **${res.attackerBankBalance}**）。${warnSuffix}`,
+          }
+        : {
+            type: 'error',
+            text: res.trapped
+              ? `🪤 金库踩雷！触发对方【捕兽夹】，重罚赔偿 <@${targetId}> ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}${fineDetail}，你的现金：**${res.attackerBalance}**（银行 **${res.attackerBankBalance}**）。${warnSuffix}`
+              : `🚨 抢金库触发警报被抓！向 <@${targetId}> 赔偿了 ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}${fineDetail}，你的现金：**${res.attackerBalance}**（银行 **${res.attackerBankBalance}**）。${warnSuffix}`,
+          };
 
     await safeEditOrFollowUp(
       interaction,
