@@ -86,7 +86,7 @@ function main(): void {
     services: {
       leveling: new LevelingService(guildConfigRepo, profileRepo, inviteRepo),
       economy: new EconomyService(db, guildConfigRepo, profileRepo, env.timezone, chaosRepo),
-      blackjack: new BlackjackManager(db, profileRepo),
+      blackjack: new BlackjackManager(db, profileRepo, blackjackRepo),
       shop: new ShopService(db, profileRepo, shopRepo, {
         guildConfigRepo,
         chaosRepo,
@@ -98,7 +98,7 @@ function main(): void {
       giveaway: new GiveawayService(giveawayRepo),
       invite: new InviteService(inviteRepo),
       rolePanel: new RolePanelService(rolePanelRepo),
-      multiplayer: new MultiplayerService(db, profileRepo, redPacketRepo, chaosRepo),
+      multiplayer: new MultiplayerService(db, profileRepo, redPacketRepo, chaosRepo, duelRepo),
       chaos: new ChaosService(db, guildConfigRepo, profileRepo, chaosRepo),
       worldEvent: new WorldEventService(
         db,

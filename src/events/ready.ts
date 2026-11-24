@@ -13,7 +13,7 @@ import { editChannelMessage, sendToChannel } from '../interactions/menuHelpers.j
 import { renderLevelUpTemplate, type AwardXpResult } from '../services/levelingService.js';
 import { buildNumberBombCard, buildRouletteCard } from '../ui/chaosMenuBuilder.js';
 import { createInfoEmbed, createSuccessEmbed, type AppContext } from '../ui/embeds.js';
-import { buildRedPacketMessage } from '../ui/menuBuilder.js';
+import { buildDuelMessage, buildRedPacketMessage } from '../ui/menuBuilder.js';
 import { truncateText } from '../ui/menuShared.js';
 import { buildPetBattleCard, buildProposalCard } from '../ui/socialPetMenuBuilder.js';
 import {
@@ -375,6 +375,58 @@ export async function runGamesTick(readyClient: Client, ctx: AppContext): Promis
       }
     } catch (subErr) {
       console.error('[timer:games:petBattle]', subErr);
+    }
+    try {
+      ctx.services.blackjack.expireDueGames();
+    } catch (subErr) {
+      console.error('[timer:games:blackjack]', subErr);
+    }
+
+    try {
+      const expiredDuels = ctx.services.multiplayer.expireDueDuels();
+      for (const duel of expiredDuels) {
+        try {
+          if (!duel.messageId) continue;
+          const cfg = ctx.repos.guildConfig.getOrCreate(duel.guildId).economy;
+          const guild = readyClient.guilds.cache.get(duel.guildId);
+          await editChannelMessage(
+            readyClient,
+            duel.channelId,
+            duel.messageId,
+            buildDuelMessage(duel, cfg),
+            guild,
+          );
+        } catch (itemErr) {
+          console.error(`[timer:games:duel:${duel.id}]`, itemErr);
+        }
+      }
+    } catch (subErr) {
+      console.error('[timer:games:duel]', subErr);
+    }
+
+    try {
+      const expiredLockedPreds = ctx.services.worldEvent.expireDueLockedPredictions();
+      for (const { summary } of expiredLockedPreds) {
+        try {
+          const cfg = ctx.repos.guildConfig.getOrCreate(summary.prediction.guildId).economy;
+          const guild = readyClient.guilds.cache.get(summary.prediction.guildId);
+          await editChannelMessage(
+            readyClient,
+            summary.prediction.channelId,
+            summary.prediction.messageId,
+            buildPredictionCard(
+              summary,
+              cfg,
+              '⌛ 封盘超过 72 小时未结算，系统已自动作废并全额退还全部押注',
+            ),
+            guild,
+          );
+        } catch (itemErr) {
+          console.error(`[timer:games:predictionExpire:${summary.prediction.id}]`, itemErr);
+        }
+      }
+    } catch (subErr) {
+      console.error('[timer:games:predictionExpire]', subErr);
     }
   } catch (err) {
     console.error('[timer:games]', err);

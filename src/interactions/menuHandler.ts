@@ -55,6 +55,7 @@ import {
   type MenuFeedback,
   type MenuView,
 } from '../ui/menuShared.js';
+import { buildBlackjackPublicReportEmbed } from '../ui/soloFormatters.js';
 import {
   tryHandleConfigMenuButton,
   tryHandleConfigMenuChannelSelect,
@@ -248,38 +249,39 @@ function buildBlackjackOutcomeFeedback(
   balance: number,
   currencyName: string,
 ): MenuFeedback {
+  const net = game.payout - game.bet;
   switch (game.status) {
     case 'playing':
-      return { type: 'info', text: '请选择你的操作：要牌、停牌或双倍下注。' };
+      return { type: 'info', text: '请选择你的操作：要牌、停牌或双倍下注（15 分钟未操作将自动退注）。' };
     case 'player_blackjack':
       return {
         type: 'success',
-        text: `🎉 天胡 Blackjack！赢得 **${game.payout}** ${currencyName}，当前现金 **${balance}**。`,
+        text: `🎉 天胡 Blackjack！返还 **${game.payout}** ${currencyName}（净赚 **+${net}**），当前现金 **${balance}**。`,
       };
     case 'dealer_bust':
       return {
         type: 'success',
-        text: `🎉 庄家爆牌！赢得 **${game.payout}** ${currencyName}，当前现金 **${balance}**。`,
+        text: `🎉 庄家爆牌！返还 **${game.payout}** ${currencyName}（净赚 **+${net}**），当前现金 **${balance}**。`,
       };
     case 'player_win':
       return {
         type: 'success',
-        text: `🎉 你的点数更大！赢得 **${game.payout}** ${currencyName}，当前现金 **${balance}**。`,
+        text: `🎉 你的点数更大！返还 **${game.payout}** ${currencyName}（净赚 **+${net}**），当前现金 **${balance}**。`,
       };
     case 'push':
       return {
         type: 'info',
-        text: `🤝 双方平局！退回下注 **${game.payout}** ${currencyName}，当前现金 **${balance}**。`,
+        text: `🤝 双方平局！全额返还下注 **${game.payout}** ${currencyName}（净变动 **0**），当前现金 **${balance}**。`,
       };
     case 'player_bust':
       return {
         type: 'error',
-        text: `💥 爆牌了（超过 21 点），庄家获胜。当前现金 **${balance}** ${currencyName}。`,
+        text: `💥 爆牌了（超过 21 点），庄家获胜（返还 **0**，净损 **${net}** ${currencyName}）。当前现金 **${balance}** ${currencyName}。`,
       };
     case 'dealer_win':
       return {
         type: 'error',
-        text: `😔 庄家点数更大，本局失利。当前现金 **${balance}** ${currencyName}。`,
+        text: `😔 庄家点数更大，本局失利（返还 **0**，净损 **${net}** ${currencyName}）。当前现金 **${balance}** ${currencyName}。`,
       };
   }
 }
@@ -425,22 +427,20 @@ function buildBlackjackResponse(
       ? { page: 'bj' }
       : { page: 'bj', finishedGame: res.game, balanceAfterFinish: res.balance };
 
-  const netWin = res.game.payout - res.game.bet;
-  const isBigWin =
-    res.game.status !== 'playing' &&
-    (res.game.status === 'player_blackjack' || netWin >= 500);
-  const headline = res.game.status === 'player_blackjack' ? '打出天胡 Blackjack' : '大获全胜';
-  const highlight: MessageCreateOptions | undefined = isBigWin
-    ? {
-        content: `🃏 牌神降临！<@${actor.id}> 在二十一点${headline}，赢得 **${res.game.payout}** ${cfg.currencyName}！`,
-        embeds: [
-          createSuccessEmbed(
-            `🃏 频道喜报：二十一点${headline}！`,
-            `<@${actor.id}> 本局下注 **${res.game.bet}**，赢得 ${cfg.currencyEmoji} **${res.game.payout}** ${cfg.currencyName}（净赚 **+${netWin}**）！`,
-          ),
-        ],
-      }
-    : undefined;
+  const highlight: MessageCreateOptions | undefined =
+    res.game.status !== 'playing'
+      ? {
+          embeds: [
+            buildBlackjackPublicReportEmbed({
+              playerId: actor.id,
+              playerDisplayName: actor.displayName,
+              playerAvatarUrl: actor.avatarUrl,
+              game: res.game,
+              cfg,
+            }),
+          ],
+        }
+      : undefined;
 
   return {
     msg: buildMenuMessage(ctx, guildId, actor, view, feedback),
@@ -1569,25 +1569,15 @@ export async function handleMenuStringSelect(
       return;
     }
 
-    const isRoleItem = item?.type === 'role' && Boolean(item.roleId);
-    if (isRoleItem && item.roleId && actor.roleIds?.includes(item.roleId)) {
-      await interaction.update(
-        buildMenuMessage(
-          ctx,
-          guildId,
-          actor,
-          { page: 'shop', listPage },
-          { type: 'error', text: formatShopBuyError('already_owned', cfg.currencyName) },
-        ),
-      );
-      return;
-    }
-
-    if (isRoleItem) {
-      await interaction.deferUpdate();
-    }
-
-    const res = ctx.services.shop.buyItem(guildId, actor.id, itemId);
+    const ownedRoleIds = actor.roleIds ? new Set(actor.roleIds) : undefined;
+    const res = ctx.services.shop.buyItem(
+      guildId,
+      actor.id,
+      itemId,
+      Date.now(),
+      Math.random,
+      ownedRoleIds,
+    );
     if (!res.ok) {
       const errMsg = buildMenuMessage(
         ctx,
@@ -1596,12 +1586,13 @@ export async function handleMenuStringSelect(
         { page: 'shop', listPage },
         { type: 'error', text: formatShopBuyError(res.reason, cfg.currencyName, res.dailyLimit) },
       );
-      if (isRoleItem) {
-        await safeEditOrFollowUp(interaction, errMsg);
-      } else {
-        await interaction.update(errMsg);
-      }
+      await interaction.update(errMsg);
       return;
+    }
+
+    const isRoleItem = Boolean(res.grantRoleId);
+    if (isRoleItem) {
+      await interaction.deferUpdate();
     }
 
     if (res.grantRoleId) {
@@ -2015,6 +2006,16 @@ export async function handleMenuUserSelect(
 
     const targetName = targetUser?.displayName ?? '群友';
     const hasBounty = Boolean(res.success && res.bountyClaimed && res.bountyClaimed > 0);
+    const fineFromBank = !res.success ? (res.fineFromBank ?? 0) : 0;
+    const fineFromPocket = !res.success ? (res.fineFromPocket ?? res.amount) : 0;
+    const fineDetail =
+      !res.success && fineFromBank > 0
+        ? `（扣口袋现金 **${fineFromPocket}** + 联动划扣银行存款 **${fineFromBank}**）`
+        : '';
+    const bankSuffix =
+      !res.success && typeof res.attackerBankBalance === 'number' && fineFromBank > 0
+        ? `（银行 **${res.attackerBankBalance}**）`
+        : '';
     const broadcast = await sendPublicBroadcast(
       interaction,
       res.success
@@ -2047,9 +2048,10 @@ export async function handleMenuUserSelect(
                 res.trapped ? '🪤 频道快报：捕兽夹反抓小偷！' : '🚨 频道快报：抢钱翻车现场！',
                 [
                   res.trapped
-                    ? `<@${actor.id}> 偷钱时一头撞进 <@${targetId}> 预设的【🪤 捕兽夹】，被反抓双倍赔款 ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}！`
-                    : `<@${actor.id}> 企图打劫 <@${targetId}> 时翻车被抓，现场赔偿了 ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}！`,
-                  `抢劫者当前现金：**${res.attackerBalance}** ｜ 受害者当前现金：**${res.targetBalance}**`,
+                    ? `<@${actor.id}> 偷钱时一头撞进 <@${targetId}> 预设的【🪤 捕兽夹】，被反抓双倍赔款 ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}${fineDetail}！`
+                    : `<@${actor.id}> 企图打劫 <@${targetId}> 时翻车被抓，现场赔偿了 ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}${fineDetail}！`,
+                  ...(res.usedLockpick ? ['🗝️ 本次行动已消耗【万能撬锁】。'] : []),
+                  `抢劫者当前现金：**${res.attackerBalance}**${bankSuffix} ｜ 受害者当前现金：**${res.targetBalance}**`,
                 ].join('\n'),
               ),
             ],
@@ -2068,8 +2070,8 @@ export async function handleMenuUserSelect(
       : {
           type: 'error',
           text: res.trapped
-            ? `🪤 踩雷了！对方提前埋了【捕兽夹】，强制翻倍赔偿 <@${targetId}> ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}，你的现金：**${res.attackerBalance}**。${warnSuffix}`
-            : `🚨 打劫翻车被抓现行！向 <@${targetId}> 赔偿了 ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}，你的现金：**${res.attackerBalance}**。${warnSuffix}`,
+            ? `🪤 踩雷了！对方提前埋了【捕兽夹】，强制翻倍赔偿 <@${targetId}> ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}${fineDetail}，你的现金：**${res.attackerBalance}**${bankSuffix}。${warnSuffix}`
+            : `🚨 打劫翻车被抓现行！向 <@${targetId}> 赔偿了 ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}${fineDetail}，你的现金：**${res.attackerBalance}**${bankSuffix}。${warnSuffix}`,
         };
 
     await safeEditOrFollowUp(
@@ -3361,12 +3363,12 @@ export async function handleMenuModal(
       return;
     }
 
-    const sent = await sendPublicBroadcast(interaction, {
+    const broadcast = await sendPublicBroadcast(interaction, {
       allowedMentions: { users: [opponentId] },
       content: `⚔️ <@${opponentId}>，你收到了一条骰子决斗挑战！`,
       ...buildDuelMessage(res.duel, cfg),
     });
-    if (!sent.sent) {
+    if (!broadcast.sent) {
       ctx.services.multiplayer.declineDuel(res.duel.id, actor.id);
       await safeEditOrFollowUp(
         interaction,
@@ -3375,10 +3377,17 @@ export async function handleMenuModal(
           guildId,
           actor,
           { page: 'duel' },
-          { type: 'error', text: '在当前频道发送决斗卡片失败，请检查机器人发言权限。' },
+          {
+            type: 'error',
+            text: `在当前频道发送决斗卡片失败，请检查机器人发言权限（已自动退回冻结的 **${amount}** ${cfg.currencyName}）。`,
+          },
         ),
       );
       return;
+    }
+
+    if (broadcast.messageId) {
+      ctx.services.multiplayer.bindDuelMessage(res.duel.id, broadcast.messageId);
     }
 
     await safeEditOrFollowUp(

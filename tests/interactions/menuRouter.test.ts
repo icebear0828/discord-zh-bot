@@ -1329,12 +1329,16 @@ describe('menu router & multiplayer interaction flows', () => {
         status: 'player_blackjack',
         payout: 1250,
         canDouble: false,
+        createdAt: Date.now(),
+        expiresAt: Date.now() + 900_000,
       },
     });
     const bjWin = createButtonMock({ customId: 'menu:bj_start:500', userId: 'u1' });
     await routeInteraction(bjWin.interaction, ctx);
     expect(bjWin.channel!.send).toHaveBeenCalledTimes(1);
-    expect(bjWin.channel!.send.mock.calls[0]![0].content).toContain('<@u1>');
+    expect(bjWin.channel!.send.mock.calls[0]![0].allowedMentions).toEqual({ parse: [] });
+    expect(bjWin.channel!.send.mock.calls[0]![0].embeds?.[0]?.toJSON().title).toContain('二十一点战报');
+    expect(bjWin.channel!.send.mock.calls[0]![0].embeds?.[0]?.toJSON().description).toContain('<@u1>');
 
     // Share rank & leaderboard to channel (uses deferUpdate + editReply)
     const shareRank = createButtonMock({ customId: 'menu:share:rank', userId: 'u1' });
