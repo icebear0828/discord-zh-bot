@@ -72,7 +72,12 @@ function main(): void {
       leveling: new LevelingService(guildConfigRepo, profileRepo, inviteRepo),
       economy: new EconomyService(db, guildConfigRepo, profileRepo, env.timezone, chaosRepo),
       blackjack: new BlackjackManager(db, profileRepo),
-      shop: new ShopService(db, profileRepo, shopRepo),
+      shop: new ShopService(db, profileRepo, shopRepo, {
+        guildConfigRepo,
+        chaosRepo,
+        socialPetRepo,
+        timezone: env.timezone,
+      }),
       fun: new FunService(db, profileRepo, shopRepo, funRepo, env.timezone),
       ticket: new TicketService(guildConfigRepo, ticketRepo),
       giveaway: new GiveawayService(giveawayRepo),

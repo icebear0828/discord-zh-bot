@@ -7,6 +7,7 @@ import {
   type AppContext,
   type CommandDefinition,
 } from '../../ui/embeds.js';
+import { formatInventoryTypeLabel } from '../../ui/menuShared.js';
 import { applyZh } from '../../ui/localization.js';
 import { requireGuildMember, requireModuleEnabled } from '../guards.js';
 
@@ -56,12 +57,12 @@ export const inventoryCommand: CommandDefinition = {
       }
 
       const lines = items.map((item) => {
-        const typeLabel = item.itemType === 'xp_boost' ? '经验加成卡' : '专属称号';
+        const typeLabel = formatInventoryTypeLabel(item.itemType);
         return `**#${item.id}** [${typeLabel}] **${item.itemName}** × ${item.quantity}`;
       });
       await interaction.reply({
         embeds: [
-          createInfoEmbed('🎒 我的背包', `${lines.join('\n')}\n\n使用 \`/背包 使用 编号\` 来激活经验卡或佩戴称号。`),
+          createInfoEmbed('🎒 我的背包', `${lines.join('\n')}\n\n使用 \`/背包 使用 编号\` 激活经验卡/佩戴称号；自定义称号券请在 \`/菜单\` →「🎒 背包与称号」兑换。`),
         ],
         flags: MessageFlags.Ephemeral,
       });
@@ -77,8 +78,12 @@ export const inventoryCommand: CommandDefinition = {
       );
 
       if (!res.ok) {
+        const errText =
+          res.reason === 'unsupported_item'
+            ? '自定义称号券需要在 `/菜单` →「🎒 背包与称号」下拉中选择后填写称号内容。'
+            : '未找到该背包道具或数量不足。';
         await interaction.reply({
-          embeds: [createErrorEmbed('❌ 使用失败', '未找到该背包道具或数量不足。')],
+          embeds: [createErrorEmbed('❌ 使用失败', errText)],
           flags: MessageFlags.Ephemeral,
         });
         return;

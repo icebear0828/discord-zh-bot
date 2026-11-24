@@ -1,6 +1,13 @@
 import type Database from 'better-sqlite3';
 
-export type ShopItemType = 'role' | 'title' | 'xp_boost';
+export type ShopItemType =
+  | 'role'
+  | 'title'
+  | 'xp_boost'
+  | 'stat_boost'
+  | 'custom_title'
+  | 'pet_xp'
+  | 'mystery_box';
 
 export interface ShopItem {
   id: number;
@@ -14,6 +21,7 @@ export interface ShopItem {
   boostMultiplier: number | null;
   boostDurationSec: number | null;
   stock: number | null;
+  payloadJson: string;
   createdAt: number;
 }
 
@@ -40,6 +48,7 @@ interface ShopItemRow {
   boost_multiplier: number | null;
   boost_duration_sec: number | null;
   stock: number | null;
+  payload_json?: string;
   created_at: number;
 }
 
@@ -67,6 +76,7 @@ function mapShopItem(row: ShopItemRow): ShopItem {
     boostMultiplier: row.boost_multiplier,
     boostDurationSec: row.boost_duration_sec,
     stock: row.stock,
+    payloadJson: row.payload_json ?? '{}',
     createdAt: row.created_at,
   };
 }
@@ -87,14 +97,20 @@ function mapInventoryItem(row: InventoryRow): InventoryItem {
 export class ShopRepo {
   constructor(private readonly db: Database.Database) {}
 
-  createItem(input: Omit<ShopItem, 'id' | 'createdAt'> & { createdAt?: number }): ShopItem {
+  createItem(
+    input: Omit<ShopItem, 'id' | 'createdAt' | 'payloadJson'> & {
+      payloadJson?: string;
+      createdAt?: number;
+    },
+  ): ShopItem {
     const now = input.createdAt ?? Date.now();
+    const payloadJson = input.payloadJson ?? '{}';
     const res = this.db
       .prepare(
         `INSERT INTO shop_items (
           guild_id, name, description, type, price,
-          role_id, title_text, boost_multiplier, boost_duration_sec, stock, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          role_id, title_text, boost_multiplier, boost_duration_sec, stock, payload_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         input.guildId,
@@ -107,6 +123,7 @@ export class ShopRepo {
         input.boostMultiplier,
         input.boostDurationSec,
         input.stock,
+        payloadJson,
         now,
       );
 

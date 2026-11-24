@@ -267,4 +267,63 @@ describe('env & database schema', () => {
 
     db.close();
   });
+
+  it('migrates legacy shop_items table cleanly while preserving rows and enabling new item types', () => {
+    const db = new Database(':memory:');
+    db.exec(`
+      CREATE TABLE shop_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        description TEXT NOT NULL,
+        type TEXT NOT NULL CHECK (type IN ('role', 'title', 'xp_boost')),
+        price INTEGER NOT NULL CHECK (price >= 0),
+        role_id TEXT,
+        title_text TEXT,
+        boost_multiplier REAL,
+        boost_duration_sec INTEGER,
+        stock INTEGER,
+        created_at INTEGER NOT NULL
+      );
+      INSERT INTO shop_items (guild_id, name, description, type, price, role_id, created_at)
+      VALUES ('g1', '旧VIP', '老数据', 'role', 500, 'r1', 1000);
+    `);
+
+    initSchema(db);
+    initSchema(db);
+
+    const shopCols = (db.pragma('table_info(shop_items)') as Array<{ name: string }>).map(
+      (c) => c.name,
+    );
+    expect(shopCols).toContain('payload_json');
+
+    const legacy = db
+      .prepare('SELECT id, name, type, price, payload_json FROM shop_items WHERE guild_id = ?')
+      .get('g1') as { id: number; name: string; type: string; price: number; payload_json: string };
+    expect(legacy).toEqual({
+      id: 1,
+      name: '旧VIP',
+      type: 'role',
+      price: 500,
+      payload_json: '{}',
+    });
+
+    for (const newType of ['stat_boost', 'custom_title', 'pet_xp', 'mystery_box'] as const) {
+      expect(() =>
+        db
+          .prepare(
+            "INSERT INTO shop_items (guild_id, name, description, type, price, payload_json, created_at) VALUES ('g1', ?, '新类型', ?, 100, '{}', 2000)",
+          )
+          .run(`商品_${newType}`, newType),
+      ).not.toThrow();
+    }
+
+    const profCols = (db.pragma('table_info(member_profiles)') as Array<{ name: string }>).map(
+      (c) => c.name,
+    );
+    expect(profCols).toContain('last_stat_boost_date');
+    expect(profCols).toContain('stat_boost_daily_count');
+
+    db.close();
+  });
 });

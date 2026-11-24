@@ -81,7 +81,12 @@ function createTestCtx(): AppContext {
       leveling: new LevelingService(guildConfig, profile, invite),
       economy: new EconomyService(db, guildConfig, profile, 'Asia/Shanghai', chaos),
       blackjack: new BlackjackManager(db, profile),
-      shop: new ShopService(db, profile, shop),
+      shop: new ShopService(db, profile, shop, {
+        guildConfigRepo: guildConfig,
+        chaosRepo: chaos,
+        socialPetRepo: socialPet,
+        timezone: 'Asia/Shanghai',
+      }),
       fun: new FunService(db, profile, shop, fun, 'Asia/Shanghai'),
       ticket: new TicketService(guildConfig, ticket),
       giveaway: new GiveawayService(giveaway),
@@ -210,6 +215,37 @@ describe('menuBuilder Discord component constraints & schema integration', () =>
     }
 
     // Put some items into inventory & seed new feature entities to test non-empty selects!
+    ctx.services.shop.createStatBoostItem({
+      guildId: 'g1',
+      name: '初级成长药水',
+      description: '随机成长',
+      price: 500,
+      minGain: 1,
+      maxGain: 3,
+      stock: null,
+    });
+    ctx.services.shop.createCustomTitleItem({
+      guildId: 'g1',
+      name: '自定义称号券',
+      description: '自拟称号',
+      price: 1000,
+      stock: null,
+    });
+    ctx.services.shop.createPetXpItem({
+      guildId: 'g1',
+      name: '宠物超级罐头',
+      description: '出战宠加经验',
+      price: 400,
+      petXp: 150,
+      stock: null,
+    });
+    ctx.services.shop.createMysteryBoxItem({
+      guildId: 'g1',
+      name: '神秘幸运盲盒',
+      description: '随机奖池',
+      price: 800,
+      stock: null,
+    });
     ctx.repos.profile.addCoins('g1', 'u1', 50_000);
     ctx.repos.profile.addCoins('g1', 'u2', 50_000);
     for (let itemId = 1; itemId <= 28; itemId++) {
@@ -327,6 +363,7 @@ describe('menuBuilder Discord component constraints & schema integration', () =>
       { page: 'admin_lvl_rewards' },
       { page: 'admin_roles' },
       { page: 'admin_roles', panelId: rp2.id },
+      { page: 'admin_shop' },
       { page: 'admin_games' },
       { page: 'admin_mod' },
       { page: 'admin_ops' },

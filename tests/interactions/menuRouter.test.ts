@@ -81,7 +81,12 @@ function createTestCtx(): AppContext {
       leveling: new LevelingService(guildConfig, profile, invite),
       economy: new EconomyService(db, guildConfig, profile, 'Asia/Shanghai', chaos),
       blackjack: new BlackjackManager(db, profile),
-      shop: new ShopService(db, profile, shop),
+      shop: new ShopService(db, profile, shop, {
+        guildConfigRepo: guildConfig,
+        chaosRepo: chaos,
+        socialPetRepo: socialPet,
+        timezone: 'Asia/Shanghai',
+      }),
       fun: new FunService(db, profile, shop, fun, 'Asia/Shanghai'),
       ticket: new TicketService(guildConfig, ticket),
       giveaway: new GiveawayService(giveaway),
@@ -293,6 +298,7 @@ function createStringSelectMock(opts: {
   const reply = vi.fn(async (_payload: MockPayload) => undefined);
   const update = vi.fn(async (_payload: MockPayload) => undefined);
   const followUp = vi.fn(async (_payload: MockPayload) => undefined);
+  const showModal = vi.fn(async (_modal: { toJSON(): { custom_id: string } }) => undefined);
   const member = makeMockMember(
     opts.userId,
     false,
@@ -328,12 +334,14 @@ function createStringSelectMock(opts: {
     reply,
     update,
     followUp,
+    showModal,
   };
 
   return {
     interaction: mock as unknown as StringSelectMenuInteraction & Interaction,
     reply,
     update,
+    showModal,
     member,
   };
 }
@@ -2023,6 +2031,87 @@ describe('menu router & multiplayer interaction flows', () => {
     });
     await routeInteraction(validStatModal.interaction, ctx);
     expect(ctx.repos.profile.getOrCreate('g1', 'u9').statValue).toBe(114514);
+
+    // 8. Admin shop management + user purchasing new item types
+    const nonAdminShopNav = createButtonMock({
+      customId: 'menu:nav:admin_shop',
+      userId: 'member1',
+    });
+    await routeInteraction(nonAdminShopNav.interaction, ctx);
+    expect(nonAdminShopNav.update.mock.calls[0]![0].embeds?.[0]?.toJSON().description).toContain(
+      '权限不足：仅服务器管理员',
+    );
+
+    const adminShopNav = createButtonMock({
+      customId: 'menu:nav:admin_shop',
+      userId: 'admin1',
+    });
+    await routeInteraction(adminShopNav.interaction, ctx);
+    expect(adminShopNav.update.mock.calls[0]![0].embeds?.[0]?.toJSON().title).toContain('商店商品管理中心');
+
+    const openStatModalBtn = createButtonMock({
+      customId: 'menu:modal:admin_shop_stat',
+      userId: 'admin1',
+    });
+    await routeInteraction(openStatModalBtn.interaction, ctx);
+    expect(openStatModalBtn.showModal).toHaveBeenCalledTimes(1);
+
+    const submitStatShopModal = createModalMock({
+      customId: 'menu:modal_sub:admin_shop_stat',
+      userId: 'admin1',
+      fields: {
+        name: '💊 强力药水',
+        price: '600',
+        minGain: '2',
+        maxGain: '4',
+        description: '每日限3次',
+      },
+    });
+    await routeInteraction(submitStatShopModal.interaction, ctx);
+    const statShopItem = ctx.services.shop.listItems('g1').find((i) => i.type === 'stat_boost');
+    expect(statShopItem).toBeDefined();
+
+    const customTitleShopItem = ctx.services.shop.createCustomTitleItem({
+      guildId: 'g1',
+      name: '✍️ 自定义称号券',
+      description: '自拟称号',
+      price: 1000,
+      stock: null,
+    });
+
+    ctx.repos.profile.addCoins('g1', 'member1', 10_000);
+    const buyCustomSelect = createStringSelectMock({
+      customId: 'menu:shop_buy',
+      userId: 'member1',
+      values: [String(customTitleShopItem.id)],
+    });
+    await routeInteraction(buyCustomSelect.interaction, ctx);
+    expect(buyCustomSelect.showModal).toHaveBeenCalledTimes(1);
+
+    const submitCustomTitleModal = createModalMock({
+      customId: `menu:modal_sub:shop_custom_title:${customTitleShopItem.id}`,
+      userId: 'member1',
+      fields: { titleText: '商店传奇大佬' },
+    });
+    await routeInteraction(submitCustomTitleModal.interaction, ctx);
+    expect(ctx.repos.profile.getOrCreate('g1', 'member1').equippedTitle).toBe('商店传奇大佬');
+
+    const buyStatSelect = createStringSelectMock({
+      customId: 'menu:shop_buy',
+      userId: 'member1',
+      values: [String(statShopItem!.id)],
+    });
+    await routeInteraction(buyStatSelect.interaction, ctx);
+    expect(ctx.repos.profile.getOrCreate('g1', 'member1').lastStatBoostDate).not.toBeNull();
+    expect(ctx.repos.profile.getOrCreate('g1', 'member1').statBoostDailyCount).toBe(1);
+
+    const delShopSelect = createStringSelectMock({
+      customId: 'menu:admin_shop_del',
+      userId: 'admin1',
+      values: [String(statShopItem!.id)],
+    });
+    await routeInteraction(delShopSelect.interaction, ctx);
+    expect(ctx.services.shop.listItems('g1').some((i) => i.id === statShopItem!.id)).toBe(false);
 
     ctx.db.close();
   });

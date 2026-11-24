@@ -49,7 +49,7 @@ flowchart LR
 - **`src/ui/`**
   - `embeds.ts`：定义全局 `AppContext`、`CommandDefinition`、`COLORS`、进度条 `renderProgressBar()`、中文时长格式化 `formatDurationZh()` 以及 Embed 工厂方法。
   - `localization.ts`：封装 `applyZh()` / `applyZhName()` 为指令、子指令与选项注入 `zh-CN` / `zh-TW` 本地化名称和描述。
-  - `menuShared.ts` / `menuBuilder.ts` / `adminConfigMenuBuilder.ts` / `chaosMenuBuilder.ts` / `worldEventMenuBuilder.ts` / `socialPetMenuBuilder.ts`：模块化渲染器，构建大厅卡片 `buildLobbyMessage()`、个人互动面板 **37 个子视图**（29 个用户视图 + 8 个管理后台视图）、以及公开决斗、红包、轮盘、数字炸弹、吃瓜盘口、天降宝箱、世界 Boss、CP 求婚/结拜仪式与宠物斗兽场卡片。
+  - `menuShared.ts` / `menuBuilder.ts` / `adminConfigMenuBuilder.ts` / `chaosMenuBuilder.ts` / `worldEventMenuBuilder.ts` / `socialPetMenuBuilder.ts`：模块化渲染器，构建大厅卡片 `buildLobbyMessage()`、个人互动面板 **38 个子视图**（29 个用户视图 + 9 个管理后台视图）、以及公开决斗、红包、轮盘、数字炸弹、吃瓜盘口、天降宝箱、世界 Boss、CP 求婚/结拜仪式与宠物斗兽场卡片。
 - **`src/interactions/`**
   - `router.ts`：统一接收所有 `Interaction`（含 Button、StringSelect、UserSelect、RoleSelect、Modal）并按类型与 `customId` 前缀分发；全局捕获异常并向用户返回友好错误提示（含 `50013` 权限不足识别）。
   - `*Handler.ts` & `menuHelpers.ts`：13 个专题交互处理器 + 1 个公共工具模块（`menuHandler.ts`、`configMenuHandler.ts`、`gamesMenuHandler.ts`、`multiplayerHandler.ts`、`chaosHandler.ts`、`worldEventHandler.ts`、`socialPetHandler.ts`、`blackjackHandler.ts`、`leaderboardHandler.ts`、`helpHandler.ts`、`ticketHandler.ts`、`giveawayHandler.ts`、`rolePanelHandler.ts`、`menuHelpers.ts`）。
@@ -86,7 +86,7 @@ flowchart LR
 
 ### 2.1 `/菜单`（`/menu`）全视图交互树
 
-用户可通过任意频道发送 `/菜单`（默认 `personal` 模式，Ephemeral 仅自己可见），或点击管理员通过 `/菜单 模式:lobby` 发送的永久大厅卡片按钮 `menu:open`，进入以下 **37 个视图**（含管理员 **8 个**后台视图）组成的完整交互面板：
+用户可通过任意频道发送 `/菜单`（默认 `personal` 模式，Ephemeral 仅自己可见），或点击管理员通过 `/菜单 模式:lobby` 发送的永久大厅卡片按钮 `menu:open`，进入以下 **38 个视图**（含管理员 **9 个**后台视图）组成的完整交互面板：
 
 ```mermaid
 flowchart TD
@@ -99,7 +99,7 @@ flowchart TD
   HOME -->|menu:nav:bank| BANK["🏦 bank 银行保险柜"]
   HOME -->|menu:nav:shop| SHOP["🛒 shop 商店/背包/自助身份组"]
   HOME -->|menu:nav:rank| RANK["🏆 rank 名片/编辑身份证/公开排行榜"]
-  HOME -->|仅管理员| ADMIN["⚙️ admin 管理后台总览<br/>econ / lvl / lvl_rewards / roles / games / mod / ops"]
+  HOME -->|仅管理员| ADMIN["⚙️ admin 管理后台总览<br/>econ / lvl / lvl_rewards / roles / shop / games / mod / ops"]
 
   SOLO --> SOLO_G["🎰 老虎机 / 🎲 猜大小 / 🃏 二十一点"]
   MULTI --> MULTI_C["🥷 偷钱 / 💸 转账 / ⚔️ 决斗 / 🧧 红包 / 💕 互动"]
@@ -110,7 +110,7 @@ flowchart TD
   SOC --> SOC_P["🐾 pets 盲盒与宠物屋 → 🏟️ pet_arena 斗兽场 PVP"]
 ```
 
-全部 **37 个 `MenuView` 视图**（`src/ui/menuShared.ts`）：
+全部 **38 个 `MenuView` 视图**（`src/ui/menuShared.ts`）：
 
 | 类别 | 数量 | `page` 枚举清单与说明 |
 | --- | --- | --- |
@@ -118,8 +118,8 @@ flowchart TD
 | **多人博弈与整蛊** | 9 | `multi`（多人大厅）、`rob`（偷钱/肥羊榜）、`pay`（群友转账）、`duel`（骰子决斗）、`social`（趣味互动）、`props`（黑市道具）、`bounty`（悬赏通缉）、`roulette`（俄罗斯轮盘）、`bomb`（数字炸弹） |
 | **吃瓜与世界事件** | 4 | `events`（事件中心）、`predictions`（盘口大厅）、`pred_detail`（盘口详情/押注/结算）、`world_status`（宝箱与世界 Boss） |
 | **CP 社交与宠物** | 5 | `social_hub`（关系宠物中心）、`cp`（结婚/结拜管理）、`cp_lb`（全服亲密榜）、`pets`（盲盒与宠物屋）、`pet_arena`（斗兽场 PVP） |
-| **商店、身份组与排行名片** | 5 | `shop`（服务器商店）、`bag`（背包与称号）、`self_roles`（自助领取身份组）、`rank`（个人名片 / 编辑身份证）、`leaderboard`（经验/富豪/成长数值/邀请榜） |
-| **管理后台（仅管理员）** | 8 | `admin`（后台总览）、`admin_econ`（经济/抢钱/银行调参）、`admin_lvl`（等级/热度/语音/升级语调参）、`admin_lvl_rewards`（等级身份组奖励管理）、`admin_roles`（自助身份组面板管理）、`admin_games`（新玩法/事件/宠物/CP调参）、`admin_mod`（11 模块开关）、`admin_ops`（发币、设置成员成长数值与管理员授权） |
+| **商店、身份组与排行名片** | 5 | `shop`（7 类商品商店）、`bag`（背包/称号/自定称号券兑换）、`self_roles`（自助领取身份组）、`rank`（个人名片 / 编辑身份证）、`leaderboard`（经验/富豪/成长数值/邀请榜） |
+| **管理后台（仅管理员）** | 9 | `admin`（后台总览）、`admin_econ`（经济/抢钱/银行调参）、`admin_lvl`（等级/热度/语音/升级语调参）、`admin_lvl_rewards`（等级身份组奖励管理）、`admin_roles`（自助身份组面板管理）、`admin_shop`（商店 7 类商品上架与下架管理）、`admin_games`（新玩法/事件/宠物/CP调参）、`admin_mod`（11 模块开关）、`admin_ops`（发币、设置成员成长数值与管理员授权） |
 
 ### 2.2 全量 `customId` 前缀路由规范
 
@@ -127,7 +127,7 @@ flowchart TD
 
 | 前缀 | 交互类型 | 处理器函数 | 完整 `customId` 格式与用途 |
 | --- | --- | --- | --- |
-| `menu` | Button / StringSelect / UserSelect / RoleSelect / Modal | `handleMenu*` + `tryHandleConfigMenu*` + `tryHandleGamesMenu*` | 主导航 (`menu:nav:*`)、独立玩法 (`menu:act:*` / `slots` / `dice_*` / `bj*`)、银行 (`menu:bank:*`)、身份证编辑 (`menu:modal:edit_card`)、自助身份组 (`menu:self_role_pick:*`)、黑市道具 (`menu:prop_buy` / `menu:prop_use:*` / `menu:user:prop_*`)、悬赏 (`menu:user:bounty` / `menu:bounty:clear`)、轮盘/炸弹建房 (`menu:roulette:*` / `menu:bomb:*` / `menu:roulette_join` / `menu:bomb_pick`)、吃瓜开盘 (`menu:modal:pred_create` / `menu:pred_*`)、世界事件 (`menu:world:*`)、CP/宠物 (`menu:user:cp_*` / `menu:cp_*` / `menu:pet:*` / `menu:user:pet_battle`)、管理后台 (`menu:admin:*` / `menu:admin_toggle_mod` / `menu:user:admin_*`（含 `admin_set_stat`）/ `menu:role:admin_lvl_reward_add` / `menu:role:admin_rp_add:<panelId>` / `menu:modal:admin_*`（含 `admin_lvl_msg`、`admin_rp_create`）) |
+| `menu` | Button / StringSelect / UserSelect / RoleSelect / Modal | `handleMenu*` + `tryHandleConfigMenu*` + `tryHandleGamesMenu*` | 主导航 (`menu:nav:*`)、独立玩法 (`menu:act:*` / `slots` / `dice_*` / `bj*`)、银行 (`menu:bank:*`)、商店/自定称号券 (`menu:shop_buy` / `menu:bag_use` / `menu:modal_sub:shop_custom_title:*` / `menu:modal_sub:bag_custom_title:*`)、身份证编辑 (`menu:modal:edit_card`)、自助身份组 (`menu:self_role_pick:*`)、黑市道具 (`menu:prop_buy` / `menu:prop_use:*` / `menu:user:prop_*`)、悬赏 (`menu:user:bounty` / `menu:bounty:clear`)、轮盘/炸弹建房 (`menu:roulette:*` / `menu:bomb:*` / `menu:roulette_join` / `menu:bomb_pick`)、吃瓜开盘 (`menu:modal:pred_create` / `menu:pred_*`)、世界事件 (`menu:world:*`)、CP/宠物 (`menu:user:cp_*` / `menu:cp_*` / `menu:pet:*` / `menu:user:pet_battle`)、管理后台 (`menu:admin:*` / `menu:admin_toggle_mod` / `menu:admin_shop_del` / `menu:user:admin_*` / `menu:role:admin_*`（含 `admin_shop_add_role`）/ `menu:modal:admin_*`（含 `admin_lvl_msg`、`admin_rp_create`、`admin_shop_*`）) |
 | `mp` | Button | `handleMultiplayerButton` | `mp:duel:accept:<id>` / `decline`（公开骰子决斗）；`mp:rp:claim:<id>`（拼手气红包） |
 | `ch` | Button / Modal | `handleChaosButton` / `handleChaosModal` | Button：`ch:rl:join/leave/start/cancel/fire:<gameId>`（公开轮盘）、`ch:bomb:guess:<gameId>`（弹出猜数 Modal）；Modal：`ch:bomb_sub:<gameId>`（提交数字炸弹猜测） |
 | `ev` | Button / StringSelect / Modal | `handleWorldEventButton` / `handleWorldEventStringSelect` / `handleWorldEventModal` | Button：`ev:pred:bet:<predId>:<opt>`（弹下注 Modal）、`ev:pred:lock/cancel/refresh:<predId>`、`ev:chest:claim:<eventId>`、`ev:boss:hit:<eventId>:<normal\|heavy>`；StringSelect：`ev:pred:settle:<predId>`；Modal：`ev:pred_bet_sub:<predId>:<opt>` |
@@ -185,8 +185,8 @@ flowchart TD
 | 12 | `/dice` | `/猜大小` | `/猜大小` | 经济系统 | 所有成员 | 三颗骰子押大（1x）、押小（1x）或押豹子（10x） |
 | 13 | `/slots` | `/老虎机` | `/老虎机` | 经济系统 | 所有成员 | 拉动加权老虎机，三连 `7️⃣` 最高 15 倍返还 |
 | 14 | `/blackjack` | `/二十一点` | `/二十一点` | 经济系统 | 所有成员 | 开始一局独立互动二十一点扑克（按钮要牌 / 停牌 / 双倍下注） |
-| 15 | `/shop` | `/商店` | `/商店` | 经济系统 | 成员 / 管理员 | 浏览和购买身份组、称号、经验卡；管理员上/下架商品 |
-| 16 | `/inventory` | `/背包` | `/背包` | 经济系统 | 所有成员 | 查看背包道具与称号，激活经验加成卡或切换佩戴称号 |
+| 15 | `/shop` | `/商店` | `/商店` | 经济系统 | 成员 / 管理员 | 浏览和购买身份组、称号、经验卡、成长道具、自定义称号券、宠物经验与盲盒；管理员上/下架商品 |
+| 16 | `/inventory` | `/背包` | `/背包` | 经济系统 | 所有成员 | 查看背包道具、称号与自定称号兑换券，激活经验加成卡或切换佩戴称号 |
 | 17 | `/fortune` | `/运势` | `/运势` | 娱乐互动 | 所有成员 | 抽取今日运势签（大吉~小凶、宜/忌、幸运数字，首抽赠星币） |
 | 18 | `/interact` | `/互动` | `/互动` | 娱乐互动 | 所有成员 | 对群友发起摸头/抱抱/贴贴/戳一戳/投喂/丢雪球并累计交互次数 |
 | 19 | `/title` | `/称号` | `/称号` | 娱乐互动 | 成员 / 管理员(`grant`) | 查看、佩戴、卸下个人称号，或由管理员授予成员专属称号 |
@@ -197,7 +197,7 @@ flowchart TD
 | 24 | `/invites` | `/邀请` | `/邀请` | 邀请追踪 | 所有成员 | 查看自己或指定成员的累计成功邀请数与近期邀请记录 |
 | 25 | `/role-panel` | `/身份组面板` | `/身份组面板` | 自助身份组 | 管理员 | 创建与发布支持按钮/下拉菜单、单选互斥/多选的自助身份组面板 |
 
-> 注：**Bot 管理员权限 (`requireBotAdmin` / `checkMemberIsBotAdmin`)** 满足以下任一条件即可通过：服务器 `Administrator` 权限、`ManageGuild` 权限、持有 `/设置 添加管理员身份组` 配置的 `adminRoleIds`，或用户 ID 位于 `/设置 添加管理员用户`（或后台 `admin_ops`）配置的 `adminUserIds` 白名单中。授权成员在 `/菜单` 首页可见「⚙️ 管理后台」（含 `admin` / `admin_econ` / `admin_lvl` / `admin_lvl_rewards` / `admin_roles` / `admin_games` / `admin_mod` / `admin_ops` **8 个**可视化配置视图）。
+> 注：**Bot 管理员权限 (`requireBotAdmin` / `checkMemberIsBotAdmin`)** 满足以下任一条件即可通过：服务器 `Administrator` 权限、`ManageGuild` 权限、持有 `/设置 添加管理员身份组` 配置的 `adminRoleIds`，或用户 ID 位于 `/设置 添加管理员用户`（或后台 `admin_ops`）配置的 `adminUserIds` 白名单中。授权成员在 `/菜单` 首页可见「⚙️ 管理后台」（含 `admin` / `admin_econ` / `admin_lvl` / `admin_lvl_rewards` / `admin_roles` / `admin_shop` / `admin_games` / `admin_mod` / `admin_ops` **9 个**可视化配置视图）。
 
 ### 3.1 11 大功能模块开关（`ModuleToggles`）
 
@@ -446,6 +446,13 @@ if (!columnNames.has('level_offset')) {
 if (!columnNames.has('stat_value')) {
   db.exec('ALTER TABLE member_profiles ADD COLUMN stat_value INTEGER NOT NULL DEFAULT 0;');
 }
+if (!columnNames.has('last_stat_boost_date')) {
+  db.exec('ALTER TABLE member_profiles ADD COLUMN last_stat_boost_date TEXT;');
+}
+if (!columnNames.has('stat_boost_daily_count')) {
+  db.exec('ALTER TABLE member_profiles ADD COLUMN stat_boost_daily_count INTEGER NOT NULL DEFAULT 0;');
+}
+// 另支持 shop_items 表平滑重建迁移，补全 payload_json 与 7 类商品 CHECK 约束（保留存量商品）
 ```
 
 - **行为保证**：存量数据库中已有的钱包余额、银行存款、管理员白名单、等级等数据完全保留，自动补全缺失列与全部新表；`GuildConfigRepo.getOrCreate()` 读取时会分别以 `{ ...DEFAULT_MODULES, ...obj }`、`{ ...DEFAULT_LEVELING, ...obj }`、`{ ...DEFAULT_GAMES_CONFIG, ...obj }` 等合并默认值，确保旧行无缝继承全部 11 模块、`allowedChannelIds`、`stat*`、`levelUpTitle`/`levelUpTemplate` 与 21 项玩法默认配置；多次重复调用 `initSchema(db)` 幂等无报错（见 `tests/db/schema.test.ts`）。

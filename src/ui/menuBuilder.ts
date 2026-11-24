@@ -20,6 +20,7 @@ import { PET_SPECIES_MAP } from '../services/socialPetService.js';
 import {
   buildAdminLvlRewardsView,
   buildAdminRolesView,
+  buildAdminShopView,
   buildSelfRolesView,
 } from './adminConfigMenuBuilder.js';
 import {
@@ -36,7 +37,9 @@ import {
 } from './embeds.js';
 import {
   buttonRow,
+  formatInventoryTypeLabel,
   formatRatePercent,
+  formatShopItemTag,
   makeButton,
   resolveColor,
   truncateText,
@@ -826,32 +829,36 @@ function buildShopView(
   guildId: string,
   actor: MenuActor,
   feedback: MenuFeedback | undefined,
+  nowMs: number,
 ): BuiltMenuMessage {
-  const cfg = ctx.repos.guildConfig.getOrCreate(guildId).economy;
+  const guildCfg = ctx.repos.guildConfig.getOrCreate(guildId);
+  const cfg = guildCfg.economy;
+  const lvlCfg = guildCfg.leveling;
   const profile = ctx.repos.profile.getOrCreate(guildId, actor.id);
   const items = ctx.services.shop.listItems(guildId);
   const displayItems = items.slice(0, 25);
+  const hasStatBoost = items.some((i) => i.type === 'stat_boost');
+  const boostQuota = ctx.services.shop.getStatBoostRemainingToday(guildId, actor.id, nowMs);
 
   const lines =
     displayItems.length > 0
       ? displayItems.map((item) => {
           const stockText = item.stock === null ? '无限' : `剩 ${item.stock}`;
-          const typeTag =
-            item.type === 'role'
-              ? `身份组 <@&${item.roleId}>`
-              : item.type === 'title'
-                ? `称号「${item.titleText}」`
-                : `经验卡 ${item.boostMultiplier ?? 1.5}x (${formatDurationZh((item.boostDurationSec ?? 3600) * 1000)})`;
+          const typeTag = formatShopItemTag(item, lvlCfg.statName, lvlCfg.statUnit);
           return `**#${item.id} ${truncateText(item.name, 40)}** — ${cfg.currencyEmoji} **${item.price}**（${stockText}）\n> ${typeTag}${item.description ? ` · ${truncateText(item.description, 60)}` : ''}`;
         })
-      : ['商店目前还没有商品，请联系管理员使用 `/商店 上架*` 指令添加商品。'];
+      : ['商店目前还没有商品，管理员可在「⚙️ 管理后台 → 🛒 商店管理」或 `/商店 上架*` 添加商品。'];
 
   if (items.length > 25) {
     lines.push(`\n*（共 ${items.length} 件商品，当前展示前 25 件）*`);
   }
 
+  const statQuotaLine = hasStatBoost
+    ? ` ｜ 💊 今日成长道具剩余：**${boostQuota.remaining}/${boostQuota.dailyLimit}** 次`
+    : '';
+
   const description = [
-    `${cfg.currencyEmoji} 口袋现金：**${profile.coins}** ${cfg.currencyName}`,
+    `${cfg.currencyEmoji} 口袋现金：**${profile.coins}** ${cfg.currencyName}${statQuotaLine}`,
     '',
     ...lines,
   ].join('\n');
@@ -881,12 +888,7 @@ function buildShopView(
       .addOptions(
         displayItems.map((item) => {
           const stockTag = item.stock === null ? '无限' : `剩${item.stock}`;
-          const typeDesc =
-            item.type === 'role'
-              ? '身份组奖励'
-              : item.type === 'title'
-                ? `称号「${item.titleText ?? item.name}」`
-                : `经验卡 ${item.boostMultiplier ?? 1.5}x`;
+          const typeDesc = formatShopItemTag(item, lvlCfg.statName, lvlCfg.statUnit, true);
           const rawDesc = item.description ? `${typeDesc} · ${item.description}` : `${typeDesc} · 库存:${stockTag}`;
           return new StringSelectMenuOptionBuilder()
             .setLabel(truncateText(`#${item.id} ${item.name} (${item.price} ${cfg.currencyName})`, 100))
@@ -918,7 +920,7 @@ function buildBagView(
   const invLines =
     displayInv.length > 0
       ? displayInv.map((item) => {
-          const typeLabel = item.itemType === 'xp_boost' ? '经验加成卡' : '专属称号';
+          const typeLabel = formatInventoryTypeLabel(item.itemType);
           return `• **#${item.id}** [${typeLabel}] **${truncateText(item.itemName, 40)}** × ${item.quantity}`;
         })
       : ['背包里暂时空空如也，去商店逛逛吧！'];
@@ -967,7 +969,9 @@ function buildBagView(
               ? '点击立即激活经验加成卡'
               : inv.itemType === 'title'
                 ? '点击佩戴此专属称号'
-                : '使用背包道具';
+                : inv.itemType === 'custom_title'
+                  ? '点击弹窗自拟并佩戴专属称号'
+                  : '使用背包道具';
           return new StringSelectMenuOptionBuilder()
             .setLabel(truncateText(`#${inv.id} ${inv.itemName} (×${inv.quantity})`, 100))
             .setValue(String(inv.id))
@@ -1289,6 +1293,7 @@ function buildAdminOverviewView(
       ),
       buttonRow(
         makeButton('menu:nav:admin_roles', '🎭 自助身份组', ButtonStyle.Primary),
+        makeButton('menu:nav:admin_shop', '🛒 商店管理', ButtonStyle.Primary),
         makeButton('menu:admin:send_lobby', '📌 发送频道大厅入口', ButtonStyle.Success),
         makeButton('menu:nav:admin', '🔄 刷新配置', ButtonStyle.Secondary),
         makeButton('menu:nav:home', '🏠 主菜单', ButtonStyle.Secondary),
@@ -1658,7 +1663,7 @@ export function buildMenuMessage(
     case 'pet_arena':
       return buildPetArenaView(ctx, guildId, actor, feedback);
     case 'shop':
-      return buildShopView(ctx, guildId, actor, feedback);
+      return buildShopView(ctx, guildId, actor, feedback, nowMs);
     case 'bag':
       return buildBagView(ctx, guildId, actor, feedback, nowMs);
     case 'rank':
@@ -1677,6 +1682,8 @@ export function buildMenuMessage(
       return buildAdminLvlRewardsView(ctx, guildId, actor, feedback);
     case 'admin_roles':
       return buildAdminRolesView(ctx, guildId, actor, view.panelId, feedback);
+    case 'admin_shop':
+      return buildAdminShopView(ctx, guildId, actor, feedback);
     case 'admin_games':
       return buildAdminGamesView(ctx, guildId, actor, feedback);
     case 'admin_mod':

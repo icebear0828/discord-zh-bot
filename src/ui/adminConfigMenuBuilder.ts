@@ -7,6 +7,7 @@ import {
   StringSelectMenuOptionBuilder,
 } from 'discord.js';
 import { COLORS, type AppContext } from './embeds.js';
+import { formatShopItemTag } from './menuShared.js';
 import {
   buttonRow,
   makeButton,
@@ -367,6 +368,94 @@ export function buildSelfRolesView(
     navButtons.push(makeButton('menu:nav:admin_roles', '⚙️ 管理面板', ButtonStyle.Primary));
   }
   components.push(buttonRow(...navButtons));
+
+  return { embeds: [embed], components };
+}
+
+export function buildAdminShopView(
+  ctx: AppContext,
+  guildId: string,
+  actor: MenuActor,
+  feedback: MenuFeedback | undefined,
+): BuiltMenuMessage {
+  const guildCfg = ctx.repos.guildConfig.getOrCreate(guildId);
+  const econCfg = guildCfg.economy;
+  const lvlCfg = guildCfg.leveling;
+  const items = ctx.services.shop.listItems(guildId);
+  const displayItems = items.slice(0, 25);
+
+  const itemLines =
+    displayItems.length > 0
+      ? displayItems.map((item) => {
+          const stockText = item.stock === null ? '无限' : `剩 ${item.stock}`;
+          const tag = formatShopItemTag(item, lvlCfg.statName, lvlCfg.statUnit);
+          return `• **#${item.id} ${truncateText(item.name, 32)}** — ${econCfg.currencyEmoji} **${item.price}**（${stockText}）\n  > ${tag}`;
+        })
+      : ['当前商店暂无商品，点击下方选择器或弹窗按钮即可上架！'];
+
+  if (items.length > 25) {
+    itemLines.push(`\n*（共 ${items.length} 件商品，当前展示前 25 件）*`);
+  }
+
+  const description = [
+    `当前在售商品：**${items.length}** 件 ｜ 货币：**${econCfg.currencyName}** ｜ 成长数值：**${lvlCfg.statName}（${lvlCfg.statUnit}）**`,
+    '',
+    ...itemLines,
+  ].join('\n');
+
+  const embed = new EmbedBuilder()
+    .setColor(resolveColor(COLORS.GOLD, feedback))
+    .setAuthor({ name: `${actor.displayName} · 商店商品管理`, iconURL: actor.avatarUrl })
+    .setTitle('🛒 商店商品管理中心')
+    .setDescription(withFeedback(description, feedback))
+    .setFooter({ text: '🔒 支持上架 7 类商品，或通过 /商店 上架* 精确配置' })
+    .setTimestamp();
+
+  const components: MenuComponentRow[] = [];
+
+  if (displayItems.length > 0) {
+    components.push(
+      new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+        new StringSelectMenuBuilder()
+          .setCustomId('menu:admin_shop_del')
+          .setPlaceholder('🗑️ 选择要下架的商品...')
+          .addOptions(
+            displayItems.map((item) =>
+              new StringSelectMenuOptionBuilder()
+                .setLabel(truncateText(`下架 #${item.id} ${item.name}`, 100))
+                .setValue(String(item.id))
+                .setDescription(
+                  truncateText(
+                    `${item.price} ${econCfg.currencyName} · ${formatShopItemTag(item, lvlCfg.statName, lvlCfg.statUnit, true)}`,
+                    100,
+                  ),
+                ),
+            ),
+          ),
+      ),
+    );
+  }
+
+  components.push(
+    new ActionRowBuilder<RoleSelectMenuBuilder>().addComponents(
+      new RoleSelectMenuBuilder()
+        .setCustomId('menu:role:admin_shop_add_role')
+        .setPlaceholder('✨ 选择一个身份组上架为商店商品...')
+        .setMinValues(1)
+        .setMaxValues(1),
+    ),
+    buttonRow(
+      makeButton('menu:modal:admin_shop_title', '🏷️ 上架称号', ButtonStyle.Primary),
+      makeButton('menu:modal:admin_shop_boost', '⚡ 上架经验卡', ButtonStyle.Primary),
+      makeButton('menu:modal:admin_shop_stat', '💊 成长道具', ButtonStyle.Success),
+      makeButton('menu:modal:admin_shop_pet', '🥫 宠物经验', ButtonStyle.Success),
+      makeButton('menu:modal:admin_shop_special', '🎁 盲盒/称号券', ButtonStyle.Secondary),
+    ),
+    buttonRow(
+      makeButton('menu:nav:admin', '⬅️ 管理后台', ButtonStyle.Secondary),
+      makeButton('menu:nav:home', '🏠 主菜单', ButtonStyle.Secondary),
+    ),
+  );
 
   return { embeds: [embed], components };
 }

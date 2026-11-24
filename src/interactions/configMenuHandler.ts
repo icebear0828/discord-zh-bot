@@ -48,6 +48,137 @@ function optionalInput(input: {
   return new ActionRowBuilder<TextInputBuilder>().addComponents(field);
 }
 
+function reqInput(
+  customId: string,
+  label: string,
+  placeholder: string,
+  maxLength: number,
+  defaultValue?: string,
+): ActionRowBuilder<TextInputBuilder> {
+  const field = new TextInputBuilder()
+    .setCustomId(customId)
+    .setLabel(label)
+    .setStyle(TextInputStyle.Short)
+    .setMinLength(1)
+    .setMaxLength(maxLength)
+    .setPlaceholder(placeholder)
+    .setRequired(true);
+
+  const trimmed = defaultValue?.trim();
+  if (trimmed) {
+    field.setValue(truncateText(trimmed, maxLength));
+  }
+
+  return new ActionRowBuilder<TextInputBuilder>().addComponents(field);
+}
+
+function buildShopCreateModal(modalType: string, ctx: AppContext, guildId: string): ModalBuilder {
+  const lvlCfg = ctx.repos.guildConfig.getOrCreate(guildId).leveling;
+
+  if (modalType === 'admin_shop_title') {
+    return new ModalBuilder()
+      .setCustomId('menu:modal_sub:admin_shop_title')
+      .setTitle('🏷️ 上架专属称号商品')
+      .addComponents(
+        reqInput('name', '商品名称（1~40字）', '例如：🏷️ 称号：本服合法公民', 40),
+        reqInput('price', '售价（整数 >= 0）', '例如：3000', 12),
+        reqInput('titleText', '佩戴称号文本（1~20字）', '例如：合法公民', 20),
+        optionalInput({
+          customId: 'description',
+          label: '商品简介（可留空）',
+          placeholder: '购买后自动佩戴专属称号',
+          maxLength: 80,
+        }),
+        optionalInput({
+          customId: 'stock',
+          label: '限量库存（正整数，留空为无限）',
+          placeholder: '留空表示无限库存',
+          maxLength: 8,
+        }),
+      );
+  }
+
+  if (modalType === 'admin_shop_boost') {
+    return new ModalBuilder()
+      .setCustomId('menu:modal_sub:admin_shop_boost')
+      .setTitle('⚡ 上架经验加成卡')
+      .addComponents(
+        reqInput('name', '商品名称（1~40字）', '例如：🔥 2.0x 狂肝经验卡', 40),
+        reqInput('price', '售价（整数 >= 0）', '例如：1800', 12),
+        reqInput('multiplier', '经验倍率（1.1 ~ 5.0）', '例如：2.0', 8),
+        reqInput('durationMin', '持续分钟数（5 ~ 10080）', '例如：120', 8),
+        optionalInput({
+          customId: 'description',
+          label: '商品简介（可留空）',
+          placeholder: '激活后双倍聊天/语音经验',
+          maxLength: 80,
+        }),
+      );
+  }
+
+  if (modalType === 'admin_shop_stat') {
+    return new ModalBuilder()
+      .setCustomId('menu:modal_sub:admin_shop_stat')
+      .setTitle(`💊 上架${truncateText(lvlCfg.statName, 12)}道具`)
+      .addComponents(
+        reqInput('name', '商品名称（1~40字）', '例如：💊 初级成长药水', 40),
+        reqInput('price', '售价（整数 >= 0）', '例如：1200', 12),
+        reqInput('minGain', '数值最小增量（整数 >= 1）', '例如：1', 8),
+        reqInput('maxGain', '数值最大增量（整数 >= 最小增量）', '例如：4', 8),
+        optionalInput({
+          customId: 'description',
+          label: '商品简介（可留空）',
+          placeholder: `增加 ${lvlCfg.statName}，含暴击与日限3次`,
+          maxLength: 80,
+        }),
+      );
+  }
+
+  if (modalType === 'admin_shop_pet') {
+    return new ModalBuilder()
+      .setCustomId('menu:modal_sub:admin_shop_pet')
+      .setTitle('🥫 上架宠物经验道具')
+      .addComponents(
+        reqInput('name', '商品名称（1~40字）', '例如：🥫 黄金猫罐头', 40),
+        reqInput('price', '售价（整数 >= 0）', '例如：800', 12),
+        reqInput('petXp', '增加的宠物经验（10 ~ 10000）', '例如：180', 8),
+        optionalInput({
+          customId: 'description',
+          label: '商品简介（可留空）',
+          placeholder: '买即生效，直接喂给出战宠物',
+          maxLength: 80,
+        }),
+        optionalInput({
+          customId: 'stock',
+          label: '限量库存（正整数，留空为无限）',
+          placeholder: '留空表示无限库存',
+          maxLength: 8,
+        }),
+      );
+  }
+
+  return new ModalBuilder()
+    .setCustomId('menu:modal_sub:admin_shop_special')
+    .setTitle('🎁 上架盲盒或自定义称号券')
+    .addComponents(
+      reqInput('kind', '商品类型（输入：盲盒 或 称号券）', '盲盒 / 称号券', 16, '盲盒'),
+      reqInput('name', '商品名称（1~40字）', '例如：🎁 神秘幸运盲盒', 40),
+      reqInput('price', '售价（整数 >= 0）', '例如：1500', 12),
+      optionalInput({
+        customId: 'description',
+        label: '商品简介（可留空）',
+        placeholder: '神秘混合奖池 / 自拟1~20字称号',
+        maxLength: 80,
+      }),
+      optionalInput({
+        customId: 'stock',
+        label: '限量库存（正整数，留空为无限）',
+        placeholder: '留空表示无限库存',
+        maxLength: 8,
+      }),
+    );
+}
+
 function buildEditCardModal(
   profile: {
     cardNickname: string | null;
@@ -199,7 +330,11 @@ export async function tryHandleConfigMenuButton(
       return true;
     }
 
-    if (target === 'admin_lvl_rewards' || target === 'admin_roles') {
+    if (
+      target === 'admin_lvl_rewards' ||
+      target === 'admin_roles' ||
+      target === 'admin_shop'
+    ) {
       if (!actor.isAdmin) {
         await interaction.update(
           buildMenuMessage(ctx, guildId, actor, { page: 'home' }, ADMIN_DENIED_FEEDBACK),
@@ -443,6 +578,24 @@ export async function tryHandleConfigMenuButton(
       await interaction.showModal(buildCreateRolePanelModal());
       return true;
     }
+
+    const shopModalTypes = new Set([
+      'admin_shop_title',
+      'admin_shop_boost',
+      'admin_shop_stat',
+      'admin_shop_pet',
+      'admin_shop_special',
+    ]);
+    if (modalType && shopModalTypes.has(modalType)) {
+      if (!actor.isAdmin) {
+        await interaction.update(
+          buildMenuMessage(ctx, guildId, actor, { page: 'home' }, ADMIN_DENIED_FEEDBACK),
+        );
+        return true;
+      }
+      await interaction.showModal(buildShopCreateModal(modalType, ctx, guildId));
+      return true;
+    }
   }
 
   return false;
@@ -457,6 +610,41 @@ export async function tryHandleConfigMenuStringSelect(
 ): Promise<boolean> {
   const section = parts[1];
   const selected = interaction.values[0];
+
+  if (section === 'admin_shop_del') {
+    if (!actor.isAdmin) {
+      await interaction.update(
+        buildMenuMessage(ctx, guildId, actor, { page: 'home' }, ADMIN_DENIED_FEEDBACK),
+      );
+      return true;
+    }
+    const itemId = parsePositiveInt(selected ?? '');
+    if (!itemId) {
+      await interaction.update(
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'admin_shop' },
+          { type: 'error', text: '无效的商品编号。' },
+        ),
+      );
+      return true;
+    }
+    const removed = ctx.services.shop.removeItem(guildId, itemId);
+    await interaction.update(
+      buildMenuMessage(
+        ctx,
+        guildId,
+        actor,
+        { page: 'admin_shop' },
+        removed
+          ? { type: 'success', text: `🗑️ 已下架商店商品 **#${itemId}**。` }
+          : { type: 'error', text: `未找到商品 **#${itemId}**。` },
+      ),
+    );
+    return true;
+  }
 
   if (section === 'admin_lvl_reward_del') {
     if (!actor.isAdmin) {
@@ -662,7 +850,11 @@ export async function tryHandleConfigMenuRoleSelect(
   parts: readonly string[],
 ): Promise<boolean> {
   const actionType = parts[2];
-  if (actionType !== 'admin_lvl_reward_add' && actionType !== 'admin_rp_add') {
+  if (
+    actionType !== 'admin_lvl_reward_add' &&
+    actionType !== 'admin_rp_add' &&
+    actionType !== 'admin_shop_add_role'
+  ) {
     return false;
   }
 
@@ -676,6 +868,44 @@ export async function tryHandleConfigMenuRoleSelect(
   const roleId = interaction.values[0];
   if (!roleId) return true;
   const selectedRole = interaction.roles.get(roleId);
+
+  if (actionType === 'admin_shop_add_role') {
+    if (roleId === guildId || selectedRole?.managed) {
+      await interaction.update(
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'admin_shop' },
+          { type: 'error', text: '不能将 `@everyone` 或机器人/系统托管身份组上架到商店。' },
+        ),
+      );
+      return true;
+    }
+    const defaultName = selectedRole?.name ? `身份组：${selectedRole.name}` : '';
+    await interaction.showModal(
+      new ModalBuilder()
+        .setCustomId(`menu:modal_sub:admin_shop_role:${roleId}`)
+        .setTitle('✨ 上架身份组商品')
+        .addComponents(
+          reqInput('name', '商品名称（1~40字）', '例如：✨ 身份组：夜店霓虹王', 40, defaultName),
+          reqInput('price', '售价（整数 >= 0）', '例如：15000', 12),
+          optionalInput({
+            customId: 'description',
+            label: '商品简介（可留空）',
+            placeholder: '购买后自动发放该身份组',
+            maxLength: 80,
+          }),
+          optionalInput({
+            customId: 'stock',
+            label: '限量库存（正整数，留空为无限）',
+            placeholder: '例如：5',
+            maxLength: 8,
+          }),
+        ),
+    );
+    return true;
+  }
 
   if (actionType === 'admin_lvl_reward_add') {
     if (roleId === guildId || selectedRole?.managed) {
@@ -852,6 +1082,12 @@ export async function tryHandleConfigMenuModal(
     'admin_lvl_reward_add',
     'admin_rp_create',
     'admin_rp_add',
+    'admin_shop_role',
+    'admin_shop_title',
+    'admin_shop_boost',
+    'admin_shop_stat',
+    'admin_shop_pet',
+    'admin_shop_special',
   ]);
   if (!modalType || !adminModalTypes.has(modalType)) {
     return false;
@@ -1067,7 +1303,231 @@ export async function tryHandleConfigMenuModal(
     return true;
   }
 
+  if (modalType.startsWith('admin_shop_')) {
+    return handleAdminShopModal(interaction, ctx, guildId, actor, modalType, parts);
+  }
+
   return false;
+}
+
+function readOptionalModalField(interaction: ModalSubmitInteraction, customId: string): string {
+  try {
+    return interaction.fields.getTextInputValue(customId).trim();
+  } catch {
+    return '';
+  }
+}
+
+async function handleAdminShopModal(
+  interaction: ModalSubmitInteraction,
+  ctx: AppContext,
+  guildId: string,
+  actor: MenuActor,
+  modalType: string,
+  parts: readonly string[],
+): Promise<boolean> {
+  const guildCfg = ctx.repos.guildConfig.getOrCreate(guildId);
+  const econCfg = guildCfg.economy;
+  const lvlCfg = guildCfg.leveling;
+
+  const fail = async (text: string): Promise<boolean> => {
+    await respondFromModal(
+      interaction,
+      buildMenuMessage(ctx, guildId, actor, { page: 'admin_shop' }, { type: 'error', text }),
+    );
+    return true;
+  };
+
+  const name = interaction.fields.getTextInputValue('name').trim();
+  const price = parseIntInRange(interaction.fields.getTextInputValue('price'), 0, 10_000_000);
+  if (name.length < 1 || name.length > 40 || price === null) {
+    return fail('商品名称需 1~40 字，售价需为 0 ~ 10,000,000 之间的整数。');
+  }
+
+  const description = readOptionalModalField(interaction, 'description');
+
+  let stock: number | null = null;
+  const rawStock = readOptionalModalField(interaction, 'stock');
+  if (rawStock.length > 0) {
+    const parsedStock = parseIntInRange(rawStock, 1, 100_000);
+    if (parsedStock === null) {
+      return fail('限量库存必须为 1 ~ 100,000 的正整数（留空表示无限）。');
+    }
+    stock = parsedStock;
+  }
+
+  if (modalType === 'admin_shop_role') {
+    const roleId = parts[3];
+    if (!roleId) {
+      return fail('未指定有效身份组。');
+    }
+    const created = ctx.services.shop.createRoleItem({
+      guildId,
+      name,
+      description,
+      price,
+      roleId,
+      stock,
+    });
+    await respondFromModal(
+      interaction,
+      buildMenuMessage(
+        ctx,
+        guildId,
+        actor,
+        { page: 'admin_shop' },
+        {
+          type: 'success',
+          text: `✅ 已上架身份组商品 **#${created.id} ${created.name}** → <@&${roleId}>（${price} ${econCfg.currencyName}）！`,
+        },
+      ),
+    );
+    return true;
+  }
+
+  if (modalType === 'admin_shop_title') {
+    const titleText = interaction.fields.getTextInputValue('titleText').trim();
+    if (titleText.length < 1 || titleText.length > 20) {
+      return fail('佩戴称号文本需在 1 ~ 20 字之间。');
+    }
+    const created = ctx.services.shop.createTitleItem({
+      guildId,
+      name,
+      description,
+      price,
+      titleText,
+      stock,
+    });
+    await respondFromModal(
+      interaction,
+      buildMenuMessage(
+        ctx,
+        guildId,
+        actor,
+        { page: 'admin_shop' },
+        {
+          type: 'success',
+          text: `✅ 已上架称号商品 **#${created.id} ${created.name}** → 「${titleText}」（${price} ${econCfg.currencyName}）！`,
+        },
+      ),
+    );
+    return true;
+  }
+
+  if (modalType === 'admin_shop_boost') {
+    const multNum = Number(interaction.fields.getTextInputValue('multiplier').trim());
+    const durationMin = parseIntInRange(interaction.fields.getTextInputValue('durationMin'), 5, 10_080);
+    if (!Number.isFinite(multNum) || multNum < 1.1 || multNum > 5.0 || durationMin === null) {
+      return fail('经验倍率需在 1.1 ~ 5.0 之间，持续分钟数需为 5 ~ 10080 的整数。');
+    }
+    const multiplier = Math.round(multNum * 100) / 100;
+    const created = ctx.services.shop.createBoostItem({
+      guildId,
+      name,
+      description,
+      price,
+      boostMultiplier: multiplier,
+      boostDurationSec: durationMin * 60,
+      stock,
+    });
+    await respondFromModal(
+      interaction,
+      buildMenuMessage(
+        ctx,
+        guildId,
+        actor,
+        { page: 'admin_shop' },
+        {
+          type: 'success',
+          text: `✅ 已上架经验卡 **#${created.id} ${created.name}**（${multiplier}x · ${durationMin}分钟）！`,
+        },
+      ),
+    );
+    return true;
+  }
+
+  if (modalType === 'admin_shop_stat') {
+    const minGain = parseIntInRange(interaction.fields.getTextInputValue('minGain'), 1, 1000);
+    const maxGain = parseIntInRange(interaction.fields.getTextInputValue('maxGain'), 1, 1000);
+    if (minGain === null || maxGain === null || maxGain < minGain) {
+      return fail('最小/最大增量需为 1 ~ 1000 的整数，且最大增量不能小于最小增量。');
+    }
+    const created = ctx.services.shop.createStatBoostItem({
+      guildId,
+      name,
+      description,
+      price,
+      minGain,
+      maxGain,
+      stock,
+    });
+    await respondFromModal(
+      interaction,
+      buildMenuMessage(
+        ctx,
+        guildId,
+        actor,
+        { page: 'admin_shop' },
+        {
+          type: 'success',
+          text: `✅ 已上架成长道具 **#${created.id} ${created.name}**（${lvlCfg.statName} +${minGain}~${maxGain} ${lvlCfg.statUnit}）！`,
+        },
+      ),
+    );
+    return true;
+  }
+
+  if (modalType === 'admin_shop_pet') {
+    const petXp = parseIntInRange(interaction.fields.getTextInputValue('petXp'), 10, 10_000);
+    if (petXp === null) {
+      return fail('宠物经验值需为 10 ~ 10,000 之间的整数。');
+    }
+    const created = ctx.services.shop.createPetXpItem({
+      guildId,
+      name,
+      description,
+      price,
+      petXp,
+      stock,
+    });
+    await respondFromModal(
+      interaction,
+      buildMenuMessage(
+        ctx,
+        guildId,
+        actor,
+        { page: 'admin_shop' },
+        {
+          type: 'success',
+          text: `✅ 已上架宠物经验道具 **#${created.id} ${created.name}**（+${petXp} XP）！`,
+        },
+      ),
+    );
+    return true;
+  }
+
+  const rawKind = interaction.fields.getTextInputValue('kind').trim().toLowerCase();
+  const isCustomTitle =
+    rawKind.includes('称号') || rawKind === 'custom_title' || rawKind === 'title';
+
+  const created = isCustomTitle
+    ? ctx.services.shop.createCustomTitleItem({ guildId, name, description, price, stock })
+    : ctx.services.shop.createMysteryBoxItem({ guildId, name, description, price, stock });
+
+  await respondFromModal(
+    interaction,
+    buildMenuMessage(
+      ctx,
+      guildId,
+      actor,
+      { page: 'admin_shop' },
+      {
+        type: 'success',
+        text: `✅ 已上架${isCustomTitle ? '自定义称号券' : '神秘盲盒'} **#${created.id} ${created.name}**（${price} ${econCfg.currencyName}）！`,
+      },
+    ),
+  );
+  return true;
 }
 
 export { DEFAULT_LEVELING_CONFIG };

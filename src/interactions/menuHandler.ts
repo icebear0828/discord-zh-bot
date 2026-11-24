@@ -40,11 +40,14 @@ import {
   buildPublicRankEmbed,
   buildRedPacketMessage,
   truncateText,
+} from '../ui/menuBuilder.js';
+import {
+  formatShopBuyError,
   type BuiltMenuMessage,
   type MenuActor,
   type MenuFeedback,
   type MenuView,
-} from '../ui/menuBuilder.js';
+} from '../ui/menuShared.js';
 import {
   tryHandleConfigMenuButton,
   tryHandleConfigMenuModal,
@@ -1297,17 +1300,67 @@ export async function handleMenuStringSelect(
       return;
     }
 
-    const cfg = ctx.repos.guildConfig.getOrCreate(guildId).economy;
+    const guildCfg = ctx.repos.guildConfig.getOrCreate(guildId);
+    const cfg = guildCfg.economy;
+    const lvlCfg = guildCfg.leveling;
+    const item = ctx.repos.shop.getItemById(guildId, itemId);
+
+    if (item?.type === 'custom_title') {
+      if (item.stock !== null && item.stock <= 0) {
+        await interaction.update(
+          buildMenuMessage(
+            ctx,
+            guildId,
+            actor,
+            { page: 'shop' },
+            { type: 'error', text: formatShopBuyError('out_of_stock', cfg.currencyName) },
+          ),
+        );
+        return;
+      }
+      const profile = ctx.repos.profile.getOrCreate(guildId, actor.id);
+      if (profile.coins < item.price) {
+        await interaction.update(
+          buildMenuMessage(
+            ctx,
+            guildId,
+            actor,
+            { page: 'shop' },
+            { type: 'error', text: formatShopBuyError('insufficient_funds', cfg.currencyName) },
+          ),
+        );
+        return;
+      }
+      await interaction.showModal(
+        new ModalBuilder()
+          .setCustomId(`menu:modal_sub:shop_custom_title:${item.id}`)
+          .setTitle('✍️ 兑换自定义专属称号')
+          .addComponents(
+            new ActionRowBuilder<TextInputBuilder>().addComponents(
+              new TextInputBuilder()
+                .setCustomId('titleText')
+                .setLabel('输入你的专属称号（1 ~ 20 字）')
+                .setStyle(TextInputStyle.Short)
+                .setMinLength(1)
+                .setMaxLength(20)
+                .setPlaceholder('例如：全服第一大冤种')
+                .setRequired(true),
+            ),
+          ),
+      );
+      return;
+    }
+
     const res = ctx.services.shop.buyItem(guildId, actor.id, itemId);
     if (!res.ok) {
-      const msgMap: Record<typeof res.reason, string> = {
-        not_found: '该商品不存在或已被管理员下架。',
-        out_of_stock: '该商品已售罄。',
-        insufficient_funds: `口袋现金不足！购买需要消耗口袋星币。`,
-        already_owned: '你已经拥有该专属称号了，无需重复购买。',
-      };
       await interaction.update(
-        buildMenuMessage(ctx, guildId, actor, { page: 'shop' }, { type: 'error', text: msgMap[res.reason] }),
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'shop' },
+          { type: 'error', text: formatShopBuyError(res.reason, cfg.currencyName, res.dailyLimit) },
+        ),
       );
       return;
     }
@@ -1354,11 +1407,48 @@ export async function handleMenuStringSelect(
       }
     }
 
-    const detail = res.grantRoleId
-      ? `已自动发放身份组 <@&${res.grantRoleId}>。`
-      : res.equippedTitle
-        ? `已解锁并自动佩戴称号 **「${res.equippedTitle}」**！`
-        : '道具已放入你的背包，随时可切换到「🎒 背包与称号」激活使用！';
+    let detail: string;
+    if (res.grantRoleId) {
+      detail = `已自动发放身份组 <@&${res.grantRoleId}>。`;
+    } else if (res.equippedTitle) {
+      detail = `已解锁并自动佩戴称号 **「${res.equippedTitle}」**！`;
+    } else if (res.statBoostResult) {
+      const s = res.statBoostResult;
+      const header =
+        s.outcome === 'crit'
+          ? `💥 **触发双倍暴击！** ${lvlCfg.statName} **+${s.delta}** ${lvlCfg.statUnit}`
+          : s.outcome === 'backfire'
+            ? `😵 **轻微反噬！** ${lvlCfg.statName} **${s.delta >= 0 ? `+${s.delta}` : s.delta}** ${lvlCfg.statUnit}`
+            : `✨ **效果生效！** ${lvlCfg.statName} **+${s.delta}** ${lvlCfg.statUnit}`;
+      detail = `${header}（当前 **${s.newStatValue}** ${lvlCfg.statUnit}，今日剩余 **${s.dailyLimit - s.usedToday}/${s.dailyLimit}** 次）`;
+      if (s.outcome === 'crit') {
+        await sendPublicBroadcast(interaction, {
+          embeds: [
+            createSuccessEmbed(
+              '💥 商店道具大暴击！',
+              `**${actor.displayName}** 使用了【**${res.item.name}**】触发 **2x 暴击**，${lvlCfg.statName}暴增 **+${s.delta}** ${lvlCfg.statUnit}（现已达 **${s.newStatValue}** ${lvlCfg.statUnit}）！`,
+            ),
+          ],
+        });
+      }
+    } else if (res.petXpResult) {
+      const p = res.petXpResult;
+      detail = `🐾 出战宠物 **${p.petName}** 获得 **+${p.xpGained} XP**${p.levelsGained > 0 ? `，升级至 **Lv.${p.newLevel}**（连升 ${p.levelsGained} 级）！` : '！'}`;
+    } else if (res.mysteryBoxResult) {
+      detail = `🎁 **盲盒开启**：${res.mysteryBoxResult.summary}`;
+      if (res.mysteryBoxResult.isJackpot) {
+        await sendPublicBroadcast(interaction, {
+          embeds: [
+            createSuccessEmbed(
+              '🎁 神秘盲盒欧皇降临！',
+              `**${actor.displayName}** 开启【**${res.item.name}**】开出大奖！\n${res.mysteryBoxResult.summary}`,
+            ),
+          ],
+        });
+      }
+    } else {
+      detail = '道具已放入你的背包，随时可切换到「🎒 背包与称号」激活使用！';
+    }
 
     await interaction.update(
       buildMenuMessage(
@@ -1368,7 +1458,7 @@ export async function handleMenuStringSelect(
         { page: 'shop' },
         {
           type: 'success',
-          text: `购买成功：**${res.item.name}**（花费 ${cfg.currencyEmoji} ${res.item.price}）\n${detail} 剩余现金：**${res.balance}**。`,
+          text: `购买成功：**${res.item.name}**（花费 ${cfg.currencyEmoji} ${res.item.price}）\n${detail}\n剩余现金：**${res.balance}**。`,
         },
       ),
     );
@@ -1388,6 +1478,28 @@ export async function handleMenuStringSelect(
     if (!invId) {
       await interaction.update(
         buildMenuMessage(ctx, guildId, actor, { page: 'bag' }, { type: 'error', text: '无效的背包道具编号。' }),
+      );
+      return;
+    }
+
+    const existingInv = ctx.repos.shop.getInventoryItem(guildId, actor.id, invId);
+    if (existingInv?.itemType === 'custom_title' && existingInv.quantity > 0) {
+      await interaction.showModal(
+        new ModalBuilder()
+          .setCustomId(`menu:modal_sub:bag_custom_title:${existingInv.id}`)
+          .setTitle('✍️ 兑换自定义专属称号')
+          .addComponents(
+            new ActionRowBuilder<TextInputBuilder>().addComponents(
+              new TextInputBuilder()
+                .setCustomId('titleText')
+                .setLabel('输入你的专属称号（1 ~ 20 字）')
+                .setStyle(TextInputStyle.Short)
+                .setMinLength(1)
+                .setMaxLength(20)
+                .setPlaceholder('例如：全服第一大冤种')
+                .setRequired(true),
+            ),
+          ),
       );
       return;
     }
@@ -1847,6 +1959,84 @@ export async function handleMenuModal(
   }
 
   if (await tryHandleConfigMenuModal(interaction, ctx, guildId, actor, parts)) {
+    return;
+  }
+
+  if (modalType === 'shop_custom_title') {
+    const itemId = parsePositiveInt(parts[3] ?? '');
+    const titleText = interaction.fields.getTextInputValue('titleText').trim();
+    const cfg = ctx.repos.guildConfig.getOrCreate(guildId).economy;
+    if (!itemId) {
+      await respondFromModal(
+        interaction,
+        buildMenuMessage(ctx, guildId, actor, { page: 'shop' }, { type: 'error', text: '无效的商品编号。' }),
+      );
+      return;
+    }
+    const res = ctx.services.shop.buyCustomTitle(guildId, actor.id, itemId, titleText);
+    if (!res.ok) {
+      await respondFromModal(
+        interaction,
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'shop' },
+          { type: 'error', text: formatShopBuyError(res.reason, cfg.currencyName, res.dailyLimit) },
+        ),
+      );
+      return;
+    }
+    await respondFromModal(
+      interaction,
+      buildMenuMessage(
+        ctx,
+        guildId,
+        actor,
+        { page: 'shop' },
+        {
+          type: 'success',
+          text: `✍️ 兑换成功！已花费 ${cfg.currencyEmoji} **${res.item.price}** 并为你佩戴专属称号 **「${res.equippedTitle}」**！剩余现金：**${res.balance}**。`,
+        },
+      ),
+    );
+    return;
+  }
+
+  if (modalType === 'bag_custom_title') {
+    const invId = parsePositiveInt(parts[3] ?? '');
+    const titleText = interaction.fields.getTextInputValue('titleText').trim();
+    if (!invId) {
+      await respondFromModal(
+        interaction,
+        buildMenuMessage(ctx, guildId, actor, { page: 'bag' }, { type: 'error', text: '无效的兑换券编号。' }),
+      );
+      return;
+    }
+    const res = ctx.services.shop.redeemCustomTitleVoucher(guildId, actor.id, invId, titleText);
+    if (!res.ok) {
+      const errText =
+        res.reason === 'already_owned'
+          ? `你已经拥有称号「${titleText}」，请换一个称号名称（券未消耗）。`
+          : res.reason === 'invalid_title'
+            ? '称号需在 1 ~ 20 个字之间（券未消耗）。'
+            : '兑换券不存在或已消耗。';
+      await respondFromModal(
+        interaction,
+        buildMenuMessage(ctx, guildId, actor, { page: 'bag' }, { type: 'error', text: errText }),
+      );
+      return;
+    }
+    await respondFromModal(
+      interaction,
+      buildMenuMessage(
+        ctx,
+        guildId,
+        actor,
+        { page: 'bag' },
+        { type: 'success', text: `✍️ 自定义称号兑换成功！当前已佩戴 **「${res.equippedTitle}」**！` },
+      ),
+    );
     return;
   }
 

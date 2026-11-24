@@ -40,6 +40,8 @@ CREATE TABLE IF NOT EXISTS member_profiles (
   card_tag TEXT,
   card_bio TEXT,
   card_color TEXT,
+  last_stat_boost_date TEXT,
+  stat_boost_daily_count INTEGER NOT NULL DEFAULT 0,
   xp_boost_multiplier REAL NOT NULL DEFAULT 1.0,
   xp_boost_expires_at INTEGER NOT NULL DEFAULT 0,
   heat_streak INTEGER NOT NULL DEFAULT 0,
@@ -67,13 +69,14 @@ CREATE TABLE IF NOT EXISTS shop_items (
   guild_id TEXT NOT NULL,
   name TEXT NOT NULL,
   description TEXT NOT NULL,
-  type TEXT NOT NULL CHECK (type IN ('role', 'title', 'xp_boost')),
+  type TEXT NOT NULL CHECK (type IN ('role', 'title', 'xp_boost', 'stat_boost', 'custom_title', 'pet_xp', 'mystery_box')),
   price INTEGER NOT NULL CHECK (price >= 0),
   role_id TEXT,
   title_text TEXT,
   boost_multiplier REAL,
   boost_duration_sec INTEGER,
   stock INTEGER,
+  payload_json TEXT NOT NULL DEFAULT '{}',
   created_at INTEGER NOT NULL
 );
 
@@ -241,5 +244,51 @@ export function initSchema(db: Database.Database): void {
   }
   if (!columnNames.has('stat_value')) {
     db.exec('ALTER TABLE member_profiles ADD COLUMN stat_value INTEGER NOT NULL DEFAULT 0;');
+  }
+  if (!columnNames.has('last_stat_boost_date')) {
+    db.exec('ALTER TABLE member_profiles ADD COLUMN last_stat_boost_date TEXT;');
+  }
+  if (!columnNames.has('stat_boost_daily_count')) {
+    db.exec('ALTER TABLE member_profiles ADD COLUMN stat_boost_daily_count INTEGER NOT NULL DEFAULT 0;');
+  }
+
+  const shopCols = db.pragma('table_info(shop_items)') as Array<{ name: string }>;
+  const shopColNames = new Set(shopCols.map((col) => col.name));
+  const shopTableRow = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'shop_items'")
+    .get() as { sql?: string } | undefined;
+  const shopSql = shopTableRow?.sql ?? '';
+  if (!shopColNames.has('payload_json') || !shopSql.includes('mystery_box')) {
+    const payloadSelect = shopColNames.has('payload_json') ? "COALESCE(payload_json, '{}')" : "'{}'";
+    db.transaction(() => {
+      db.exec(`
+        CREATE TABLE shop_items_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          guild_id TEXT NOT NULL,
+          name TEXT NOT NULL,
+          description TEXT NOT NULL,
+          type TEXT NOT NULL CHECK (type IN ('role', 'title', 'xp_boost', 'stat_boost', 'custom_title', 'pet_xp', 'mystery_box')),
+          price INTEGER NOT NULL CHECK (price >= 0),
+          role_id TEXT,
+          title_text TEXT,
+          boost_multiplier REAL,
+          boost_duration_sec INTEGER,
+          stock INTEGER,
+          payload_json TEXT NOT NULL DEFAULT '{}',
+          created_at INTEGER NOT NULL
+        );
+        INSERT INTO shop_items_new (
+          id, guild_id, name, description, type, price,
+          role_id, title_text, boost_multiplier, boost_duration_sec, stock, payload_json, created_at
+        )
+        SELECT
+          id, guild_id, name, description, type, price,
+          role_id, title_text, boost_multiplier, boost_duration_sec, stock, ${payloadSelect}, created_at
+        FROM shop_items;
+        DROP TABLE shop_items;
+        ALTER TABLE shop_items_new RENAME TO shop_items;
+        CREATE INDEX IF NOT EXISTS idx_shop_items_guild ON shop_items (guild_id, id);
+      `);
+    })();
   }
 }
