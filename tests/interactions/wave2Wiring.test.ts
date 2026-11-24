@@ -1,12 +1,13 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import type {
-  ButtonInteraction,
-  Client,
-  Interaction,
-  ModalSubmitInteraction,
-  StringSelectMenuInteraction,
-  UserSelectMenuInteraction,
+import {
+  Events,
+  type ButtonInteraction,
+  type Client,
+  type Interaction,
+  type ModalSubmitInteraction,
+  type StringSelectMenuInteraction,
+  type UserSelectMenuInteraction,
 } from 'discord.js';
 import { describe, expect, it, vi } from 'vitest';
 import {
@@ -33,7 +34,7 @@ import { ShopRepo } from '../../src/db/repositories/shopRepo.js';
 import { SocialPetRepo } from '../../src/db/repositories/socialPetRepo.js';
 import { TicketRepo } from '../../src/db/repositories/ticketRepo.js';
 import { WorldEventRepo } from '../../src/db/repositories/worldEventRepo.js';
-import { runGamesTick } from '../../src/events/ready.js';
+import { registerReadyEvent, runGamesTick } from '../../src/events/ready.js';
 import { routeInteraction } from '../../src/interactions/router.js';
 import { AiService } from '../../src/services/aiService.js';
 import { BlackjackManager, type Card } from '../../src/services/blackjackService.js';
@@ -706,6 +707,66 @@ describe('Wave 2 final wiring: persistent repos, expiry timers, and unified menu
     } as unknown as StringSelectMenuInteraction & Interaction;
     await routeInteraction(conflictBagSelect, ctx);
     expect(bagUpdate.mock.calls[0]![0].embeds?.[0]?.toJSON().description).toContain('不同倍率');
+
+    ctx.db.close();
+  });
+
+  it('preserves maxUses during ClientReady invite sync so pre-existing one-time invites attribute joins after restart', async () => {
+    const ctx = createPersistentCtx();
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    let readyHandler: ((readyClient: Client) => Promise<void>) | null = null;
+    const fakeClient = {
+      once: vi.fn((event: string, cb: (readyClient: Client) => Promise<void>) => {
+        if (event === Events.ClientReady) {
+          readyHandler = cb;
+        }
+      }),
+    } as unknown as Client;
+
+    const schedulers = registerReadyEvent(fakeClient, ctx);
+    expect(readyHandler).not.toBeNull();
+
+    const fetchedInvites = new Map([
+      [
+        'once-code',
+        {
+          code: 'once-code',
+          uses: 0,
+          inviterId: 'inviter-42',
+          maxUses: 1,
+        },
+      ],
+    ]);
+    const readyClient = {
+      user: {
+        tag: 'TestBot#0001',
+        setActivity: vi.fn(),
+      },
+      guilds: {
+        cache: new Map([
+          [
+            'g1',
+            {
+              id: 'g1',
+              invites: {
+                fetch: vi.fn(async () => fetchedInvites),
+              },
+            },
+          ],
+        ]),
+      },
+    } as unknown as Client;
+
+    await readyHandler!(readyClient);
+    schedulers.stop();
+    logSpy.mockRestore();
+
+    // After the single-use invite is consumed, Discord omits it from the post-join list
+    const match = ctx.services.invite.detectAndRecordJoin('g1', 'newcomer-1', []);
+    expect(match).not.toBeNull();
+    expect(match?.inviterId).toBe('inviter-42');
+    expect(match?.inviteCode).toBe('once-code');
 
     ctx.db.close();
   });

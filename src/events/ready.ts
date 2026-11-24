@@ -466,6 +466,7 @@ export function registerReadyEvent(client: Client, ctx: AppContext): BackgroundS
             code: inv.code,
             uses: inv.uses ?? 0,
             inviterId: inv.inviterId,
+            maxUses: inv.maxUses,
           })),
         );
       } catch {
