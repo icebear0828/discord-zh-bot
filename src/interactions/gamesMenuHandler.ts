@@ -10,6 +10,7 @@ import {
   type UserSelectMenuInteraction,
 } from 'discord.js';
 import { DEFAULT_GAMES_CONFIG } from '../config/defaults.js';
+import { MAX_COIN_AMOUNT, PREDICTION_MAX_BET } from '../config/economyConstants.js';
 import type { PropKey } from '../db/repositories/chaosRepo.js';
 import { PROP_CATALOG, PROP_KEYS, getPropPrice } from '../services/chaosService.js';
 import { isBotAdmin } from '../services/permissionService.js';
@@ -20,14 +21,18 @@ import { createSuccessEmbed, formatDurationZh, type AppContext } from '../ui/emb
 import { buildMenuMessage, truncateText } from '../ui/menuBuilder.js';
 import type { MenuActor, MenuFeedback, MenuView } from '../ui/menuShared.js';
 import {
+  buildCpDissolveConfirmView,
   buildPetBattleCard,
+  buildPetReleaseConfirmView,
   buildProposalCard,
   buildPublicAffinityLeaderboardEmbed,
 } from '../ui/socialPetMenuBuilder.js';
 import {
   buildPredictionCard,
+  buildPredictionsListView,
   buildWorldBossCard,
   buildWorldChestCard,
+  formatBossAttackLog,
 } from '../ui/worldEventMenuBuilder.js';
 import { buildBombGuessModal } from './chaosHandler.js';
 import {
@@ -221,7 +226,7 @@ async function launchNumberBomb(
   });
 
   if (!broadcast.sent || !broadcast.messageId) {
-    ctx.services.chaos.expireDueNumberBombs(res.game.expiresAt + 1);
+    ctx.services.chaos.cancelNumberBomb(res.game.id);
     return { type: 'error', text: '无法在当前频道发送数字炸弹消息，请检查发送权限。' };
   }
 
@@ -238,6 +243,22 @@ async function spawnAndPostWorldEvent(
   guildId: string,
   kind: 'chest' | 'boss',
 ): Promise<MenuFeedback> {
+  const disabledMsg =
+    checkModuleDisabled(ctx, guildId, 'worldEvents', '吃瓜与世界事件') ??
+    checkModuleDisabled(ctx, guildId, 'economy', '经济系统');
+  if (disabledMsg) {
+    return { type: 'error', text: disabledMsg };
+  }
+
+  const activeEvents = ctx.services.worldEvent.listActiveWorldEvents(guildId);
+  if (activeEvents.length > 0) {
+    const existing = activeEvents[0]!;
+    return {
+      type: 'error',
+      text: `⚠️ 当前已有活跃世界事件「**${existing.name}**」（#${existing.id}）正在进行中，请待其结束后再手动召唤！`,
+    };
+  }
+
   const cfg = ctx.repos.guildConfig.getOrCreate(guildId);
   const targetChannelId = cfg.games.eventChannelId ?? interaction.channelId;
   if (!targetChannelId) {
@@ -265,7 +286,7 @@ async function spawnAndPostWorldEvent(
     ctx.repos.worldEvent.saveWorldEvent({ ...event, status: 'expired' });
     return { type: 'error', text: `无法向频道 <#${targetChannelId}> 发送事件卡片，请检查权限。` };
   }
-  ctx.services.worldEvent.bindWorldEventMessage(event.id, msgId);
+  ctx.services.worldEvent.bindWorldEventMessage(event.id, msgId, targetChannelId);
   return {
     type: 'success',
     text: `已在 <#${targetChannelId}> 召唤 ${kind === 'chest' ? '🎁 宝箱' : '👹 Boss'}「**${event.name}**」（#${event.id}）！`,
@@ -370,18 +391,22 @@ export async function tryHandleGamesMenuButton(
       ? rawKey === 'trap'
         ? { type: 'success', text: `🪤 捕兽夹已在你的口袋门口部署完毕（24h 内有效），剩余 ${res.remainingQuantity} 个！` }
         : rawKey === 'lockpick'
-          ? { type: 'success', text: `🗝️ 万能撬锁已握在手中！下次打劫成功率 +25%，剩余 ${res.remainingQuantity} 个。` }
+          ? { type: 'success', text: `🗝️ 万能撬锁已握在手中！下次口袋打劫 +25% / 抢银行 +10%，剩余 ${res.remainingQuantity} 个。` }
           : {
               type: 'success',
               text: `🛡️ 防盗保险已激活！护盾持续至 <t:${Math.floor((res.shieldUntil ?? Date.now()) / 1000)}:R>，剩余 ${res.remainingQuantity} 个。`,
             }
-      : { type: 'error', text: '你当前没有该道具，先从上方下拉菜单购买吧！' };
+      : res.reason === 'already_active'
+        ? { type: 'error', text: '⚠️ 该道具效果仍在生效中，无需重复使用（本次未消耗道具）！' }
+        : { type: 'error', text: '你当前没有该道具，先从上方下拉菜单购买吧！' };
     await interaction.update(buildMenuMessage(ctx, guildId, actor, { page: 'props' }, feedback));
     return true;
   }
 
   if (section === 'bounty' && parts[2] === 'clear') {
-    const disabledMsg = checkModuleDisabled(ctx, guildId, 'socialGames', '整蛊与博弈');
+    const disabledMsg =
+      checkModuleDisabled(ctx, guildId, 'socialGames', '整蛊与博弈') ??
+      checkModuleDisabled(ctx, guildId, 'economy', '经济系统');
     if (disabledMsg) {
       await interaction.update(
         buildMenuMessage(ctx, guildId, actor, { page: 'bounty' }, { type: 'error', text: disabledMsg }),
@@ -429,9 +454,30 @@ export async function tryHandleGamesMenuButton(
     return true;
   }
 
+  if (section === 'pred_page') {
+    const disabledMsg = checkModuleDisabled(ctx, guildId, 'worldEvents', '吃瓜与世界事件');
+    if (disabledMsg) {
+      await interaction.update(
+        buildMenuMessage(ctx, guildId, actor, { page: 'home' }, { type: 'error', text: disabledMsg }),
+      );
+      return true;
+    }
+    const nextPage = parsePositiveInt(parts[2] ?? '') ?? 1;
+    await interaction.update(buildPredictionsListView(ctx, guildId, actor, undefined, nextPage));
+    return true;
+  }
+
   if (section === 'pred_view') {
     const predId = Number(parts[2]);
     if (!Number.isInteger(predId) || predId <= 0) return false;
+    const disabledMsg = checkModuleDisabled(ctx, guildId, 'worldEvents', '吃瓜与世界事件');
+    if (disabledMsg) {
+      await interaction.update(
+        buildMenuMessage(ctx, guildId, actor, { page: 'home' }, { type: 'error', text: disabledMsg }),
+      );
+      return true;
+    }
+    ctx.services.worldEvent.lockPredictionIfDue(predId);
     await interaction.update(
       buildMenuMessage(ctx, guildId, actor, { page: 'pred_detail', predictionId: predId }),
     );
@@ -459,9 +505,20 @@ export async function tryHandleGamesMenuButton(
       return true;
     }
 
+    ctx.services.worldEvent.lockPredictionIfDue(predId);
     const summary = ctx.services.worldEvent.getPredictionSummary(predId);
     const optLabel = summary?.prediction.options[optIdx];
+    const cfg = ctx.repos.guildConfig.getOrCreate(guildId).economy;
     if (!summary || !optLabel || summary.prediction.status !== 'open') {
+      if (summary) {
+        await editChannelMessage(
+          interaction.client,
+          summary.prediction.channelId,
+          summary.prediction.messageId,
+          buildPredictionCard(summary, cfg),
+          interaction.guild,
+        );
+      }
       await interaction.update(
         buildMenuMessage(
           ctx,
@@ -474,13 +531,26 @@ export async function tryHandleGamesMenuButton(
       return true;
     }
 
+    if (summary.prediction.creatorId === actor.id) {
+      await interaction.update(
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'pred_detail', predictionId: predId },
+          { type: 'error', text: '开盘人不能押注自己发起的盘口，以保证公平！' },
+        ),
+      );
+      return true;
+    }
+
     await interaction.showModal(
       buildTextModal({
         customId: `menu:modal_sub:pred_bet:${predId}:${optIdx}`,
         title: '📊 吃瓜盘口押注',
         fieldId: 'amount',
-        label: `押注「${optLabel.slice(0, 18)}」的金额`,
-        placeholder: '例如：200',
+        label: `押注「${optLabel.slice(0, 14)}」金额 (${cfg.currencyName})`,
+        placeholder: `1 ~ ${PREDICTION_MAX_BET.toLocaleString()}`,
         maxLength: 12,
       }),
     );
@@ -490,6 +560,21 @@ export async function tryHandleGamesMenuButton(
   if (section === 'pred_lock' || section === 'pred_cancel' || section === 'pred_post') {
     const predId = Number(parts[2]);
     if (!Number.isInteger(predId) || predId <= 0) return false;
+    const disabledMsg =
+      checkModuleDisabled(ctx, guildId, 'worldEvents', '吃瓜与世界事件') ??
+      checkModuleDisabled(ctx, guildId, 'economy', '经济系统');
+    if (disabledMsg) {
+      await interaction.update(
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'pred_detail', predictionId: predId },
+          { type: 'error', text: disabledMsg },
+        ),
+      );
+      return true;
+    }
     const cfg = ctx.repos.guildConfig.getOrCreate(guildId).economy;
 
     if (section === 'pred_lock') {
@@ -534,15 +619,39 @@ export async function tryHandleGamesMenuButton(
 
     const summary = ctx.services.worldEvent.getPredictionSummary(predId);
     if (!summary) return true;
+    if (actor.id !== summary.prediction.creatorId && !actor.isAdmin) {
+      await interaction.update(
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'pred_detail', predictionId: predId },
+          { type: 'error', text: '仅开盘人或 Bot 管理员可重发盘口卡片。' },
+        ),
+      );
+      return true;
+    }
+    const oldChannelId = summary.prediction.channelId;
+    const oldMessageId = summary.prediction.messageId;
     const broadcast = await sendPublicBroadcast(interaction, {
       content: `📊 <@${summary.prediction.creatorId}> 发起吃瓜盘口「**${summary.prediction.title}**」，快来押注！`,
       ...buildPredictionCard(summary, cfg),
     });
     if (broadcast.sent && broadcast.messageId) {
-      ctx.services.worldEvent.bindPredictionMessage(predId, broadcast.messageId);
+      const targetChannelId = interaction.channelId ?? oldChannelId;
+      ctx.services.worldEvent.bindPredictionMessage(predId, broadcast.messageId, targetChannelId);
+      if (oldMessageId && (oldMessageId !== broadcast.messageId || oldChannelId !== targetChannelId)) {
+        await editChannelMessage(
+          interaction.client,
+          oldChannelId,
+          oldMessageId,
+          { components: [] },
+          interaction.guild,
+        );
+      }
     }
     const feedback: MenuFeedback = broadcast.sent
-      ? { type: 'success', text: '📢 吃瓜盘口卡片已发送到当前频道！' }
+      ? { type: 'success', text: '📢 吃瓜盘口卡片已发送到当前频道（旧卡片按钮已自动禁用）！' }
       : { type: 'error', text: '发送盘口卡片失败，请检查机器人发言权限。' };
     await interaction.update(
       buildMenuMessage(ctx, guildId, actor, { page: 'pred_detail', predictionId: predId }, feedback),
@@ -555,6 +664,15 @@ export async function tryHandleGamesMenuButton(
     const cfg = ctx.repos.guildConfig.getOrCreate(guildId);
 
     if (action === 'claim_chest') {
+      const disabledMsg =
+        checkModuleDisabled(ctx, guildId, 'worldEvents', '吃瓜与世界事件') ??
+        checkModuleDisabled(ctx, guildId, 'economy', '经济系统');
+      if (disabledMsg) {
+        await interaction.update(
+          buildMenuMessage(ctx, guildId, actor, { page: 'world_status' }, { type: 'error', text: disabledMsg }),
+        );
+        return true;
+      }
       const eventId = Number(parts[3]);
       if (!Number.isInteger(eventId) || eventId <= 0) return false;
       const res = ctx.services.worldEvent.claimChest(eventId, actor.id);
@@ -574,11 +692,26 @@ export async function tryHandleGamesMenuButton(
             { page: 'world_status' },
             {
               type: 'success',
-              text: `🎁 开箱抢到 ${cfg.economy.currencyEmoji} **+${res.amount}** ${cfg.economy.currencyName}！（当前现金 **${res.balance}**）`,
+              text: `🎁 开箱抢到 ${cfg.economy.currencyEmoji} **+${res.amount}** ${cfg.economy.currencyName}！（当前现金 **${res.balance}** ${cfg.economy.currencyName}）`,
             },
           ),
         );
       } else {
+        if (res.reason === 'expired') {
+          ctx.services.worldEvent.expireWorldEventIfDue(eventId);
+        }
+        if (res.reason === 'expired' || res.reason === 'not_active') {
+          const detail = ctx.services.worldEvent.getWorldEventDetail(eventId);
+          if (detail && detail.event.status !== 'active') {
+            await editChannelMessage(
+              interaction.client,
+              detail.event.channelId,
+              detail.event.messageId,
+              buildWorldChestCard(detail.event, detail.participants, cfg.economy),
+              interaction.guild,
+            );
+          }
+        }
         await interaction.update(
           buildMenuMessage(
             ctx,
@@ -599,12 +732,36 @@ export async function tryHandleGamesMenuButton(
     }
 
     if (action === 'boss_hit') {
+      const disabledMsg =
+        checkModuleDisabled(ctx, guildId, 'worldEvents', '吃瓜与世界事件') ??
+        checkModuleDisabled(ctx, guildId, 'economy', '经济系统');
+      if (disabledMsg) {
+        await interaction.update(
+          buildMenuMessage(ctx, guildId, actor, { page: 'world_status' }, { type: 'error', text: disabledMsg }),
+        );
+        return true;
+      }
       const eventId = Number(parts[3]);
       const mode: BossAttackMode = parts[4] === 'heavy' ? 'heavy' : 'normal';
       if (!Number.isInteger(eventId) || eventId <= 0) return false;
 
       const res = ctx.services.worldEvent.attackBoss(eventId, actor.id, mode);
       if (!res.ok) {
+        if (res.reason === 'expired') {
+          ctx.services.worldEvent.expireWorldEventIfDue(eventId);
+        }
+        if (res.reason === 'expired' || res.reason === 'not_active') {
+          const detail = ctx.services.worldEvent.getWorldEventDetail(eventId);
+          if (detail && detail.event.status !== 'active') {
+            await editChannelMessage(
+              interaction.client,
+              detail.event.channelId,
+              detail.event.messageId,
+              buildWorldBossCard(detail.event, detail.participants, cfg.economy),
+              interaction.guild,
+            );
+          }
+        }
         const text =
           res.reason === 'cooldown'
             ? `技能冷却中，还需等待 **${res.retryAfterSec ?? 1}** 秒！`
@@ -615,10 +772,7 @@ export async function tryHandleGamesMenuButton(
         return true;
       }
 
-      const logText = res.missed
-        ? `<@${actor.id}> 蓄力重击挥空了！`
-        : `<@${actor.id}> ${mode === 'heavy' ? '蓄力重击' : '普通攻击'}${res.crit ? '💥暴击' : ''}造成了 **${res.damage}** 伤害！`;
-
+      const logText = formatBossAttackLog(actor.id, mode, res, cfg.economy);
       await editChannelMessage(
         interaction.client,
         res.event.channelId,
@@ -627,17 +781,12 @@ export async function tryHandleGamesMenuButton(
         interaction.guild,
       );
 
-      if (res.killed) {
-        await sendPublicBroadcast(interaction, {
-          content: `🏆 <@${actor.id}> 拿下世界 Boss「**${res.event.name}**」尾刀绝杀，全群瓜分 **${res.event.rewardPool}** ${cfg.economy.currencyName}！`,
-        });
-      }
-
+      const mvpBonus = Math.floor(res.event.rewardPool * 0.25);
       const fb: MenuFeedback = res.missed
         ? { type: 'info', text: '💨 蓄力重击空大了！稍后再来补刀！' }
         : {
             type: 'success',
-            text: `${res.crit ? '💥 暴击！' : '⚔️ 命中！'}造成 **${res.damage}** 伤害${res.petName ? `（🐾 ${res.petName}助战+${res.petBonus}）` : ''}${res.killed ? '\n🏆 恭喜你拿下尾刀绝杀奖！' : ''}`,
+            text: `${res.crit ? '💥 暴击！' : '⚔️ 命中！'}造成 **${res.damage}** 伤害${res.petName ? `（🐾 ${res.petName}助战+${res.petBonus}）` : ''}${res.killed ? `\n🏆 恭喜你拿下尾刀绝杀！额外获得 25% 尾刀奖 **+${mvpBonus}** ${cfg.economy.currencyName}！` : ''}`,
           };
 
       await interaction.update(
@@ -647,6 +796,25 @@ export async function tryHandleGamesMenuButton(
     }
 
     if (action === 'post_card') {
+      const disabledMsg = checkModuleDisabled(ctx, guildId, 'worldEvents', '吃瓜与世界事件');
+      if (disabledMsg) {
+        await interaction.update(
+          buildMenuMessage(ctx, guildId, actor, { page: 'world_status' }, { type: 'error', text: disabledMsg }),
+        );
+        return true;
+      }
+      if (!actor.isAdmin) {
+        await interaction.update(
+          buildMenuMessage(
+            ctx,
+            guildId,
+            actor,
+            { page: 'world_status' },
+            { type: 'error', text: '🔒 仅 Bot 管理员可向频道重发世界事件卡片，防止刷屏。' },
+          ),
+        );
+        return true;
+      }
       const eventId = Number(parts[3]);
       const detail = ctx.services.worldEvent.getWorldEventDetail(eventId);
       if (!detail || detail.event.status !== 'active') {
@@ -661,6 +829,8 @@ export async function tryHandleGamesMenuButton(
         );
         return true;
       }
+      const oldChannelId = detail.event.channelId;
+      const oldMessageId = detail.event.messageId;
       const payload =
         detail.event.eventType === 'chest'
           ? {
@@ -673,7 +843,21 @@ export async function tryHandleGamesMenuButton(
             };
       const broadcast = await sendPublicBroadcast(interaction, payload);
       if (broadcast.sent && broadcast.messageId) {
-        ctx.services.worldEvent.bindWorldEventMessage(detail.event.id, broadcast.messageId);
+        const targetChannelId = interaction.channelId ?? oldChannelId;
+        ctx.services.worldEvent.bindWorldEventMessage(
+          detail.event.id,
+          broadcast.messageId,
+          targetChannelId,
+        );
+        if (oldMessageId && (oldMessageId !== broadcast.messageId || oldChannelId !== targetChannelId)) {
+          await editChannelMessage(
+            interaction.client,
+            oldChannelId,
+            oldMessageId,
+            { components: [] },
+            interaction.guild,
+          );
+        }
       }
       await interaction.update(
         buildMenuMessage(
@@ -682,7 +866,7 @@ export async function tryHandleGamesMenuButton(
           actor,
           { page: 'world_status' },
           broadcast.sent
-            ? { type: 'success', text: '📢 事件卡片已发送到当前频道！' }
+            ? { type: 'success', text: '📢 事件卡片已发送到当前频道（旧卡片按钮已禁用）！' }
             : { type: 'error', text: '无法在当前频道发送消息。' },
         ),
       );
@@ -841,16 +1025,61 @@ export async function tryHandleGamesMenuButton(
     }
 
     if (action === 'release') {
-      const res = ctx.services.socialPet.releasePet(guildId, actor.id, active.id);
+      if (ctx.services.socialPet.hasPendingBattleForPet(active.id)) {
+        await interaction.update(
+          buildMenuMessage(
+            ctx,
+            guildId,
+            actor,
+            { page: 'pets' },
+            {
+              type: 'error',
+              text: '该宠物正在斗兽场待战中，请先撤回擂台或等待对决结束后再放生！',
+            },
+          ),
+        );
+        return true;
+      }
+      await interaction.update(buildPetReleaseConfirmView(ctx, guildId, actor, active.id));
+      return true;
+    }
+
+    if (action === 'release_confirm') {
+      const petId = Number(parts[3]);
+      if (!Number.isInteger(petId) || petId <= 0) return false;
+      const res = ctx.services.socialPet.releasePet(guildId, actor.id, petId);
       const fb: MenuFeedback = res.ok
         ? {
             type: 'info',
             text: `🕊️ 已放生 [${res.releasedPet.rarity}] **${res.releasedPet.nickname}**，获得遣散费 **+${res.refund}** ${cfg.currencyName}。`,
           }
-        : { type: 'error', text: '找不到该宠物。' };
+        : res.reason === 'pet_in_battle'
+          ? {
+              type: 'error',
+              text: '该宠物正在斗兽场待战中，请先撤回擂台或等待对决结束后再放生！',
+            }
+          : { type: 'error', text: '找不到该宠物。' };
       await interaction.update(buildMenuMessage(ctx, guildId, actor, { page: 'pets' }, fb));
       return true;
     }
+  }
+
+  if (section === 'cp' && parts[2] === 'dissolve_confirm') {
+    const disabledMsg = checkModuleDisabled(ctx, guildId, 'petsAndCp', '关系与宠物');
+    if (disabledMsg) {
+      await interaction.update(
+        buildMenuMessage(ctx, guildId, actor, { page: 'cp' }, { type: 'error', text: disabledMsg }),
+      );
+      return true;
+    }
+    const relId = Number(parts[3]);
+    if (!Number.isInteger(relId) || relId <= 0) return false;
+    const res = ctx.services.socialPet.dissolveRelationship(relId, actor.id);
+    const fb: MenuFeedback = res.ok
+      ? { type: 'info', text: '💔 已和平解除该关系。' }
+      : { type: 'error', text: '找不到该关系或你不是当事方。' };
+    await interaction.update(buildMenuMessage(ctx, guildId, actor, { page: 'cp' }, fb));
+    return true;
   }
 
   if (section === 'admin') {
@@ -942,12 +1171,21 @@ export async function tryHandleGamesMenuButton(
     const cfg = ctx.repos.guildConfig.getOrCreate(guildId);
 
     if (modalType === 'roulette') {
+      const disabledMsg =
+        checkModuleDisabled(ctx, guildId, 'socialGames', '整蛊与博弈') ??
+        checkModuleDisabled(ctx, guildId, 'economy', '经济系统');
+      if (disabledMsg) {
+        await interaction.update(
+          buildMenuMessage(ctx, guildId, actor, { page: 'roulette' }, { type: 'error', text: disabledMsg }),
+        );
+        return true;
+      }
       await interaction.showModal(
         new ModalBuilder()
           .setCustomId('menu:modal_sub:roulette')
           .setTitle('🔫 创建自定义轮盘房间')
           .addComponents(
-            prefilledField('entryFee', '入场费（50 ~ 1000000000）', 200, 12),
+            prefilledField('entryFee', `入场费（50 ~ 1000000000 ${cfg.economy.currencyName}）`, 200, 12),
             prefilledField('maxPlayers', '最大座位数（2 ~ 6 人）', 6, 2),
           ),
       );
@@ -955,12 +1193,21 @@ export async function tryHandleGamesMenuButton(
     }
 
     if (modalType === 'bomb') {
+      const disabledMsg =
+        checkModuleDisabled(ctx, guildId, 'socialGames', '整蛊与博弈') ??
+        checkModuleDisabled(ctx, guildId, 'economy', '经济系统');
+      if (disabledMsg) {
+        await interaction.update(
+          buildMenuMessage(ctx, guildId, actor, { page: 'bomb' }, { type: 'error', text: disabledMsg }),
+        );
+        return true;
+      }
       await interaction.showModal(
         buildTextModal({
           customId: 'menu:modal_sub:bomb',
           title: '💣 投放数字炸弹',
           fieldId: 'penalty',
-          label: '踩雷罚金（100 ~ 1000000000 星币）',
+          label: `踩雷罚金（100 ~ 1000000000 ${cfg.economy.currencyName}）`,
           placeholder: '例如：300',
           maxLength: 12,
           defaultValue: '200',
@@ -970,11 +1217,27 @@ export async function tryHandleGamesMenuButton(
     }
 
     if (modalType === 'pred_create') {
+      const disabledMsg =
+        checkModuleDisabled(ctx, guildId, 'worldEvents', '吃瓜与世界事件') ??
+        checkModuleDisabled(ctx, guildId, 'economy', '经济系统');
+      if (disabledMsg) {
+        await interaction.update(
+          buildMenuMessage(ctx, guildId, actor, { page: 'predictions' }, { type: 'error', text: disabledMsg }),
+        );
+        return true;
+      }
       await interaction.showModal(buildCreatePredictionModal());
       return true;
     }
 
     if (modalType === 'pet_rename') {
+      const disabledMsg = checkModuleDisabled(ctx, guildId, 'petsAndCp', '关系与宠物');
+      if (disabledMsg) {
+        await interaction.update(
+          buildMenuMessage(ctx, guildId, actor, { page: 'pets' }, { type: 'error', text: disabledMsg }),
+        );
+        return true;
+      }
       const active = ctx.services.socialPet.getActivePet(guildId, actor.id);
       if (!active) {
         await interaction.update(
@@ -1003,12 +1266,21 @@ export async function tryHandleGamesMenuButton(
     }
 
     if (modalType === 'pet_open_battle') {
+      const disabledMsg =
+        checkModuleDisabled(ctx, guildId, 'petsAndCp', '关系与宠物') ??
+        checkModuleDisabled(ctx, guildId, 'economy', '经济系统');
+      if (disabledMsg) {
+        await interaction.update(
+          buildMenuMessage(ctx, guildId, actor, { page: 'pet_arena' }, { type: 'error', text: disabledMsg }),
+        );
+        return true;
+      }
       await interaction.showModal(
         buildTextModal({
           customId: 'menu:modal_sub:pet_open_battle',
           title: '🏟️ 全群公开宠物摆擂台',
           fieldId: 'bet',
-          label: '擂台赌注（0 = 友谊赛，可填正整数）',
+          label: `擂台赌注（${cfg.economy.currencyName}，0 = 友谊赛）`,
           placeholder: '例如：200',
           maxLength: 12,
           defaultValue: '200',
@@ -1135,6 +1407,15 @@ export async function tryHandleGamesMenuStringSelect(
   }
 
   if (section === 'roulette_join') {
+    const disabledMsg =
+      checkModuleDisabled(ctx, guildId, 'socialGames', '整蛊与博弈') ??
+      checkModuleDisabled(ctx, guildId, 'economy', '经济系统');
+    if (disabledMsg) {
+      await interaction.update(
+        buildMenuMessage(ctx, guildId, actor, { page: 'roulette' }, { type: 'error', text: disabledMsg }),
+      );
+      return true;
+    }
     const gameId = Number(selected);
     if (!Number.isInteger(gameId) || gameId <= 0) return true;
     const cfg = ctx.repos.guildConfig.getOrCreate(guildId).economy;
@@ -1155,18 +1436,36 @@ export async function tryHandleGamesMenuStringSelect(
           { page: 'roulette' },
           {
             type: 'success',
-            text: `🪑 已成功加入轮盘 **#${gameId}**！扣除入场费 **${res.game.entryFee}**，当前现金 **${res.balance}**。`,
+            text: `🪑 已成功加入轮盘 **#${gameId}**！扣除入场费 **${res.game.entryFee}** ${cfg.currencyName}，当前现金 **${res.balance}** ${cfg.currencyName}。`,
           },
         ),
       );
     } else {
+      const latest = ctx.services.chaos.getRoulette(gameId);
+      if (latest && latest.status !== 'recruiting') {
+        await editChannelMessage(
+          interaction.client,
+          latest.channelId,
+          latest.messageId,
+          buildRouletteCard(latest, cfg),
+          interaction.guild,
+        );
+      }
+      const msgMap: Record<typeof res.reason, string> = {
+        not_found: '找不到该轮盘房间。',
+        not_recruiting: '该轮盘局已经开局或已结束！',
+        expired: '该轮盘招募已超时自动解散，入场费已原路退回。',
+        already_joined: '你已经在这桌轮盘局里啦！',
+        room_full: '该轮盘房间已满员！',
+        insufficient_funds: `你的口袋现金不足以支付本桌入场费（${cfg.currencyName}）。`,
+      };
       await interaction.update(
         buildMenuMessage(
           ctx,
           guildId,
           actor,
           { page: 'roulette' },
-          { type: 'error', text: '无法加入该轮盘房间（可能已满员、已开局或现金不足）。' },
+          { type: 'error', text: msgMap[res.reason] },
         ),
       );
     }
@@ -1174,9 +1473,31 @@ export async function tryHandleGamesMenuStringSelect(
   }
 
   if (section === 'bomb_pick') {
+    const disabledMsg =
+      checkModuleDisabled(ctx, guildId, 'socialGames', '整蛊与博弈') ??
+      checkModuleDisabled(ctx, guildId, 'economy', '经济系统');
+    if (disabledMsg) {
+      await interaction.update(
+        buildMenuMessage(ctx, guildId, actor, { page: 'bomb' }, { type: 'error', text: disabledMsg }),
+      );
+      return true;
+    }
     const gameId = Number(selected);
+    const cfg = ctx.repos.guildConfig.getOrCreate(guildId).economy;
     const game = ctx.services.chaos.getNumberBomb(gameId);
     if (!game || game.status !== 'open' || game.expiresAt <= Date.now()) {
+      if (game && game.status === 'open' && game.expiresAt <= Date.now()) {
+        const expired = ctx.services.chaos.expireNumberBombIfDue(gameId);
+        if (expired) {
+          await editChannelMessage(
+            interaction.client,
+            expired.channelId,
+            expired.messageId,
+            buildNumberBombCard(expired, cfg),
+            interaction.guild,
+          );
+        }
+      }
       await interaction.update(
         buildMenuMessage(
           ctx,
@@ -1194,14 +1515,23 @@ export async function tryHandleGamesMenuStringSelect(
         game.minBound,
         game.maxBound,
         game.penalty,
+        cfg.currencyName,
       ),
     );
     return true;
   }
 
   if (section === 'pred_select') {
+    const disabledMsg = checkModuleDisabled(ctx, guildId, 'worldEvents', '吃瓜与世界事件');
+    if (disabledMsg) {
+      await interaction.update(
+        buildMenuMessage(ctx, guildId, actor, { page: 'predictions' }, { type: 'error', text: disabledMsg }),
+      );
+      return true;
+    }
     const predId = Number(selected);
     if (!Number.isInteger(predId) || predId <= 0) return true;
+    ctx.services.worldEvent.lockPredictionIfDue(predId);
     await interaction.update(
       buildMenuMessage(ctx, guildId, actor, { page: 'pred_detail', predictionId: predId }),
     );
@@ -1213,6 +1543,22 @@ export async function tryHandleGamesMenuStringSelect(
     const winningOption = Number(selected);
     if (!Number.isInteger(predId) || !Number.isInteger(winningOption)) return true;
 
+    const disabledMsg =
+      checkModuleDisabled(ctx, guildId, 'worldEvents', '吃瓜与世界事件') ??
+      checkModuleDisabled(ctx, guildId, 'economy', '经济系统');
+    if (disabledMsg) {
+      await interaction.update(
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'pred_detail', predictionId: predId },
+          { type: 'error', text: disabledMsg },
+        ),
+      );
+      return true;
+    }
+
     const cfg = ctx.repos.guildConfig.getOrCreate(guildId).economy;
     const res = ctx.services.worldEvent.settlePrediction(
       predId,
@@ -1221,13 +1567,20 @@ export async function tryHandleGamesMenuStringSelect(
       winningOption,
     );
     if (!res.ok) {
+      const msgMap: Record<typeof res.reason, string> = {
+        not_found: '找不到该盘口。',
+        no_permission: '结算失败：仅开盘人或 Bot 管理员可操作。',
+        not_locked: '结算失败：请先封盘（锁定押注）后再宣布胜出结果！',
+        invalid_status: '该盘口已结算或已作废。',
+        invalid_option: '无效的胜出选项。',
+      };
       await interaction.update(
         buildMenuMessage(
           ctx,
           guildId,
           actor,
           { page: 'pred_detail', predictionId: predId },
-          { type: 'error', text: '结算失败：仅开盘人或 Bot 管理员可操作。' },
+          { type: 'error', text: msgMap[res.reason] },
         ),
       );
       return true;
@@ -1245,9 +1598,6 @@ export async function tryHandleGamesMenuStringSelect(
       buildPredictionCard(res.summary, cfg, note),
       interaction.guild,
     );
-    await sendPublicBroadcast(interaction, {
-      content: `📊 吃瓜盘口 **#${predId}「${res.summary.prediction.title}」** 已结算！${note}`,
-    });
 
     await interaction.update(
       buildMenuMessage(
@@ -1262,6 +1612,13 @@ export async function tryHandleGamesMenuStringSelect(
   }
 
   if (section === 'cp_checkin') {
+    const disabledMsg = checkModuleDisabled(ctx, guildId, 'petsAndCp', '关系与宠物');
+    if (disabledMsg) {
+      await interaction.update(
+        buildMenuMessage(ctx, guildId, actor, { page: 'cp' }, { type: 'error', text: disabledMsg }),
+      );
+      return true;
+    }
     const relId = Number(selected);
     if (!Number.isInteger(relId) || relId <= 0) return true;
     const res = ctx.services.socialPet.checkinRelationship(relId, actor.id);
@@ -1306,17 +1663,27 @@ export async function tryHandleGamesMenuStringSelect(
   }
 
   if (section === 'cp_dissolve') {
+    const disabledMsg = checkModuleDisabled(ctx, guildId, 'petsAndCp', '关系与宠物');
+    if (disabledMsg) {
+      await interaction.update(
+        buildMenuMessage(ctx, guildId, actor, { page: 'cp' }, { type: 'error', text: disabledMsg }),
+      );
+      return true;
+    }
     const relId = Number(selected);
     if (!Number.isInteger(relId) || relId <= 0) return true;
-    const res = ctx.services.socialPet.dissolveRelationship(relId, actor.id);
-    const fb: MenuFeedback = res.ok
-      ? { type: 'info', text: '💔 已和平解除该关系。' }
-      : { type: 'error', text: '找不到该关系或你不是当事方。' };
-    await interaction.update(buildMenuMessage(ctx, guildId, actor, { page: 'cp' }, fb));
+    await interaction.update(buildCpDissolveConfirmView(ctx, guildId, actor, relId));
     return true;
   }
 
   if (section === 'pet_select') {
+    const disabledMsg = checkModuleDisabled(ctx, guildId, 'petsAndCp', '关系与宠物');
+    if (disabledMsg) {
+      await interaction.update(
+        buildMenuMessage(ctx, guildId, actor, { page: 'pets' }, { type: 'error', text: disabledMsg }),
+      );
+      return true;
+    }
     const petId = Number(selected);
     if (!Number.isInteger(petId) || petId <= 0) return true;
     const pet = ctx.services.socialPet.setActivePet(guildId, actor.id, petId);
@@ -1363,20 +1730,24 @@ export async function tryHandleGamesMenuUserSelect(
 
     const res = ctx.services.chaos.useCurseProp(guildId, actor.id, targetId);
     if (!res.ok) {
+      const text =
+        res.reason === 'already_active'
+          ? `⚠️ <@${targetId}> 当前已被衰神附体（48h 内有效），等生效后再贴吧（本次未消耗道具）！`
+          : '你身上没有「🧿 衰神符」，先去黑市商店买一张！';
       await interaction.update(
         buildMenuMessage(
           ctx,
           guildId,
           actor,
           { page: 'props' },
-          { type: 'error', text: '你身上没有「🧿 衰神符」，先去黑市商店买一张！' },
+          { type: 'error', text },
         ),
       );
       return true;
     }
 
     await sendPublicBroadcast(interaction, {
-      content: `🧿 哈哈哈哈！<@${actor.id}> 偷偷给 <@${targetId}> 贴了一张「**衰神符**」，TA 下次打工收益直接减半！`,
+      content: `🧿 哈哈哈哈！<@${actor.id}> 偷偷给 <@${targetId}> 贴了一张「**衰神符**」，TA 48 小时内下次打工收益直接减半！`,
     });
     await interaction.update(
       buildMenuMessage(
@@ -1523,6 +1894,7 @@ export async function tryHandleGamesMenuUserSelect(
       const msgMap: Record<typeof res.reason, string> = {
         self_target: '不能选自己！',
         already_related: `你和 <@${targetId}> 已经绑定过关系了！`,
+        pending_proposal_exists: `你与 <@${targetId}> 之间已有未过期的待处理邀请，请先等待对方回应或撤回后再试！`,
         proposer_married: '你已经结婚啦，婚姻严格 1 对 1（如需重新绑定请先解除）。',
         target_married: `<@${targetId}> 已经有伴侣啦！`,
         proposer_max_sworn: `你的结拜/死党人数已达上限（${res.maxSworn ?? 3}人）。`,
@@ -1608,12 +1980,13 @@ export async function tryHandleGamesMenuUserSelect(
       );
       return true;
     }
+    const cfg = ctx.repos.guildConfig.getOrCreate(guildId).economy;
     await interaction.showModal(
       buildTextModal({
         customId: `menu:modal_sub:pet_battle:${targetId}`,
         title: '🏟️ 发起宠物斗兽场挑战',
         fieldId: 'bet',
-        label: '赌注金额（0 = 友谊切磋）',
+        label: `赌注金额（${cfg.currencyName}，0 = 友谊切磋）`,
         placeholder: '例如：200',
         maxLength: 12,
         defaultValue: '200',
@@ -1637,6 +2010,14 @@ export async function tryHandleGamesMenuModal(
   if (modalType === 'prop_nick') {
     const targetId = parts[3];
     if (!targetId) return false;
+    const disabledMsg = checkModuleDisabled(ctx, guildId, 'socialGames', '整蛊与博弈');
+    if (disabledMsg) {
+      await respondFromModal(
+        interaction,
+        buildMenuMessage(ctx, guildId, actor, { page: 'props' }, { type: 'error', text: disabledMsg }),
+      );
+      return true;
+    }
     const newNick = interaction.fields.getTextInputValue('nickname').trim();
     if (!newNick || newNick.length > 32) {
       await respondFromModal(
@@ -1647,20 +2028,6 @@ export async function tryHandleGamesMenuModal(
           actor,
           { page: 'props' },
           { type: 'error', text: '新昵称长度必须在 1 ~ 32 个字符之间。' },
-        ),
-      );
-      return true;
-    }
-
-    if (!ctx.services.chaos.hasProp(guildId, actor.id, 'nickname')) {
-      await respondFromModal(
-        interaction,
-        buildMenuMessage(
-          ctx,
-          guildId,
-          actor,
-          { page: 'props' },
-          { type: 'error', text: '你没有可用的「🎭 改昵称卡」。' },
         ),
       );
       return true;
@@ -1680,8 +2047,7 @@ export async function tryHandleGamesMenuModal(
       return true;
     }
 
-    const member = await interaction.guild?.members.fetch(targetId).catch(() => null);
-    if (!member) {
+    if (!ctx.services.chaos.reserveProp(guildId, actor.id, 'nickname')) {
       await respondFromModal(
         interaction,
         buildMenuMessage(
@@ -1689,7 +2055,23 @@ export async function tryHandleGamesMenuModal(
           guildId,
           actor,
           { page: 'props' },
-          { type: 'error', text: '无法获取目标群友信息（未扣除道具）。' },
+          { type: 'error', text: '你没有可用的「🎭 改昵称卡」。' },
+        ),
+      );
+      return true;
+    }
+
+    const member = await interaction.guild?.members.fetch(targetId).catch(() => null);
+    if (!member) {
+      ctx.services.chaos.refundProp(guildId, actor.id, 'nickname');
+      await respondFromModal(
+        interaction,
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'props' },
+          { type: 'error', text: '无法获取目标群友信息（已退回道具）。' },
         ),
       );
       return true;
@@ -1705,6 +2087,7 @@ export async function tryHandleGamesMenuModal(
       configuredAdminUserIds: guildCfg.adminUserIds,
     });
     if (isTargetAdmin) {
+      ctx.services.chaos.refundProp(guildId, actor.id, 'nickname');
       await respondFromModal(
         interaction,
         buildMenuMessage(
@@ -1712,7 +2095,7 @@ export async function tryHandleGamesMenuModal(
           guildId,
           actor,
           { page: 'props' },
-          { type: 'error', text: '🛡️ 不能对服务器管理员或 Bot 管理员使用「改昵称卡」（未扣除道具）。' },
+          { type: 'error', text: '🛡️ 不能对服务器管理员或 Bot 管理员使用「改昵称卡」（已退回道具）。' },
         ),
       );
       return true;
@@ -1722,6 +2105,7 @@ export async function tryHandleGamesMenuModal(
     try {
       await member.setNickname(newNick, `被 ${actor.displayName} 使用了黑市改昵称卡`);
     } catch {
+      ctx.services.chaos.refundProp(guildId, actor.id, 'nickname');
       await respondFromModal(
         interaction,
         buildMenuMessage(
@@ -1731,14 +2115,13 @@ export async function tryHandleGamesMenuModal(
           { page: 'props' },
           {
             type: 'error',
-            text: '⚠️ 修改失败（对方身份组高于 Bot 或权限不足），已退回你的改昵称卡未扣除！',
+            text: '⚠️ 修改失败（对方身份组高于 Bot 或权限不足），已退回你的改昵称卡！',
           },
         ),
       );
       return true;
     }
 
-    ctx.services.chaos.consumeProp(guildId, actor.id, 'nickname');
     await sendPublicBroadcast(interaction, {
       content: `🎭 整蛊成功！<@${actor.id}> 使用「改昵称卡」强行把 **${oldName}** (<@${targetId}>) 的昵称改成了 **「${newNick}」**！`,
     });
@@ -1758,6 +2141,16 @@ export async function tryHandleGamesMenuModal(
   if (modalType === 'bounty') {
     const targetId = parts[3];
     if (!targetId) return false;
+    const disabledMsg =
+      checkModuleDisabled(ctx, guildId, 'socialGames', '整蛊与博弈') ??
+      checkModuleDisabled(ctx, guildId, 'economy', '经济系统');
+    if (disabledMsg) {
+      await respondFromModal(
+        interaction,
+        buildMenuMessage(ctx, guildId, actor, { page: 'bounty' }, { type: 'error', text: disabledMsg }),
+      );
+      return true;
+    }
     const amount = parsePositiveInt(interaction.fields.getTextInputValue('amount'));
     if (!amount) {
       await respondFromModal(
@@ -1849,6 +2242,16 @@ export async function tryHandleGamesMenuModal(
   }
 
   if (modalType === 'bomb_guess') {
+    const disabledMsg =
+      checkModuleDisabled(ctx, guildId, 'socialGames', '整蛊与博弈') ??
+      checkModuleDisabled(ctx, guildId, 'economy', '经济系统');
+    if (disabledMsg) {
+      await respondFromModal(
+        interaction,
+        buildMenuMessage(ctx, guildId, actor, { page: 'bomb' }, { type: 'error', text: disabledMsg }),
+      );
+      return true;
+    }
     const gameId = Number(parts[3]);
     if (!Number.isInteger(gameId) || gameId <= 0) return false;
     const guess = parseIntInRange(interaction.fields.getTextInputValue('guess'), 1, 100);
@@ -1868,6 +2271,18 @@ export async function tryHandleGamesMenuModal(
     const cfg = ctx.repos.guildConfig.getOrCreate(guildId).economy;
     const res = ctx.services.chaos.guessNumberBomb(gameId, actor.id, guess);
     if (!res.ok) {
+      if (res.reason === 'expired' || res.reason === 'not_open') {
+        const latest = ctx.services.chaos.getNumberBomb(gameId);
+        if (latest) {
+          await editChannelMessage(
+            interaction.client,
+            latest.channelId,
+            latest.messageId,
+            buildNumberBombCard(latest, cfg),
+            interaction.guild,
+          );
+        }
+      }
       const msgMap: Record<typeof res.reason, string> = {
         not_found: '找不到这颗炸弹。',
         not_open: '这颗炸弹已经引爆或结束了！',
@@ -1891,16 +2306,6 @@ export async function tryHandleGamesMenuModal(
       interaction.guild,
     );
 
-    if (res.exploded) {
-      const payoutSummary =
-        res.payouts.length > 0
-          ? res.payouts.map((p) => `<@${p.userId}> +${p.amount}`).join('、')
-          : '无其他存活分红者';
-      await sendPublicBroadcast(interaction, {
-        content: `💥 轰隆！<@${actor.id}> 在数字炸弹 **#${res.game.id}** 踩中了 **${res.guess}**，爆出 **${res.penaltyPaid}** ${cfg.currencyName}！\n💰 分红：${payoutSummary}`,
-      });
-    }
-
     const fb: MenuFeedback = res.exploded
       ? { type: 'error', text: `💥 踩雷了！猜中 **${res.guess}** 被扣除 **${res.penaltyPaid}** ${cfg.currencyName}！` }
       : { type: 'success', text: `😅 没炸！安全区间缩小为 **[${res.game.minBound} ~ ${res.game.maxBound}]**！` };
@@ -1912,7 +2317,9 @@ export async function tryHandleGamesMenuModal(
   }
 
   if (modalType === 'pred_create') {
-    const disabledMsg = checkModuleDisabled(ctx, guildId, 'worldEvents', '吃瓜与世界事件');
+    const disabledMsg =
+      checkModuleDisabled(ctx, guildId, 'worldEvents', '吃瓜与世界事件') ??
+      checkModuleDisabled(ctx, guildId, 'economy', '经济系统');
     if (disabledMsg) {
       await respondFromModal(
         interaction,
@@ -1987,7 +2394,11 @@ export async function tryHandleGamesMenuModal(
       ...buildPredictionCard(res.summary, cfg),
     });
     if (broadcast.sent && broadcast.messageId) {
-      ctx.services.worldEvent.bindPredictionMessage(res.summary.prediction.id, broadcast.messageId);
+      ctx.services.worldEvent.bindPredictionMessage(
+        res.summary.prediction.id,
+        broadcast.messageId,
+        interaction.channel.id,
+      );
     }
 
     await respondFromModal(
@@ -2008,6 +2419,24 @@ export async function tryHandleGamesMenuModal(
     const optionIndex = Number(parts[4]);
     if (!Number.isInteger(predId) || !Number.isInteger(optionIndex)) return false;
 
+    const disabledMsg =
+      checkModuleDisabled(ctx, guildId, 'worldEvents', '吃瓜与世界事件') ??
+      checkModuleDisabled(ctx, guildId, 'economy', '经济系统');
+    if (disabledMsg) {
+      await respondFromModal(
+        interaction,
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'pred_detail', predictionId: predId },
+          { type: 'error', text: disabledMsg },
+        ),
+      );
+      return true;
+    }
+
+    const cfg = ctx.repos.guildConfig.getOrCreate(guildId).economy;
     const amount = parsePositiveInt(interaction.fields.getTextInputValue('amount'));
     if (!amount) {
       await respondFromModal(
@@ -2017,13 +2446,15 @@ export async function tryHandleGamesMenuModal(
           guildId,
           actor,
           { page: 'pred_detail', predictionId: predId },
-          { type: 'error', text: '下注金额必须是大于 0 的正整数。' },
+          {
+            type: 'error',
+            text: `下注金额必须是 1 ~ ${PREDICTION_MAX_BET.toLocaleString()} ${cfg.currencyName} 的正整数。`,
+          },
         ),
       );
       return true;
     }
 
-    const cfg = ctx.repos.guildConfig.getOrCreate(guildId).economy;
     const res = ctx.services.worldEvent.placeBet({
       predictionId: predId,
       userId: actor.id,
@@ -2031,12 +2462,25 @@ export async function tryHandleGamesMenuModal(
       amount,
     });
     if (!res.ok) {
+      if (res.reason === 'closed' || res.reason === 'not_open') {
+        const latest = ctx.services.worldEvent.getPredictionSummary(predId);
+        if (latest) {
+          await editChannelMessage(
+            interaction.client,
+            latest.prediction.channelId,
+            latest.prediction.messageId,
+            buildPredictionCard(latest, cfg),
+            interaction.guild,
+          );
+        }
+      }
       const msgMap: Record<typeof res.reason, string> = {
         not_found: '盘口不存在。',
         not_open: '盘口已封盘或已结束。',
         closed: '已经超过封盘时间啦。',
+        creator_cannot_bet: '开盘人不能押注自己发起的盘口，以保证公平！',
         invalid_option: '无效选项。',
-        invalid_amount: '下注金额无效。',
+        invalid_amount: `下注金额必须为 1 ~ ${PREDICTION_MAX_BET.toLocaleString()} ${cfg.currencyName}。`,
         insufficient_funds: `口袋现金不足 **${amount}** ${cfg.currencyName}。`,
       };
       await respondFromModal(
@@ -2070,7 +2514,7 @@ export async function tryHandleGamesMenuModal(
         { page: 'pred_detail', predictionId: predId },
         {
           type: 'success',
-          text: `🪙 已成功押注「**${optName}**」${cfg.currencyEmoji} **${res.betAmount}** ${cfg.currencyName}，剩余现金 **${res.balance}**！`,
+          text: `🪙 已成功押注「**${optName}**」${cfg.currencyEmoji} **${res.betAmount}** ${cfg.currencyName}，剩余现金 **${res.balance}** ${cfg.currencyName}！`,
         },
       ),
     );
@@ -2078,6 +2522,14 @@ export async function tryHandleGamesMenuModal(
   }
 
   if (modalType === 'pet_rename') {
+    const disabledMsg = checkModuleDisabled(ctx, guildId, 'petsAndCp', '关系与宠物');
+    if (disabledMsg) {
+      await respondFromModal(
+        interaction,
+        buildMenuMessage(ctx, guildId, actor, { page: 'pets' }, { type: 'error', text: disabledMsg }),
+      );
+      return true;
+    }
     const active = ctx.services.socialPet.getActivePet(guildId, actor.id);
     if (!active) {
       await respondFromModal(
@@ -2102,9 +2554,19 @@ export async function tryHandleGamesMenuModal(
   }
 
   if (modalType === 'pet_battle' || modalType === 'pet_open_battle') {
+    const disabledMsg =
+      checkModuleDisabled(ctx, guildId, 'petsAndCp', '关系与宠物') ??
+      checkModuleDisabled(ctx, guildId, 'economy', '经济系统');
+    if (disabledMsg) {
+      await respondFromModal(
+        interaction,
+        buildMenuMessage(ctx, guildId, actor, { page: 'pet_arena' }, { type: 'error', text: disabledMsg }),
+      );
+      return true;
+    }
     const opponentId = modalType === 'pet_battle' ? (parts[3] ?? null) : null;
     const bet = parseNonNegativeInt(interaction.fields.getTextInputValue('bet'));
-    if (bet === null || bet > 1_000_000_000) {
+    if (bet === null || bet > MAX_COIN_AMOUNT) {
       await respondFromModal(
         interaction,
         buildMenuMessage(
@@ -2112,7 +2574,7 @@ export async function tryHandleGamesMenuModal(
           guildId,
           actor,
           { page: 'pet_arena' },
-          { type: 'error', text: '赌注必须是 0 ~ 1,000,000,000 之间的整数（0 为友谊赛）。' },
+          { type: 'error', text: `赌注必须是 0 ~ ${MAX_COIN_AMOUNT.toLocaleString()} 之间的整数（0 为友谊赛）。` },
         ),
       );
       return true;
@@ -2145,6 +2607,7 @@ export async function tryHandleGamesMenuModal(
         invalid_bet: '赌注无效。',
         no_active_pet: '你还没有出战宠物，先抽一只吧！',
         insufficient_funds: `口袋现金不足 **${bet}** ${cfg.currencyName}。`,
+        pvp_cooldown: `斗兽场冷却中，请等待 **${res.retryAfterSec ?? 1}** 秒后再发起有赌注挑战！`,
       };
       await respondFromModal(
         interaction,

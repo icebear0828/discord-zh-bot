@@ -1,10 +1,18 @@
 import type Database from 'better-sqlite3';
+import {
+  BOSS_HEAVY_ATTACK_COOLDOWN_MS,
+  BOSS_LIGHT_ATTACK_COOLDOWN_MS,
+  PET_BOSS_BONUS_CAP,
+  PREDICTION_LOCKED_EXPIRE_MS,
+  PREDICTION_MAX_BET,
+} from '../config/economyConstants.js';
 import type { GuildConfigRepo } from '../db/repositories/guildConfigRepo.js';
 import type { ProfileRepo } from '../db/repositories/profileRepo.js';
 import type { SocialPetRepo } from '../db/repositories/socialPetRepo.js';
 import type {
   Prediction,
   PredictionBet,
+  PredictionStatus,
   WorldEvent,
   WorldEventParticipant,
   WorldEventRepo,
@@ -37,6 +45,7 @@ export type PlaceBetResult =
         | 'not_found'
         | 'not_open'
         | 'closed'
+        | 'creator_cannot_bet'
         | 'invalid_option'
         | 'invalid_amount'
         | 'insufficient_funds';
@@ -60,11 +69,19 @@ export type SettlePredictionResult =
       refundedNoWinner: boolean;
       payouts: PredictionPayout[];
     }
-  | { ok: false; reason: 'not_found' | 'no_permission' | 'invalid_status' | 'invalid_option' };
+  | {
+      ok: false;
+      reason: 'not_found' | 'no_permission' | 'not_locked' | 'invalid_status' | 'invalid_option';
+    };
 
 export type CancelPredictionResult =
   | { ok: true; summary: PredictionSummary; refunds: PredictionPayout[] }
   | { ok: false; reason: 'not_found' | 'no_permission' | 'invalid_status' };
+
+export interface ExpiredLockedPredictionResult {
+  summary: PredictionSummary;
+  refunds: PredictionPayout[];
+}
 
 export type ClaimChestResult =
   | {
@@ -114,7 +131,7 @@ export interface ExpiredWorldEventResult {
 const CHEST_TEMPLATES: ReadonlyArray<{ name: string; flavor: string }> = [
   { name: '黄金神秘宝箱', flavor: '天空中突然掉下一只金光闪闪的大宝箱，手快有手慢无！' },
   { name: '海盗沉船财宝箱', flavor: '潮汐带来了一只刻满神秘符号的古代宝箱，快来开箱！' },
-  { name: '星界幸运补给箱', flavor: '社区能量爆棚！系统空投了一批星币补给！' },
+  { name: '星界幸运补给箱', flavor: '社区能量爆棚！系统空投了一批幸运补给！' },
   { name: '策划遗落的私房钱盒', flavor: '快趁管理员没反应过来，赶紧过来抓一把！' },
 ];
 
@@ -122,7 +139,7 @@ const BOSS_TEMPLATES: ReadonlyArray<{ name: string; flavor: string }> = [
   { name: '摸鱼大魔王', flavor: '“今天谁也不许按时下班！” — 携带大量摸鱼经费出没中！' },
   { name: '万恶的加班哥布林', flavor: '嘴里念叨着“紧急需求马上改”，快用重击教它做人！' },
   { name: '暴走偷钱巨鼠', flavor: '听说它偷光了三条街的口袋现金，击败它分赃！' },
-  { name: '深渊欧皇嫉妒兽', flavor: '专吸十连保底人的怨气而生，击败必爆巨额星币池！' },
+  { name: '深渊欧皇嫉妒兽', flavor: '专吸十连保底人的怨气而生，击败必爆巨额奖池！' },
   { name: '通宵开黑修罗王', flavor: '“再来最后一把！” — 全群齐心协力拿下首杀和尾刀大奖！' },
   { name: '冰镇肥宅水史莱姆', flavor: 'QQ 弹弹却皮糙肉厚，出战宠物还能额外助战增伤！' },
   { name: '代码 Bug 缝合怪', flavor: '明明本地能跑，一上线就报错！快召唤群友共同镇压！' },
@@ -131,8 +148,6 @@ const BOSS_TEMPLATES: ReadonlyArray<{ name: string; flavor: string }> = [
 
 const CHEST_TTL_MS = 5 * 60 * 1000;
 const BOSS_TTL_MS = 10 * 60 * 1000;
-const NORMAL_ATTACK_COOLDOWN_MS = 12_000;
-const HEAVY_ATTACK_COOLDOWN_MS = 25_000;
 
 export class WorldEventService {
   private readonly guildMsgCounts = new Map<string, number>();
@@ -156,10 +171,34 @@ export class WorldEventService {
 
   listPredictions(
     guildId: string,
-    statuses: readonly ('open' | 'locked' | 'settled' | 'cancelled')[] = ['open', 'locked'],
+    statuses: readonly PredictionStatus[] = ['open', 'locked'],
     limit = 15,
   ): Prediction[] {
     return this.worldEventRepo.listPredictionsByGuild(guildId, statuses, limit);
+  }
+
+  listPredictionsPaginated(
+    guildId: string,
+    page: number,
+    pageSize: number,
+    statuses: readonly PredictionStatus[] = ['open', 'locked'],
+  ): { items: Prediction[]; total: number; page: number; totalPages: number } {
+    const safePageSize = Math.max(1, Math.min(25, Math.floor(pageSize)));
+    const safePage = Math.max(1, Math.floor(page));
+    const offset = (safePage - 1) * safePageSize;
+    const res = this.worldEventRepo.listPredictionsPaginated(guildId, offset, safePageSize, statuses);
+    const totalPages = Math.max(1, Math.ceil(res.total / safePageSize));
+    if (safePage > totalPages && res.total > 0) {
+      const clampedOffset = (totalPages - 1) * safePageSize;
+      const clamped = this.worldEventRepo.listPredictionsPaginated(
+        guildId,
+        clampedOffset,
+        safePageSize,
+        statuses,
+      );
+      return { items: clamped.items, total: clamped.total, page: totalPages, totalPages };
+    }
+    return { items: res.items, total: res.total, page: safePage, totalPages };
   }
 
   createPrediction(input: {
@@ -207,8 +246,8 @@ export class WorldEventService {
     return { ok: true, summary: this.buildSummary(prediction, []) };
   }
 
-  bindPredictionMessage(predictionId: number, messageId: string): void {
-    this.worldEventRepo.bindPredictionMessageId(predictionId, messageId);
+  bindPredictionMessage(predictionId: number, messageId: string, channelId?: string): void {
+    this.worldEventRepo.bindPredictionMessage(predictionId, messageId, channelId);
   }
 
   placeBet(input: {
@@ -220,7 +259,7 @@ export class WorldEventService {
   }): PlaceBetResult {
     const nowMs = input.nowMs ?? Date.now();
     const cleanAmount = Math.floor(input.amount);
-    if (!Number.isFinite(cleanAmount) || cleanAmount <= 0 || cleanAmount > 1_000_000) {
+    if (!Number.isFinite(cleanAmount) || cleanAmount <= 0 || cleanAmount > PREDICTION_MAX_BET) {
       return { ok: false, reason: 'invalid_amount' };
     }
 
@@ -229,8 +268,11 @@ export class WorldEventService {
       if (!pred) return { ok: false, reason: 'not_found' };
       if (pred.status !== 'open') return { ok: false, reason: 'not_open' };
       if (pred.closesAt <= nowMs) {
-        this.worldEventRepo.updatePredictionStatus(pred.id, 'locked', null, null);
+        this.worldEventRepo.updatePredictionStatus(pred.id, 'locked', null, null, nowMs);
         return { ok: false, reason: 'closed' };
+      }
+      if (pred.creatorId === input.userId) {
+        return { ok: false, reason: 'creator_cannot_bet' };
       }
       if (
         !Number.isInteger(input.optionIndex) ||
@@ -269,6 +311,7 @@ export class WorldEventService {
     predictionId: number,
     actorId: string,
     isAdmin = false,
+    nowMs = Date.now(),
   ): LockPredictionResult {
     return this.db.transaction((): LockPredictionResult => {
       const pred = this.worldEventRepo.getPredictionById(predictionId);
@@ -276,10 +319,24 @@ export class WorldEventService {
       if (actorId !== pred.creatorId && !isAdmin) return { ok: false, reason: 'no_permission' };
       if (pred.status !== 'open') return { ok: false, reason: 'invalid_status' };
 
-      this.worldEventRepo.updatePredictionStatus(pred.id, 'locked', null, null);
+      this.worldEventRepo.updatePredictionStatus(pred.id, 'locked', null, null, nowMs);
       const updated = this.worldEventRepo.getPredictionById(pred.id)!;
       const bets = this.worldEventRepo.listBets(pred.id);
       return { ok: true, summary: this.buildSummary(updated, bets) };
+    })();
+  }
+
+  lockPredictionIfDue(predictionId: number, nowMs = Date.now()): PredictionSummary | null {
+    return this.db.transaction((): PredictionSummary | null => {
+      const pred = this.worldEventRepo.getPredictionById(predictionId);
+      if (!pred || pred.status !== 'open' || pred.closesAt > nowMs) {
+        return null;
+      }
+      this.worldEventRepo.updatePredictionStatus(pred.id, 'locked', null, null, nowMs);
+      const updated = this.worldEventRepo.getPredictionById(pred.id);
+      if (!updated) return null;
+      const bets = this.worldEventRepo.listBets(updated.id);
+      return this.buildSummary(updated, bets);
     })();
   }
 
@@ -294,7 +351,10 @@ export class WorldEventService {
       const pred = this.worldEventRepo.getPredictionById(predictionId);
       if (!pred) return { ok: false, reason: 'not_found' };
       if (actorId !== pred.creatorId && !isAdmin) return { ok: false, reason: 'no_permission' };
-      if (pred.status !== 'open' && pred.status !== 'locked') {
+      if (pred.status === 'open') {
+        return { ok: false, reason: 'not_locked' };
+      }
+      if (pred.status !== 'locked') {
         return { ok: false, reason: 'invalid_status' };
       }
       if (
@@ -406,19 +466,52 @@ export class WorldEventService {
     const due = this.worldEventRepo.listDueOpenPredictions(nowMs);
     const locked: PredictionSummary[] = [];
     for (const pred of due) {
-      this.worldEventRepo.updatePredictionStatus(pred.id, 'locked', null, null);
-      const updated = this.worldEventRepo.getPredictionById(pred.id);
-      if (updated) {
-        const bets = this.worldEventRepo.listBets(updated.id);
-        locked.push(this.buildSummary(updated, bets));
-      }
+      const res = this.lockPredictionIfDue(pred.id, nowMs);
+      if (res) locked.push(res);
     }
     return locked;
+  }
+
+  expireDueLockedPredictions(nowMs = Date.now()): ExpiredLockedPredictionResult[] {
+    const cutoff = nowMs - PREDICTION_LOCKED_EXPIRE_MS;
+    const due = this.worldEventRepo.listDueLockedPredictions(cutoff);
+    const results: ExpiredLockedPredictionResult[] = [];
+
+    for (const item of due) {
+      const res = this.db.transaction((): ExpiredLockedPredictionResult | null => {
+        const current = this.worldEventRepo.getPredictionById(item.id);
+        if (!current || current.status !== 'locked') return null;
+        const lockRef = current.lockedAt > 0 ? current.lockedAt : current.closesAt;
+        if (lockRef > cutoff) return null;
+
+        const bets = this.worldEventRepo.listBets(current.id);
+        const totals = new Map<string, number>();
+        for (const bet of bets) {
+          totals.set(bet.userId, (totals.get(bet.userId) ?? 0) + bet.amount);
+        }
+        const refunds: PredictionPayout[] = [];
+        for (const [userId, amount] of totals) {
+          this.profileRepo.addCoins(current.guildId, userId, amount);
+          refunds.push({ userId, amount });
+        }
+
+        this.worldEventRepo.updatePredictionStatus(current.id, 'cancelled', null, nowMs);
+        const updated = this.worldEventRepo.getPredictionById(current.id)!;
+        return { summary: this.buildSummary(updated, bets), refunds };
+      })();
+      if (res) results.push(res);
+    }
+
+    return results;
   }
 
   // World Events (Chest & Boss)
   getActiveWorldEvent(guildId: string): WorldEvent | null {
     return this.worldEventRepo.getActiveWorldEvent(guildId);
+  }
+
+  listActiveWorldEvents(guildId: string, limit?: number): WorldEvent[] {
+    return this.worldEventRepo.listActiveWorldEvents(guildId, limit);
   }
 
   getWorldEventDetail(eventId: number): {
@@ -442,7 +535,7 @@ export class WorldEventService {
     rng: () => number = Math.random,
   ): WorldEvent | null {
     const cfg = this.configRepo.getOrCreate(guildId);
-    if (!cfg.modules.worldEvents || !cfg.games.eventAutoEnabled) {
+    if (!cfg.modules.worldEvents || !cfg.modules.economy || !cfg.games.eventAutoEnabled) {
       return null;
     }
 
@@ -536,8 +629,8 @@ export class WorldEventService {
     });
   }
 
-  bindWorldEventMessage(eventId: number, messageId: string): void {
-    this.worldEventRepo.bindWorldEventMessageId(eventId, messageId);
+  bindWorldEventMessage(eventId: number, messageId: string, channelId?: string): void {
+    this.worldEventRepo.bindWorldEventMessage(eventId, messageId, channelId);
   }
 
   claimChest(
@@ -624,17 +717,26 @@ export class WorldEventService {
       }
 
       const prev = this.worldEventRepo.getParticipant(eventId, userId);
-      const cdMs = mode === 'heavy' ? HEAVY_ATTACK_COOLDOWN_MS : NORMAL_ATTACK_COOLDOWN_MS;
-      if (prev && prev.lastActionAt > 0 && nowMs - prev.lastActionAt < cdMs) {
+      const cdMs = mode === 'heavy' ? BOSS_HEAVY_ATTACK_COOLDOWN_MS : BOSS_LIGHT_ATTACK_COOLDOWN_MS;
+      const nextAllowedAt = prev
+        ? prev.nextAttackAt > 0
+          ? prev.nextAttackAt
+          : prev.lastActionAt > 0
+            ? prev.lastActionAt + cdMs
+            : 0
+        : 0;
+      if (nextAllowedAt > 0 && nowMs < nextAllowedAt) {
         return {
           ok: false,
           reason: 'cooldown',
-          retryAfterSec: Math.ceil((cdMs - (nowMs - prev.lastActionAt)) / 1000),
+          retryAfterSec: Math.ceil((nextAllowedAt - nowMs) / 1000),
         };
       }
 
       const activePet = this.socialPetRepo?.getActivePet(event.guildId, userId) ?? null;
-      const petBonus = activePet ? Math.floor(activePet.atk * 0.5) : 0;
+      const petBonus = activePet
+        ? Math.min(PET_BOSS_BONUS_CAP, Math.floor(activePet.atk * 0.5))
+        : 0;
       const petName = activePet ? activePet.nickname : null;
 
       let missed = false;
@@ -662,18 +764,11 @@ export class WorldEventService {
         delta: actualDamage,
         hitsDelta: 1,
         actionAt: nowMs,
+        nextAttackAt: nowMs + cdMs,
       });
 
       const nextHp = Math.max(0, event.currentHp - actualDamage);
       const killed = nextHp === 0;
-
-      const updatedEvent: WorldEvent = {
-        ...event,
-        currentHp: nextHp,
-        status: killed ? 'completed' : 'active',
-        killerId: killed ? userId : null,
-      };
-      this.worldEventRepo.saveWorldEvent(updatedEvent);
 
       const participants = this.worldEventRepo.listParticipants(eventId);
       const rewards: BossRewardEntry[] = [];
@@ -727,6 +822,15 @@ export class WorldEventService {
         }
       }
 
+      const updatedEvent: WorldEvent = {
+        ...event,
+        currentHp: nextHp,
+        status: killed ? 'completed' : 'active',
+        killerId: killed ? userId : null,
+        rewardsJson: killed ? JSON.stringify(rewards) : event.rewardsJson,
+      };
+      this.worldEventRepo.saveWorldEvent(updatedEvent);
+
       return {
         ok: true,
         event: updatedEvent,
@@ -742,31 +846,41 @@ export class WorldEventService {
     })();
   }
 
+  expireWorldEventIfDue(eventId: number, nowMs = Date.now()): ExpiredWorldEventResult | null {
+    return this.db.transaction((): ExpiredWorldEventResult | null => {
+      const current = this.worldEventRepo.getWorldEventById(eventId);
+      if (!current || current.status !== 'active' || current.expiresAt > nowMs) return null;
+
+      const participants = this.worldEventRepo.listParticipants(current.id);
+      const consolations: Array<{ userId: string; amount: number }> = [];
+
+      if (current.eventType === 'boss') {
+        for (const p of participants) {
+          if (p.damageOrReward <= 0) continue;
+          const amount = Math.min(150, Math.max(30, Math.floor(p.damageOrReward * 0.5)));
+          this.profileRepo.addCoins(current.guildId, p.userId, amount);
+          consolations.push({ userId: p.userId, amount });
+        }
+      }
+
+      const updated: WorldEvent = {
+        ...current,
+        status: 'expired',
+        rewardsJson:
+          current.eventType === 'boss' ? JSON.stringify(consolations) : current.rewardsJson,
+      };
+      this.worldEventRepo.saveWorldEvent(updated);
+
+      return { event: updated, consolations, participants };
+    })();
+  }
+
   expireDueWorldEvents(nowMs = Date.now()): ExpiredWorldEventResult[] {
     const due = this.worldEventRepo.listDueWorldEvents(nowMs);
     const results: ExpiredWorldEventResult[] = [];
 
     for (const item of due) {
-      const res = this.db.transaction((): ExpiredWorldEventResult | null => {
-        const current = this.worldEventRepo.getWorldEventById(item.id);
-        if (!current || current.status !== 'active') return null;
-
-        const updated: WorldEvent = { ...current, status: 'expired' };
-        this.worldEventRepo.saveWorldEvent(updated);
-        const participants = this.worldEventRepo.listParticipants(updated.id);
-        const consolations: Array<{ userId: string; amount: number }> = [];
-
-        if (updated.eventType === 'boss') {
-          for (const p of participants) {
-            if (p.damageOrReward <= 0) continue;
-            const amount = Math.min(150, Math.max(30, Math.floor(p.damageOrReward * 0.5)));
-            this.profileRepo.addCoins(updated.guildId, p.userId, amount);
-            consolations.push({ userId: p.userId, amount });
-          }
-        }
-
-        return { event: updated, consolations, participants };
-      })();
+      const res = this.expireWorldEventIfDue(item.id, nowMs);
       if (res) results.push(res);
     }
 

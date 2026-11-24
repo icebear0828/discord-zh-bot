@@ -7,6 +7,13 @@ import {
   UserSelectMenuBuilder,
 } from 'discord.js';
 import type { EconomyConfig } from '../config/defaults.js';
+import {
+  PET_BOSS_BONUS_CAP,
+  PET_MAX_LEVEL,
+  PET_PVP_DAILY_XP_CAP,
+  PET_WORK_COOLDOWN_MS,
+  PET_WORK_LEVEL_BONUS_CAP,
+} from '../config/economyConstants.js';
 import type {
   PetBattle,
   RelationshipProposal,
@@ -14,6 +21,7 @@ import type {
 } from '../db/repositories/socialPetRepo.js';
 import { getDateKey } from '../services/economyService.js';
 import {
+  calculatePetReleaseRefund,
   PET_SPECIES_MAP,
   xpNeededForPetLevel,
 } from '../services/socialPetService.js';
@@ -133,7 +141,7 @@ export function buildCpView(
     .setAuthor({ name: `${actor.displayName} · 结婚与结拜系统`, iconURL: actor.avatarUrl })
     .setTitle('💍 结婚与结拜 CP 系统')
     .setDescription(withFeedback(description, feedback))
-    .setFooter({ text: '📢 发起求婚/结拜与达成亲密度称号都会在当前频道撒花广播' })
+    .setFooter({ text: '📢 发起求婚/结拜与达成亲密度称号都会在当前频道广播' })
     .setTimestamp();
 
   const components: MenuComponentRow[] = [
@@ -162,12 +170,13 @@ export function buildCpView(
           .setPlaceholder('💕 选择一段关系完成今日贴贴打卡...')
           .addOptions(
             sliced.map((r) => {
+              const otherId = r.userA === actor.id ? r.userB : r.userA;
               const labelType = r.relType === 'marriage' ? '💍 伴侣' : '🍻 死党';
               const status = r.lastCheckinDate === today ? '今日已打卡' : '可打卡 +10~20';
               return new StringSelectMenuOptionBuilder()
-                .setLabel(`#${r.id} ${labelType}（亲密度 ${r.affinity}）`)
+                .setLabel(truncateText(`#${r.id} ${labelType} <@${otherId}>（亲密度 ${r.affinity}）`, 100))
                 .setValue(String(r.id))
-                .setDescription(status);
+                .setDescription(truncateText(`对方 ID:${otherId} · ${status}`, 100));
             }),
           ),
       ),
@@ -176,14 +185,15 @@ export function buildCpView(
       new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
         new StringSelectMenuBuilder()
           .setCustomId('menu:cp_dissolve')
-          .setPlaceholder('💔 和平解除一段指定关系...')
+          .setPlaceholder('💔 和平解除一段指定关系（需二次确认）...')
           .addOptions(
             sliced.map((r) => {
+              const otherId = r.userA === actor.id ? r.userB : r.userA;
               const labelType = r.relType === 'marriage' ? '💍 伴侣' : '🍻 死党';
               return new StringSelectMenuOptionBuilder()
-                .setLabel(`解除 #${r.id} ${labelType}（亲密度 ${r.affinity}）`)
+                .setLabel(truncateText(`解除 #${r.id} ${labelType} <@${otherId}>（亲密度 ${r.affinity}）`, 100))
                 .setValue(String(r.id))
-                .setDescription('点击后立即和平解除该关系（不扣资产）');
+                .setDescription(truncateText(`对方 ID:${otherId} · 点击进入二次确认（不扣资产）`, 100));
             }),
           ),
       ),
@@ -200,6 +210,52 @@ export function buildCpView(
   );
 
   return { embeds: [embed], components };
+}
+
+export function buildCpDissolveConfirmView(
+  ctx: AppContext,
+  guildId: string,
+  actor: MenuActor,
+  relationshipId: number,
+): BuiltMenuMessage {
+  const rel = ctx.services.socialPet.getRelationshipById(relationshipId);
+  if (!rel || rel.guildId !== guildId || (rel.userA !== actor.id && rel.userB !== actor.id)) {
+    return buildCpView(
+      ctx,
+      guildId,
+      actor,
+      { type: 'error', text: '找不到该关系或你不是当事方。' },
+      Date.now(),
+    );
+  }
+
+  const otherId = rel.userA === actor.id ? rel.userB : rel.userA;
+  const labelType = rel.relType === 'marriage' ? '💍 伴侣' : '🍻 死党';
+  const embed = new EmbedBuilder()
+    .setColor(COLORS.ERROR)
+    .setAuthor({ name: `${actor.displayName} · 确认解除关系`, iconURL: actor.avatarUrl })
+    .setTitle('⚠️ 二次确认：和平解除 CP 关系')
+    .setDescription(
+      [
+        `你即将解除以下关系：`,
+        `• 关系编号：**#${rel.id}**（${labelType}）`,
+        `• 对方成员：<@${otherId}>（ID: \`${otherId}\`）`,
+        `• 当前亲密度：**${rel.affinity}**`,
+        '',
+        '⚠️ **此操作不可撤销**，解除后亲密度记录将被清空（不会扣除双方个人财产，已解锁称号保留）。',
+      ].join('\n'),
+    )
+    .setTimestamp();
+
+  return {
+    embeds: [embed],
+    components: [
+      buttonRow(
+        makeButton(`menu:cp:dissolve_confirm:${rel.id}`, '💔 确认解除关系', ButtonStyle.Danger),
+        makeButton('menu:nav:cp', '❌ 取消返回', ButtonStyle.Secondary),
+      ),
+    ],
+  };
 }
 
 export function buildPublicAffinityLeaderboardEmbed(
@@ -295,22 +351,24 @@ export function buildPetsView(
   if (activePet) {
     const sp = PET_SPECIES_MAP.get(activePet.speciesKey);
     const needXp = xpNeededForPetLevel(activePet.level);
-    const ratio = activePet.xp / Math.max(1, needXp);
+    const isMaxLevel = activePet.level >= PET_MAX_LEVEL;
+    const ratio = isMaxLevel ? 1 : activePet.xp / Math.max(1, needXp);
     const trainRemain =
       activePet.lastTrainAt > 0
         ? Math.max(0, activePet.lastTrainAt + 3600 * 1000 - nowMs)
         : 0;
+    const lastWorkAt = Math.max(profile.lastPetWorkAt, activePet.lastWorkAt);
     const workRemain =
-      activePet.lastWorkAt > 0
-        ? Math.max(0, activePet.lastWorkAt + 2 * 3600 * 1000 - nowMs)
-        : 0;
+      lastWorkAt > 0 ? Math.max(0, lastWorkAt + PET_WORK_COOLDOWN_MS - nowMs) : 0;
+    const bossAssist = Math.min(PET_BOSS_BONUS_CAP, Math.floor(activePet.atk * 0.5));
+    const workBonus = Math.min(PET_WORK_LEVEL_BONUS_CAP, Math.max(0, activePet.level - 1) * 15);
 
     lines.push(
       `⭐ **当前出战：${sp?.emoji ?? '🐾'} ${activePet.nickname}** ${RARITY_BADGE[activePet.rarity] ?? ''}`,
-      `Lv.**${activePet.level}** \`${renderProgressBar(ratio, 10)}\` (${activePet.xp}/${needXp} XP) ｜ 性格：**${activePet.trait}**`,
+      `Lv.**${activePet.level}/${PET_MAX_LEVEL}** \`${renderProgressBar(ratio, 10)}\` (${isMaxLevel ? 'MAX' : `${activePet.xp}/${needXp} XP`}) ｜ 性格：**${activePet.trait}**`,
       `❤️ HP **${activePet.hp}** ｜ ⚔️ 攻击 **${activePet.atk}** ｜ 💨 速度 **${activePet.spd}** ｜ 💥 暴击 **${Math.round(activePet.critRate * 100)}%**`,
-      `🏅 战绩：**${activePet.wins} 胜 ${activePet.losses} 负** ｜ 世界Boss助战 **+${Math.floor(activePet.atk * 0.5)}** 伤害`,
-      `🍖 今日喂食：${activePet.lastFeedDate === today ? '✅ 已喂' : `⏰ 未喂 (${cfg.games.petFeedPrice}币)`} ｜ 🏋️ 训练：${trainRemain > 0 ? formatDurationZh(trainRemain) : '✅ 就绪'} ｜ 💼 打工：${workRemain > 0 ? formatDurationZh(workRemain) : '✅ 就绪'}`,
+      `🏅 战绩：**${activePet.wins} 胜 ${activePet.losses} 负** ｜ Boss 助战 **+${bossAssist}**（上限 ${PET_BOSS_BONUS_CAP}）｜ 打工等级加成 **+${workBonus}**`,
+      `🍖 今日喂食：${activePet.lastFeedDate === today ? '✅ 已喂' : `⏰ 未喂 (${cfg.games.petFeedPrice} ${cfg.economy.currencyName})`} ｜ 🏋️ 训练：${trainRemain > 0 ? formatDurationZh(trainRemain) : '✅ 就绪'} ｜ 💼 打工（共享CD）：${workRemain > 0 ? formatDurationZh(workRemain) : '✅ 就绪'}`,
     );
   } else {
     lines.push('你还没有任何电子宠物，点击下方「抽盲盒」迎娶你的第一只搞怪伙伴！');
@@ -321,7 +379,7 @@ export function buildPetsView(
     .setAuthor({ name: `${actor.displayName} · 电子宠物屋`, iconURL: actor.avatarUrl })
     .setTitle('🐾 盲盒电子宠物与养成')
     .setDescription(withFeedback(lines.join('\n'), feedback))
-    .setFooter({ text: '🌟 抽中 SR / SSR 稀有宠物将自动在当前频道发欧皇喜报！' })
+    .setFooter({ text: '🌟 抽中 SSR 稀有宠物将自动在当前频道发欧皇喜报！宠物打工按用户共享 2 小时冷却' })
     .setTimestamp();
 
   const components: MenuComponentRow[] = [
@@ -370,6 +428,53 @@ export function buildPetsView(
   return { embeds: [embed], components };
 }
 
+export function buildPetReleaseConfirmView(
+  ctx: AppContext,
+  guildId: string,
+  actor: MenuActor,
+  petId: number,
+): BuiltMenuMessage {
+  const cfg = ctx.repos.guildConfig.getOrCreate(guildId);
+  const pet = ctx.services.socialPet.getPetById(petId);
+  if (!pet || pet.guildId !== guildId || pet.ownerId !== actor.id) {
+    return buildPetsView(
+      ctx,
+      guildId,
+      actor,
+      { type: 'error', text: '找不到该宠物。' },
+      Date.now(),
+    );
+  }
+
+  const sp = PET_SPECIES_MAP.get(pet.speciesKey);
+  const refund = calculatePetReleaseRefund(pet.rarity, cfg.games.petGachaPrice);
+  const embed = new EmbedBuilder()
+    .setColor(COLORS.ERROR)
+    .setAuthor({ name: `${actor.displayName} · 确认放生宠物`, iconURL: actor.avatarUrl })
+    .setTitle('⚠️ 二次确认：放生电子宠物')
+    .setDescription(
+      [
+        `你即将永久放生以下宠物：`,
+        `• 宠物：${sp?.emoji ?? '🐾'} **${pet.nickname}** ${RARITY_BADGE[pet.rarity] ?? ''}（Lv.${pet.level}）`,
+        `• 属性：HP **${pet.hp}** ｜ ATK **${pet.atk}** ｜ SPD **${pet.spd}** ｜ 战绩 ${pet.wins}胜/${pet.losses}负`,
+        `• 遣散费返还：${cfg.economy.currencyEmoji} **+${refund}** ${cfg.economy.currencyName}`,
+        '',
+        '⚠️ **放生后无法找回**，请确认是否继续！',
+      ].join('\n'),
+    )
+    .setTimestamp();
+
+  return {
+    embeds: [embed],
+    components: [
+      buttonRow(
+        makeButton(`menu:pet:release_confirm:${pet.id}`, '🕊️ 确认永久放生', ButtonStyle.Danger),
+        makeButton('menu:nav:pets', '❌ 取消返回', ButtonStyle.Secondary),
+      ),
+    ],
+  };
+}
+
 export function buildPetArenaView(
   ctx: AppContext,
   guildId: string,
@@ -390,7 +495,7 @@ export function buildPetArenaView(
     '',
     petLine,
     '',
-    '🏟️ **斗兽场规则**：最多 12 回合自动回合制比拼，速度高者先手，含暴击与闪避机制，胜者赢走赌注且宠物获得更多经验升级！',
+    `🏟️ **斗兽场规则**：最多 12 回合自动比拼（发起时冻结赌注，撤回/过期/平局原路退还）；0 ${cfg.currencyName} 友谊赛不获得经验，有赌注 PVP 每日经验上限 **${PET_PVP_DAILY_XP_CAP} XP**。`,
   ].join('\n');
 
   const embed = new EmbedBuilder()
@@ -501,6 +606,7 @@ export function buildPetBattleCard(
 
   if (battle.status === 'pending') {
     const expUnix = Math.floor(battle.expiresAt / 1000);
+    const isOpenArena = !battle.opponentId;
     const targetText = battle.opponentId
       ? `<@${battle.challengerId}> 向 <@${battle.opponentId}> 发起宠物决斗！`
       : `<@${battle.challengerId}> 在全群公开发起宠物斗兽场擂台！任何人皆可上台接招！`;
@@ -511,7 +617,7 @@ export function buildPetBattleCard(
         [
           targetText,
           `⚔️ 守擂宠：${cLabel}`,
-          `💰 赌注金额：${economyCfg.currencyEmoji} **${battle.bet}** ${economyCfg.currencyName}`,
+          `💰 赌注金额：${economyCfg.currencyEmoji} **${battle.bet}** ${economyCfg.currencyName}${battle.bet > 0 ? '（发起方赌注已冻结）' : '（友谊赛不给 XP）'}`,
           `⏳ 有效时间：<t:${expUnix}:R>`,
         ].join('\n'),
       )
@@ -523,21 +629,33 @@ export function buildPetBattleCard(
       components: [
         buttonRow(
           makeButton(`sp:petbattle:accept:${battle.id}`, '⚔️ 派宠出战！', ButtonStyle.Success),
-          makeButton(`sp:petbattle:decline:${battle.id}`, '🏃 拒绝 / 撤擂', ButtonStyle.Danger),
+          makeButton(
+            `sp:petbattle:decline:${battle.id}`,
+            isOpenArena ? '🏃 撤回擂台（仅擂主）' : '🏃 拒绝 / 撤回',
+            ButtonStyle.Danger,
+          ),
         ),
       ],
     };
   }
 
   if (battle.status === 'completed') {
+    const isDraw = !battle.winnerId;
+    const resultLine = isDraw
+      ? `🤝 **本场平局！**${battle.bet > 0 ? ` 双方赌注 ${economyCfg.currencyEmoji} **${battle.bet}** ${economyCfg.currencyName} 已原路退还！` : '（友谊切磋局）'}`
+      : `🏆 **胜者：<@${battle.winnerId}>**${battle.bet > 0 ? ` 赢走 ${economyCfg.currencyEmoji} **+${battle.bet}** ${economyCfg.currencyName}！` : '（友谊切磋局）'}`;
     const embed = new EmbedBuilder()
-      .setColor(COLORS.SUCCESS)
-      .setTitle(`🏆 宠物斗兽场 #${battle.id} 决出胜负！`)
+      .setColor(isDraw ? COLORS.WARNING : COLORS.SUCCESS)
+      .setTitle(
+        isDraw
+          ? `🤝 宠物斗兽场 #${battle.id} 战成平手！`
+          : `🏆 宠物斗兽场 #${battle.id} 决出胜负！`,
+      )
       .setDescription(
         truncateText(
           [
             `<@${battle.challengerId}>（${cLabel}） VS <@${battle.opponentId}>（${oLabel}）`,
-            `🏆 **胜者：<@${battle.winnerId}>**${battle.bet > 0 ? ` 赢走 ${economyCfg.currencyEmoji} **+${battle.bet}** ${economyCfg.currencyName}！` : '（友谊切磋局）'}`,
+            resultLine,
             '',
             '**⚡ 战斗回放：**',
             ...(battle.logs.length > 0 ? battle.logs : ['一招制敌！']),
@@ -553,9 +671,13 @@ export function buildPetBattleCard(
 
   const embed = new EmbedBuilder()
     .setColor(COLORS.WARNING)
-    .setTitle(battle.status === 'expired' ? `⌛ 宠物斗兽场 #${battle.id} 已过期` : `🏃 宠物斗兽场 #${battle.id} 已取消`)
+    .setTitle(
+      battle.status === 'expired'
+        ? `⌛ 宠物斗兽场 #${battle.id} 已过期`
+        : `🏃 宠物斗兽场 #${battle.id} 已取消`,
+    )
     .setDescription(
-      `<@${battle.challengerId}> 发起的宠物擂台（赌注 **${battle.bet}** ${economyCfg.currencyName}）已关闭。`,
+      `<@${battle.challengerId}> 发起的宠物擂台（赌注 **${battle.bet}** ${economyCfg.currencyName}）已关闭${battle.bet > 0 ? '，冻结赌注已原路退还' : ''}。`,
     )
     .setFooter({ text: `斗兽场 #${battle.id}` })
     .setTimestamp();

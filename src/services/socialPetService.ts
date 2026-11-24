@@ -1,4 +1,12 @@
 import type Database from 'better-sqlite3';
+import {
+  MAX_COIN_AMOUNT,
+  PET_MAX_LEVEL,
+  PET_PVP_COOLDOWN_MS,
+  PET_PVP_DAILY_XP_CAP,
+  PET_WORK_COOLDOWN_MS,
+  PET_WORK_LEVEL_BONUS_CAP,
+} from '../config/economyConstants.js';
 import type { GuildConfigRepo } from '../db/repositories/guildConfigRepo.js';
 import type { ProfileRepo } from '../db/repositories/profileRepo.js';
 import type { ShopRepo } from '../db/repositories/shopRepo.js';
@@ -65,12 +73,17 @@ const SWORN_MILESTONES: ReadonlyArray<{ threshold: number; title: string }> = [
   { threshold: 400, title: '⚔️ 传奇结拜兄弟' },
 ];
 
-const RELEASE_REFUNDS: Record<PetRarity, number> = {
-  N: 100,
-  R: 200,
-  SR: 400,
-  SSR: 1000,
+const RELEASE_REFUND_RATIOS: Readonly<Record<PetRarity, number>> = {
+  N: 0.25,
+  R: 0.45,
+  SR: 0.75,
+  SSR: 1.0,
 };
+
+export function calculatePetReleaseRefund(rarity: PetRarity, petGachaPrice: number): number {
+  const safePrice = Math.max(0, Math.floor(petGachaPrice));
+  return Math.max(1, Math.floor(safePrice * RELEASE_REFUND_RATIOS[rarity]));
+}
 
 const GROWTH_BY_RARITY: Record<PetRarity, { hp: number; atk: number; spd: number }> = {
   N: { hp: 12, atk: 3, spd: 2 },
@@ -81,7 +94,6 @@ const GROWTH_BY_RARITY: Record<PetRarity, { hp: number; atk: number; spd: number
 
 const PROPOSAL_TTL_MS = 15 * 60 * 1000;
 const PET_TRAIN_COOLDOWN_MS = 3600 * 1000;
-const PET_WORK_COOLDOWN_MS = 2 * 3600 * 1000;
 const PET_BATTLE_TTL_MS = 10 * 60 * 1000;
 
 export function xpNeededForPetLevel(level: number): number {
@@ -92,6 +104,14 @@ export function applyPetXp(
   pet: UserPet,
   gainXp: number,
 ): { updatedPet: UserPet; leveledUp: boolean; levelsGained: number } {
+  if (pet.level >= PET_MAX_LEVEL) {
+    return {
+      updatedPet: { ...pet, level: PET_MAX_LEVEL, xp: 0 },
+      leveledUp: false,
+      levelsGained: 0,
+    };
+  }
+
   let level = pet.level;
   let xp = pet.xp + Math.max(0, Math.floor(gainXp));
   let hp = pet.hp;
@@ -100,13 +120,18 @@ export function applyPetXp(
   let levelsGained = 0;
   const growth = GROWTH_BY_RARITY[pet.rarity];
 
-  while (xp >= xpNeededForPetLevel(level)) {
+  while (level < PET_MAX_LEVEL && xp >= xpNeededForPetLevel(level)) {
     xp -= xpNeededForPetLevel(level);
     level += 1;
     levelsGained += 1;
     hp += growth.hp;
     atk += growth.atk;
     spd += growth.spd;
+  }
+
+  if (level >= PET_MAX_LEVEL) {
+    level = PET_MAX_LEVEL;
+    xp = 0;
   }
 
   return {
@@ -120,7 +145,7 @@ export function simulatePetBattle(
   challengerPet: UserPet,
   opponentPet: UserPet,
   rng: () => number = Math.random,
-): { winnerSide: 'challenger' | 'opponent'; logs: string[] } {
+): { winnerSide: 'challenger' | 'opponent' | 'draw'; draw: boolean; logs: string[] } {
   let cHp = challengerPet.hp;
   let oHp = opponentPet.hp;
   const logs: string[] = [];
@@ -179,18 +204,36 @@ export function simulatePetBattle(
     }
   }
 
-  let winnerSide: 'challenger' | 'opponent';
+  let winnerSide: 'challenger' | 'opponent' | 'draw';
   if (oHp <= 0 && cHp > 0) {
     winnerSide = 'challenger';
   } else if (cHp <= 0 && oHp > 0) {
     winnerSide = 'opponent';
+  } else if (cHp <= 0 && oHp <= 0) {
+    winnerSide = 'draw';
+    logs.push('⌛ 回合耗尽！双方同归于尽，本场判为平局，赌注原路退还！');
   } else {
     const cRatio = cHp / Math.max(1, challengerPet.hp);
     const oRatio = oHp / Math.max(1, opponentPet.hp);
-    winnerSide = cRatio >= oRatio ? 'challenger' : 'opponent';
+    const cPct = Math.round(cRatio * 100);
+    const oPct = Math.round(oRatio * 100);
+    if (Math.abs(cRatio - oRatio) < 1e-9) {
+      winnerSide = 'draw';
+      logs.push(`⌛ 回合耗尽！双方剩余血量比例相同（${cPct}%），本场判为平局，赌注原路退还！`);
+    } else if (cRatio > oRatio) {
+      winnerSide = 'challenger';
+      logs.push(
+        `⌛ 回合耗尽！按血量比例判定 **${challengerPet.nickname}** 险胜（${cPct}% vs ${oPct}%）。`,
+      );
+    } else {
+      winnerSide = 'opponent';
+      logs.push(
+        `⌛ 回合耗尽！按血量比例判定 **${opponentPet.nickname}** 险胜（${oPct}% vs ${cPct}%）。`,
+      );
+    }
   }
 
-  return { winnerSide, logs: logs.slice(-8) };
+  return { winnerSide, draw: winnerSide === 'draw', logs: logs.slice(-8) };
 }
 
 export type CreateProposalResult =
@@ -200,6 +243,7 @@ export type CreateProposalResult =
       reason:
         | 'self_target'
         | 'already_related'
+        | 'pending_proposal_exists'
         | 'proposer_married'
         | 'target_married'
         | 'proposer_max_sworn'
@@ -270,11 +314,20 @@ export type PetRenameResult =
 
 export type PetReleaseResult =
   | { ok: true; releasedPet: UserPet; refund: number; balance: number }
-  | { ok: false; reason: 'not_found' };
+  | { ok: false; reason: 'not_found' | 'pet_in_battle' };
 
 export type CreatePetBattleResult =
-  | { ok: true; battle: PetBattle; challengerPet: UserPet }
-  | { ok: false; reason: 'self_target' | 'invalid_bet' | 'no_active_pet' | 'insufficient_funds' };
+  | { ok: true; battle: PetBattle; challengerPet: UserPet; challengerBalance: number }
+  | {
+      ok: false;
+      reason:
+        | 'self_target'
+        | 'invalid_bet'
+        | 'no_active_pet'
+        | 'insufficient_funds'
+        | 'pvp_cooldown';
+      retryAfterSec?: number;
+    };
 
 export type AcceptPetBattleResult =
   | {
@@ -282,10 +335,13 @@ export type AcceptPetBattleResult =
       battle: PetBattle;
       challengerPet: UserPet;
       opponentPet: UserPet;
-      winnerId: string;
-      loserId: string;
-      winnerPet: UserPet;
-      loserPet: UserPet;
+      draw: boolean;
+      winnerId: string | null;
+      loserId: string | null;
+      winnerPet: UserPet | null;
+      loserPet: UserPet | null;
+      challengerXpGained: number;
+      opponentXpGained: number;
       challengerBalance: number;
       opponentBalance: number;
     }
@@ -300,14 +356,18 @@ export type AcceptPetBattleResult =
         | 'no_active_pet'
         | 'challenger_no_pet'
         | 'challenger_insufficient_funds'
-        | 'opponent_insufficient_funds';
+        | 'opponent_insufficient_funds'
+        | 'pvp_cooldown';
+      retryAfterSec?: number;
     };
 
 export type DeclinePetBattleResult =
-  | { ok: true; battle: PetBattle }
+  | { ok: true; battle: PetBattle; refunded: number }
   | { ok: false; reason: 'not_found' | 'not_participant' | 'already_resolved' | 'expired' };
 
 export class SocialPetService {
+  private readonly lastPaidPvpAt = new Map<string, number>();
+
   constructor(
     private readonly db: Database.Database,
     private readonly configRepo: GuildConfigRepo,
@@ -320,6 +380,10 @@ export class SocialPetService {
   // Relationships
   listUserRelationships(guildId: string, userId: string): Relationship[] {
     return this.socialPetRepo.listUserRelationships(guildId, userId);
+  }
+
+  getRelationshipById(relationshipId: number): Relationship | null {
+    return this.socialPetRepo.getRelationshipById(relationshipId);
   }
 
   listAffinityLeaderboard(
@@ -363,6 +427,27 @@ export class SocialPetService {
         return { ok: false, reason: 'already_related' };
       }
 
+      const pendingRow = this.db
+        .prepare(
+          `SELECT id FROM relationship_proposals
+           WHERE guild_id = ?
+             AND status = 'pending'
+             AND expires_at > ?
+             AND ((proposer_id = ? AND target_id = ?) OR (proposer_id = ? AND target_id = ?))
+           LIMIT 1`,
+        )
+        .get(
+          input.guildId,
+          nowMs,
+          input.proposerId,
+          input.targetId,
+          input.targetId,
+          input.proposerId,
+        ) as { id: number } | undefined;
+      if (pendingRow) {
+        return { ok: false, reason: 'pending_proposal_exists' };
+      }
+
       const conflict = this.checkRelationshipLimit(
         input.guildId,
         input.proposerId,
@@ -404,7 +489,6 @@ export class SocialPetService {
     return this.db.transaction((): AcceptProposalResult => {
       const proposal = this.socialPetRepo.getProposalById(proposalId);
       if (!proposal) return { ok: false, reason: 'not_found' };
-      if (actorId !== proposal.targetId) return { ok: false, reason: 'not_target' };
       if (proposal.status === 'expired') return { ok: false, reason: 'expired' };
       if (proposal.status !== 'pending') return { ok: false, reason: 'already_resolved' };
 
@@ -415,6 +499,8 @@ export class SocialPetService {
         }
         return { ok: false, reason: 'expired' };
       }
+
+      if (actorId !== proposal.targetId) return { ok: false, reason: 'not_target' };
 
       const cfg = this.configRepo.getOrCreate(proposal.guildId).games;
       const existingBetween = this.socialPetRepo.findRelationshipBetween(
@@ -459,9 +545,6 @@ export class SocialPetService {
     return this.db.transaction((): DeclineProposalResult => {
       const proposal = this.socialPetRepo.getProposalById(proposalId);
       if (!proposal) return { ok: false, reason: 'not_found' };
-      if (actorId !== proposal.targetId && actorId !== proposal.proposerId) {
-        return { ok: false, reason: 'not_participant' };
-      }
       if (proposal.status === 'expired') return { ok: false, reason: 'expired' };
       if (proposal.status !== 'pending') return { ok: false, reason: 'already_resolved' };
 
@@ -471,6 +554,10 @@ export class SocialPetService {
           this.profileRepo.addCoins(proposal.guildId, proposal.proposerId, proposal.cost);
         }
         return { ok: false, reason: 'expired' };
+      }
+
+      if (actorId !== proposal.targetId && actorId !== proposal.proposerId) {
+        return { ok: false, reason: 'not_participant' };
       }
 
       this.socialPetRepo.updateProposalStatus(proposal.id, 'declined');
@@ -486,20 +573,24 @@ export class SocialPetService {
     })();
   }
 
+  expireProposalIfDue(proposalId: number, nowMs = Date.now()): RelationshipProposal | null {
+    return this.db.transaction((): RelationshipProposal | null => {
+      const current = this.socialPetRepo.getProposalById(proposalId);
+      if (!current || current.status !== 'pending' || current.expiresAt > nowMs) return null;
+      this.socialPetRepo.updateProposalStatus(current.id, 'expired');
+      if (current.cost > 0) {
+        this.profileRepo.addCoins(current.guildId, current.proposerId, current.cost);
+      }
+      return { ...current, status: 'expired' };
+    })();
+  }
+
   expireDueProposals(nowMs = Date.now()): RelationshipProposal[] {
     const due = this.socialPetRepo.listDueProposals(nowMs);
     const expired: RelationshipProposal[] = [];
 
     for (const item of due) {
-      const res = this.db.transaction((): RelationshipProposal | null => {
-        const current = this.socialPetRepo.getProposalById(item.id);
-        if (!current || current.status !== 'pending') return null;
-        this.socialPetRepo.updateProposalStatus(current.id, 'expired');
-        if (current.cost > 0) {
-          this.profileRepo.addCoins(current.guildId, current.proposerId, current.cost);
-        }
-        return { ...current, status: 'expired' };
-      })();
+      const res = this.expireProposalIfDue(item.id, nowMs);
       if (res) expired.push(res);
     }
 
@@ -615,6 +706,19 @@ export class SocialPetService {
     return this.socialPetRepo.getPetById(petId);
   }
 
+  hasPendingBattleForPet(petId: number, nowMs = Date.now()): boolean {
+    const row = this.db
+      .prepare(
+        `SELECT id FROM pet_battles
+         WHERE status = 'pending'
+           AND expires_at > ?
+           AND (challenger_pet_id = ? OR opponent_pet_id = ?)
+         LIMIT 1`,
+      )
+      .get(nowMs, petId, petId) as { id: number } | undefined;
+    return row !== undefined;
+  }
+
   pullPetGacha(
     guildId: string,
     ownerId: string,
@@ -676,7 +780,7 @@ export class SocialPetService {
         species,
         price,
         balance,
-        isHighRarity: rarity === 'SR' || rarity === 'SSR',
+        isHighRarity: rarity === 'SSR',
       };
     })();
   }
@@ -707,15 +811,41 @@ export class SocialPetService {
     return { ok: true, pet: updated };
   }
 
-  releasePet(guildId: string, ownerId: string, petId: number): PetReleaseResult {
+  releasePet(
+    guildId: string,
+    ownerId: string,
+    petId: number,
+    nowMs = Date.now(),
+  ): PetReleaseResult {
+    const cfg = this.configRepo.getOrCreate(guildId).games;
     return this.db.transaction((): PetReleaseResult => {
       const pet = this.socialPetRepo.getPetById(petId);
       if (!pet || pet.guildId !== guildId || pet.ownerId !== ownerId) {
         return { ok: false, reason: 'not_found' };
       }
 
+      const pendingBattles = this.db
+        .prepare(
+          `SELECT id, expires_at FROM pet_battles
+           WHERE status = 'pending' AND (challenger_pet_id = ? OR opponent_pet_id = ?)`,
+        )
+        .all(petId, petId) as Array<{ id: number; expires_at: number }>;
+
+      for (const row of pendingBattles) {
+        if (row.expires_at > nowMs) {
+          return { ok: false, reason: 'pet_in_battle' };
+        }
+        const stale = this.socialPetRepo.getPetBattleById(row.id);
+        if (stale && stale.status === 'pending' && stale.expiresAt <= nowMs) {
+          this.socialPetRepo.savePetBattle({ ...stale, status: 'expired' });
+          if (stale.bet > 0) {
+            this.profileRepo.addCoins(stale.guildId, stale.challengerId, stale.bet);
+          }
+        }
+      }
+
       this.socialPetRepo.deletePet(petId, guildId, ownerId);
-      const refund = RELEASE_REFUNDS[pet.rarity];
+      const refund = calculatePetReleaseRefund(pet.rarity, cfg.petGachaPrice);
       const updatedProfile = this.profileRepo.addCoins(guildId, ownerId, refund);
 
       if (pet.isActive) {
@@ -804,8 +934,10 @@ export class SocialPetService {
       if (!pet || pet.guildId !== guildId || pet.ownerId !== ownerId) {
         return { ok: false, reason: 'not_found' };
       }
-      const elapsed = nowMs - pet.lastWorkAt;
-      if (pet.lastWorkAt > 0 && elapsed < PET_WORK_COOLDOWN_MS) {
+      const profile = this.profileRepo.getOrCreate(guildId, ownerId);
+      const lastWork = Math.max(profile.lastPetWorkAt, pet.lastWorkAt);
+      const elapsed = nowMs - lastWork;
+      if (lastWork > 0 && elapsed < PET_WORK_COOLDOWN_MS) {
         return {
           ok: false,
           reason: 'cooldown',
@@ -821,10 +953,12 @@ export class SocialPetService {
       };
       const [min, max] = rangeByRarity[pet.rarity];
       const baseEarned = min + Math.floor(rng() * (max - min + 1));
-      const coinsEarned = baseEarned + (pet.level - 1) * 15;
+      const levelBonus = Math.min(PET_WORK_LEVEL_BONUS_CAP, Math.max(0, pet.level - 1) * 15);
+      const coinsEarned = baseEarned + levelBonus;
       const gainXp = 15;
 
-      const updatedProfile = this.profileRepo.addCoins(guildId, ownerId, coinsEarned);
+      const nextCoins = profile.coins + coinsEarned;
+      this.profileRepo.save({ ...profile, coins: nextCoins, lastPetWorkAt: nowMs });
       const { updatedPet, leveledUp } = applyPetXp({ ...pet, lastWorkAt: nowMs }, gainXp);
       this.socialPetRepo.savePet(updatedPet);
 
@@ -832,7 +966,7 @@ export class SocialPetService {
         ok: true,
         pet: updatedPet,
         coinsEarned,
-        balance: updatedProfile.coins,
+        balance: nextCoins,
         gainXp,
         leveledUp,
       };
@@ -848,6 +982,14 @@ export class SocialPetService {
     this.socialPetRepo.bindPetBattleMessageId(battleId, messageId);
   }
 
+  private getPaidPvpCooldownSec(guildId: string, userId: string, nowMs: number): number {
+    const last = this.lastPaidPvpAt.get(`${guildId}:${userId}`) ?? 0;
+    if (last > 0 && nowMs - last < PET_PVP_COOLDOWN_MS) {
+      return Math.ceil((PET_PVP_COOLDOWN_MS - (nowMs - last)) / 1000);
+    }
+    return 0;
+  }
+
   createPetBattle(input: {
     guildId: string;
     channelId: string;
@@ -860,32 +1002,46 @@ export class SocialPetService {
       return { ok: false, reason: 'self_target' };
     }
     const bet = Math.floor(input.bet);
-    if (!Number.isFinite(bet) || bet < 0 || bet > 1_000_000_000) {
+    if (!Number.isFinite(bet) || bet < 0 || bet > MAX_COIN_AMOUNT) {
       return { ok: false, reason: 'invalid_bet' };
     }
     const nowMs = input.nowMs ?? Date.now();
 
-    const activePet = this.socialPetRepo.getActivePet(input.guildId, input.challengerId);
-    if (!activePet) {
-      return { ok: false, reason: 'no_active_pet' };
-    }
-    const profile = this.profileRepo.getOrCreate(input.guildId, input.challengerId);
-    if (profile.coins < bet) {
-      return { ok: false, reason: 'insufficient_funds' };
+    if (bet > 0) {
+      const cdSec = this.getPaidPvpCooldownSec(input.guildId, input.challengerId, nowMs);
+      if (cdSec > 0) {
+        return { ok: false, reason: 'pvp_cooldown', retryAfterSec: cdSec };
+      }
     }
 
-    const battle = this.socialPetRepo.createPetBattle({
-      guildId: input.guildId,
-      channelId: input.channelId,
-      challengerId: input.challengerId,
-      challengerPetId: activePet.id,
-      opponentId: input.opponentId,
-      bet,
-      createdAt: nowMs,
-      expiresAt: nowMs + PET_BATTLE_TTL_MS,
-    });
+    return this.db.transaction((): CreatePetBattleResult => {
+      const activePet = this.socialPetRepo.getActivePet(input.guildId, input.challengerId);
+      if (!activePet) {
+        return { ok: false, reason: 'no_active_pet' };
+      }
+      const profile = this.profileRepo.getOrCreate(input.guildId, input.challengerId);
+      if (profile.coins < bet) {
+        return { ok: false, reason: 'insufficient_funds' };
+      }
 
-    return { ok: true, battle, challengerPet: activePet };
+      const challengerBalance = profile.coins - bet;
+      if (bet > 0) {
+        this.profileRepo.save({ ...profile, coins: challengerBalance });
+      }
+
+      const battle = this.socialPetRepo.createPetBattle({
+        guildId: input.guildId,
+        channelId: input.channelId,
+        challengerId: input.challengerId,
+        challengerPetId: activePet.id,
+        opponentId: input.opponentId,
+        bet,
+        createdAt: nowMs,
+        expiresAt: nowMs + PET_BATTLE_TTL_MS,
+      });
+
+      return { ok: true, battle, challengerPet: activePet, challengerBalance };
+    })();
   }
 
   acceptPetBattle(
@@ -901,6 +1057,9 @@ export class SocialPetService {
       if (battle.status !== 'pending') return { ok: false, reason: 'already_resolved' };
       if (battle.expiresAt <= nowMs) {
         this.socialPetRepo.savePetBattle({ ...battle, status: 'expired' });
+        if (battle.bet > 0) {
+          this.profileRepo.addCoins(battle.guildId, battle.challengerId, battle.bet);
+        }
         return { ok: false, reason: 'expired' };
       }
 
@@ -909,6 +1068,17 @@ export class SocialPetService {
       }
       if (battle.opponentId && acceptorId !== battle.opponentId) {
         return { ok: false, reason: 'not_opponent' };
+      }
+
+      if (battle.bet > 0) {
+        const acceptorCd = this.getPaidPvpCooldownSec(battle.guildId, acceptorId, nowMs);
+        if (acceptorCd > 0) {
+          return { ok: false, reason: 'pvp_cooldown', retryAfterSec: acceptorCd };
+        }
+        const challengerCd = this.getPaidPvpCooldownSec(battle.guildId, battle.challengerId, nowMs);
+        if (challengerCd > 0) {
+          return { ok: false, reason: 'pvp_cooldown', retryAfterSec: challengerCd };
+        }
       }
 
       const challengerPet = this.socialPetRepo.getPetById(battle.challengerPetId);
@@ -922,29 +1092,89 @@ export class SocialPetService {
       }
 
       const challengerProfile = this.profileRepo.getOrCreate(battle.guildId, battle.challengerId);
-      if (challengerProfile.coins < battle.bet) {
-        return { ok: false, reason: 'challenger_insufficient_funds' };
-      }
       const opponentProfile = this.profileRepo.getOrCreate(battle.guildId, acceptorId);
       if (opponentProfile.coins < battle.bet) {
         return { ok: false, reason: 'opponent_insufficient_funds' };
       }
 
       const sim = simulatePetBattle(challengerPet, opponentPet, rng);
+
+      if (sim.draw) {
+        const challengerBalance = challengerProfile.coins + battle.bet;
+        const opponentBalance = opponentProfile.coins;
+        if (battle.bet > 0) {
+          this.profileRepo.save({ ...challengerProfile, coins: challengerBalance });
+          this.lastPaidPvpAt.set(`${battle.guildId}:${battle.challengerId}`, nowMs);
+          this.lastPaidPvpAt.set(`${battle.guildId}:${acceptorId}`, nowMs);
+        }
+
+        const updatedBattle: PetBattle = {
+          ...battle,
+          opponentId: acceptorId,
+          opponentPetId: opponentPet.id,
+          status: 'completed',
+          winnerId: null,
+          logs: sim.logs,
+        };
+        this.socialPetRepo.savePetBattle(updatedBattle);
+
+        return {
+          ok: true,
+          battle: updatedBattle,
+          challengerPet,
+          opponentPet,
+          draw: true,
+          winnerId: null,
+          loserId: null,
+          winnerPet: null,
+          loserPet: null,
+          challengerXpGained: 0,
+          opponentXpGained: 0,
+          challengerBalance,
+          opponentBalance,
+        };
+      }
+
       const challengerWon = sim.winnerSide === 'challenger';
       const winnerId = challengerWon ? battle.challengerId : acceptorId;
       const loserId = challengerWon ? acceptorId : battle.challengerId;
 
-      const challengerBalance = challengerProfile.coins + (challengerWon ? battle.bet : -battle.bet);
+      // Challenger's bet was already pre-deducted/frozen at createPetBattle.
+      // Winner receives bet * 2; opponent pays bet on accept.
+      const challengerBalance = challengerProfile.coins + (challengerWon ? battle.bet * 2 : 0);
       const opponentBalance = opponentProfile.coins + (challengerWon ? -battle.bet : battle.bet);
 
+      let cXp = 0;
+      let oXp = 0;
+      let nextChallengerProfile = { ...challengerProfile, coins: challengerBalance };
+      let nextOpponentProfile = { ...opponentProfile, coins: opponentBalance };
+
       if (battle.bet > 0) {
-        this.profileRepo.save({ ...challengerProfile, coins: challengerBalance });
-        this.profileRepo.save({ ...opponentProfile, coins: opponentBalance });
+        const today = getDateKey(nowMs, this.timezone);
+        const cUsed = challengerProfile.petPvpXpDate === today ? challengerProfile.petPvpXpDaily : 0;
+        const oUsed = opponentProfile.petPvpXpDate === today ? opponentProfile.petPvpXpDaily : 0;
+        const rawCXp = challengerWon ? 30 : 12;
+        const rawOXp = challengerWon ? 12 : 30;
+        cXp = Math.min(rawCXp, Math.max(0, PET_PVP_DAILY_XP_CAP - cUsed));
+        oXp = Math.min(rawOXp, Math.max(0, PET_PVP_DAILY_XP_CAP - oUsed));
+
+        nextChallengerProfile = {
+          ...nextChallengerProfile,
+          petPvpXpDate: today,
+          petPvpXpDaily: cUsed + cXp,
+        };
+        nextOpponentProfile = {
+          ...nextOpponentProfile,
+          petPvpXpDate: today,
+          petPvpXpDaily: oUsed + oXp,
+        };
+
+        this.profileRepo.save(nextChallengerProfile);
+        this.profileRepo.save(nextOpponentProfile);
+        this.lastPaidPvpAt.set(`${battle.guildId}:${battle.challengerId}`, nowMs);
+        this.lastPaidPvpAt.set(`${battle.guildId}:${acceptorId}`, nowMs);
       }
 
-      const cXp = challengerWon ? 30 : 12;
-      const oXp = challengerWon ? 12 : 30;
       const nextChallengerPet = applyPetXp(
         {
           ...challengerPet,
@@ -980,10 +1210,13 @@ export class SocialPetService {
         battle: updatedBattle,
         challengerPet: nextChallengerPet,
         opponentPet: nextOpponentPet,
+        draw: false,
         winnerId,
         loserId,
         winnerPet: challengerWon ? nextChallengerPet : nextOpponentPet,
         loserPet: challengerWon ? nextOpponentPet : nextChallengerPet,
+        challengerXpGained: cXp,
+        opponentXpGained: oXp,
         challengerBalance,
         opponentBalance,
       };
@@ -995,31 +1228,54 @@ export class SocialPetService {
     actorId: string,
     nowMs = Date.now(),
   ): DeclinePetBattleResult {
-    const battle = this.socialPetRepo.getPetBattleById(battleId);
-    if (!battle) return { ok: false, reason: 'not_found' };
-    if (actorId !== battle.challengerId && actorId !== battle.opponentId) {
-      return { ok: false, reason: 'not_participant' };
-    }
-    if (battle.status === 'expired') return { ok: false, reason: 'expired' };
-    if (battle.status !== 'pending') return { ok: false, reason: 'already_resolved' };
-    if (battle.expiresAt <= nowMs) {
-      const updated: PetBattle = { ...battle, status: 'expired' };
-      this.socialPetRepo.savePetBattle(updated);
-      return { ok: false, reason: 'expired' };
-    }
+    return this.db.transaction((): DeclinePetBattleResult => {
+      const battle = this.socialPetRepo.getPetBattleById(battleId);
+      if (!battle) return { ok: false, reason: 'not_found' };
+      if (battle.status === 'expired') return { ok: false, reason: 'expired' };
+      if (battle.status !== 'pending') return { ok: false, reason: 'already_resolved' };
+      if (battle.expiresAt <= nowMs) {
+        const updated: PetBattle = { ...battle, status: 'expired' };
+        this.socialPetRepo.savePetBattle(updated);
+        if (battle.bet > 0) {
+          this.profileRepo.addCoins(battle.guildId, battle.challengerId, battle.bet);
+        }
+        return { ok: false, reason: 'expired' };
+      }
 
-    const updated: PetBattle = { ...battle, status: 'declined' };
-    this.socialPetRepo.savePetBattle(updated);
-    return { ok: true, battle: updated };
+      if (actorId !== battle.challengerId && actorId !== battle.opponentId) {
+        return { ok: false, reason: 'not_participant' };
+      }
+
+      const updated: PetBattle = { ...battle, status: 'declined' };
+      this.socialPetRepo.savePetBattle(updated);
+      if (battle.bet > 0) {
+        this.profileRepo.addCoins(battle.guildId, battle.challengerId, battle.bet);
+      }
+      return { ok: true, battle: updated, refunded: battle.bet };
+    })();
+  }
+
+  expirePetBattleIfDue(battleId: number, nowMs = Date.now()): PetBattle | null {
+    return this.db.transaction((): PetBattle | null => {
+      const current = this.socialPetRepo.getPetBattleById(battleId);
+      if (!current || current.status !== 'pending' || current.expiresAt > nowMs) {
+        return null;
+      }
+      const updated: PetBattle = { ...current, status: 'expired' };
+      this.socialPetRepo.savePetBattle(updated);
+      if (current.bet > 0) {
+        this.profileRepo.addCoins(current.guildId, current.challengerId, current.bet);
+      }
+      return updated;
+    })();
   }
 
   expireDuePetBattles(nowMs = Date.now()): PetBattle[] {
     const due = this.socialPetRepo.listDuePetBattles(nowMs);
     const expired: PetBattle[] = [];
     for (const b of due) {
-      const updated: PetBattle = { ...b, status: 'expired' };
-      this.socialPetRepo.savePetBattle(updated);
-      expired.push(updated);
+      const res = this.expirePetBattleIfDue(b.id, nowMs);
+      if (res) expired.push(res);
     }
     return expired;
   }

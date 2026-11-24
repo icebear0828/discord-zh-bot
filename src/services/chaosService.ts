@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3';
 import type { GamesConfig } from '../config/defaults.js';
+import { MAX_COIN_AMOUNT } from '../config/economyConstants.js';
 import type {
   Bounty,
   BountySummary,
@@ -26,28 +27,28 @@ export const PROP_CATALOG: Readonly<Record<PropKey, PropDefinition>> = {
     key: 'trap',
     name: '捕兽夹',
     emoji: '🪤',
-    description: '部署24h防盗陷阱，反抓下一位小偷并强制双倍赔款',
+    description: '部署 24h 防盗陷阱，反抓下一位小偷并强制双倍赔款',
     usageMode: 'self',
   },
   lockpick: {
     key: 'lockpick',
     name: '万能撬锁',
     emoji: '🗝️',
-    description: '下次偷钱/打劫成功率 +25%（封顶 85%）',
+    description: '下次口袋打劫 +25%（封顶 85%）/ 抢银行 +10%（封顶 50%）',
     usageMode: 'self',
   },
   shield: {
     key: 'shield',
     name: '防盗保险',
     emoji: '🛡️',
-    description: '立即开启或延长 4 小时防盗护盾，免疫普通偷钱',
+    description: '立即开启或延长 4 小时防盗护盾，免疫偷钱与抢银行',
     usageMode: 'self',
   },
   curse: {
     key: 'curse',
     name: '衰神符',
     emoji: '🧿',
-    description: '对指定群友使用：使其下次打工收益减半',
+    description: '对指定群友使用（48h 内有效）：使其下次打工收益减半',
     usageMode: 'target',
   },
   nickname: {
@@ -82,11 +83,11 @@ export type BuyPropResult =
 
 export type UseSelfPropResult =
   | { ok: true; prop: PropDefinition; remainingQuantity: number; shieldUntil?: number }
-  | { ok: false; reason: 'no_prop' | 'invalid_prop_mode' };
+  | { ok: false; reason: 'no_prop' | 'invalid_prop_mode' | 'already_active' };
 
 export type UseCursePropResult =
   | { ok: true; remainingQuantity: number; targetId: string }
-  | { ok: false; reason: 'self_target' | 'no_prop' };
+  | { ok: false; reason: 'self_target' | 'no_prop' | 'already_active' };
 
 export type PlaceBountyResult =
   | { ok: true; bounty: Bounty; totalTargetBounty: number; placerBalance: number }
@@ -107,6 +108,7 @@ export type JoinRouletteResult =
       reason:
         | 'not_found'
         | 'not_recruiting'
+        | 'expired'
         | 'already_joined'
         | 'room_full'
         | 'insufficient_funds';
@@ -114,15 +116,18 @@ export type JoinRouletteResult =
 
 export type LeaveRouletteResult =
   | { ok: true; game: RouletteGame; refunded: number; cancelled: boolean }
-  | { ok: false; reason: 'not_found' | 'not_recruiting' | 'not_joined' };
+  | { ok: false; reason: 'not_found' | 'not_recruiting' | 'expired' | 'not_joined' };
 
 export type CancelRouletteResult =
   | { ok: true; game: RouletteGame; refundedPlayers: string[] }
-  | { ok: false; reason: 'not_found' | 'not_recruiting' | 'no_permission' };
+  | { ok: false; reason: 'not_found' | 'not_recruiting' | 'expired' | 'no_permission' };
 
 export type StartRouletteResult =
   | { ok: true; game: RouletteGame }
-  | { ok: false; reason: 'not_found' | 'not_recruiting' | 'no_permission' | 'not_enough_players' };
+  | {
+      ok: false;
+      reason: 'not_found' | 'not_recruiting' | 'expired' | 'no_permission' | 'not_enough_players';
+    };
 
 export type PullTriggerResult =
   | {
@@ -220,6 +225,14 @@ export class ChaosService {
     return this.chaosRepo.consumeProp(guildId, userId, propKey);
   }
 
+  reserveProp(guildId: string, userId: string, propKey: PropKey): boolean {
+    return this.db.transaction(() => this.chaosRepo.consumeProp(guildId, userId, propKey))();
+  }
+
+  refundProp(guildId: string, userId: string, propKey: PropKey): number {
+    return this.db.transaction(() => this.chaosRepo.addProp(guildId, userId, propKey, 1))();
+  }
+
   listActiveEffects(guildId: string, userId: string, nowMs = Date.now()): UserEffect[] {
     return this.chaosRepo.listActiveEffects(guildId, userId, nowMs);
   }
@@ -255,6 +268,16 @@ export class ChaosService {
     }
 
     return this.db.transaction((): UseSelfPropResult => {
+      if (propKey === 'trap') {
+        if (this.chaosRepo.getActiveEffect(guildId, userId, 'trap_armed', nowMs)) {
+          return { ok: false, reason: 'already_active' };
+        }
+      } else if (propKey === 'lockpick') {
+        if (this.chaosRepo.getActiveEffect(guildId, userId, 'lockpick_ready', nowMs)) {
+          return { ok: false, reason: 'already_active' };
+        }
+      }
+
       if (!this.chaosRepo.consumeProp(guildId, userId, propKey)) {
         return { ok: false, reason: 'no_prop' };
       }
@@ -305,6 +328,9 @@ export class ChaosService {
     }
 
     return this.db.transaction((): UseCursePropResult => {
+      if (this.chaosRepo.getActiveEffect(guildId, targetId, 'work_cursed', nowMs)) {
+        return { ok: false, reason: 'already_active' };
+      }
       if (!this.chaosRepo.consumeProp(guildId, actorId, 'curse')) {
         return { ok: false, reason: 'no_prop' };
       }
@@ -320,6 +346,15 @@ export class ChaosService {
       const remainingQuantity = this.chaosRepo.getPropQuantity(guildId, actorId, 'curse');
       return { ok: true, remainingQuantity, targetId };
     })();
+  }
+
+  applyCurse(
+    guildId: string,
+    actorId: string,
+    targetId: string,
+    nowMs = Date.now(),
+  ): UseCursePropResult {
+    return this.useCurseProp(guildId, actorId, targetId, nowMs);
   }
 
   // Bounties
@@ -401,7 +436,7 @@ export class ChaosService {
     const maxPlayers = Math.floor(input.maxPlayers ?? 6);
     const nowMs = input.nowMs ?? Date.now();
 
-    if (!Number.isFinite(entryFee) || entryFee < 50 || entryFee > 1_000_000_000) {
+    if (!Number.isFinite(entryFee) || entryFee < 50 || entryFee > MAX_COIN_AMOUNT) {
       return { ok: false, reason: 'invalid_fee' };
     }
     if (!Number.isFinite(maxPlayers) || maxPlayers < 2 || maxPlayers > 6) {
@@ -442,11 +477,45 @@ export class ChaosService {
     return this.chaosRepo.listActiveRoulettes(guildId, limit);
   }
 
+  private expireRecruitingRouletteInTx(game: RouletteGame, nowMs: number): RouletteGame {
+    for (const p of game.players) {
+      this.profileRepo.addCoins(game.guildId, p, game.entryFee);
+    }
+    const updated: RouletteGame = {
+      ...game,
+      status: 'cancelled',
+      turnDeadline: 0,
+      logs: [...game.logs, '⌛ 招募超过 10 分钟未开局，已自动解散并退还入场费。'].slice(-8),
+      updatedAt: nowMs,
+    };
+    this.chaosRepo.saveRoulette(updated);
+    return updated;
+  }
+
+  expireRouletteIfDue(gameId: number, nowMs = Date.now()): RouletteGame | null {
+    return this.db.transaction((): RouletteGame | null => {
+      const current = this.chaosRepo.getRouletteById(gameId);
+      if (
+        !current ||
+        current.status !== 'recruiting' ||
+        current.turnDeadline <= 0 ||
+        current.turnDeadline > nowMs
+      ) {
+        return null;
+      }
+      return this.expireRecruitingRouletteInTx(current, nowMs);
+    })();
+  }
+
   joinRoulette(gameId: number, userId: string, nowMs = Date.now()): JoinRouletteResult {
     return this.db.transaction((): JoinRouletteResult => {
       const game = this.chaosRepo.getRouletteById(gameId);
       if (!game) return { ok: false, reason: 'not_found' };
       if (game.status !== 'recruiting') return { ok: false, reason: 'not_recruiting' };
+      if (game.turnDeadline > 0 && game.turnDeadline <= nowMs) {
+        this.expireRecruitingRouletteInTx(game, nowMs);
+        return { ok: false, reason: 'expired' };
+      }
       if (game.players.includes(userId)) return { ok: false, reason: 'already_joined' };
       if (game.players.length >= game.maxPlayers) return { ok: false, reason: 'room_full' };
 
@@ -475,6 +544,10 @@ export class ChaosService {
       const game = this.chaosRepo.getRouletteById(gameId);
       if (!game) return { ok: false, reason: 'not_found' };
       if (game.status !== 'recruiting') return { ok: false, reason: 'not_recruiting' };
+      if (game.turnDeadline > 0 && game.turnDeadline <= nowMs) {
+        this.expireRecruitingRouletteInTx(game, nowMs);
+        return { ok: false, reason: 'expired' };
+      }
       if (!game.players.includes(userId)) return { ok: false, reason: 'not_joined' };
 
       const remaining = game.players.filter((id) => id !== userId);
@@ -517,6 +590,10 @@ export class ChaosService {
       const game = this.chaosRepo.getRouletteById(gameId);
       if (!game) return { ok: false, reason: 'not_found' };
       if (game.status !== 'recruiting') return { ok: false, reason: 'not_recruiting' };
+      if (game.turnDeadline > 0 && game.turnDeadline <= nowMs) {
+        this.expireRecruitingRouletteInTx(game, nowMs);
+        return { ok: false, reason: 'expired' };
+      }
       if (actorId !== game.hostId && !isAdmin) return { ok: false, reason: 'no_permission' };
 
       for (const p of game.players) {
@@ -545,6 +622,10 @@ export class ChaosService {
       const game = this.chaosRepo.getRouletteById(gameId);
       if (!game) return { ok: false, reason: 'not_found' };
       if (game.status !== 'recruiting') return { ok: false, reason: 'not_recruiting' };
+      if (game.turnDeadline > 0 && game.turnDeadline <= nowMs) {
+        this.expireRecruitingRouletteInTx(game, nowMs);
+        return { ok: false, reason: 'expired' };
+      }
       if (actorId !== game.hostId && !isAdmin) return { ok: false, reason: 'no_permission' };
       if (game.players.length < 2) return { ok: false, reason: 'not_enough_players' };
 
@@ -685,25 +766,8 @@ export class ChaosService {
 
     for (const item of due) {
       if (item.status === 'recruiting') {
-        const res = this.db.transaction((): TimedOutRouletteUpdate | null => {
-          const current = this.chaosRepo.getRouletteById(item.id);
-          if (!current || current.status !== 'recruiting' || current.turnDeadline > nowMs) {
-            return null;
-          }
-          for (const p of current.players) {
-            this.profileRepo.addCoins(current.guildId, p, current.entryFee);
-          }
-          const updated: RouletteGame = {
-            ...current,
-            status: 'cancelled',
-            turnDeadline: 0,
-            logs: [...current.logs, '⌛ 招募超过 10 分钟未开局，已自动解散并退还入场费。'].slice(-8),
-            updatedAt: nowMs,
-          };
-          this.chaosRepo.saveRoulette(updated);
-          return { game: updated, kind: 'recruit_expired' };
-        })();
-        if (res) updates.push(res);
+        const res = this.expireRouletteIfDue(item.id, nowMs);
+        if (res) updates.push({ game: res, kind: 'recruit_expired' });
       } else if (item.status === 'playing' && item.alivePlayers.length > 0) {
         const currentIdx = item.turnIndex % item.alivePlayers.length;
         const targetActor = item.alivePlayers[currentIdx]!;
@@ -741,7 +805,7 @@ export class ChaosService {
     const nowMs = input.nowMs ?? Date.now();
     const rng = input.rng ?? Math.random;
 
-    if (!Number.isFinite(penalty) || penalty < 100 || penalty > 1_000_000_000) {
+    if (!Number.isFinite(penalty) || penalty < 100 || penalty > MAX_COIN_AMOUNT) {
       return { ok: false, reason: 'invalid_penalty' };
     }
 
@@ -750,7 +814,8 @@ export class ChaosService {
       return { ok: false, reason: 'insufficient_funds' };
     }
 
-    const secretNumber = 2 + Math.min(97, Math.max(0, Math.floor(rng() * 98)));
+    // Full closed interval [1, 100] so guessing 1 or 100 carries real risk
+    const secretNumber = 1 + Math.min(99, Math.max(0, Math.floor(rng() * 100)));
     const game = this.chaosRepo.createNumberBomb({
       guildId: input.guildId,
       channelId: input.channelId,
@@ -778,6 +843,23 @@ export class ChaosService {
     return this.chaosRepo.listOpenNumberBombs(guildId, limit);
   }
 
+  cancelNumberBomb(gameId: number): boolean {
+    return this.chaosRepo.cancelNumberBombById(gameId);
+  }
+
+  expireNumberBombIfDue(gameId: number, nowMs = Date.now()): NumberBombGame | null {
+    return this.db.transaction((): NumberBombGame | null => {
+      const current = this.chaosRepo.getNumberBombById(gameId);
+      if (!current || current.status !== 'open' || current.expiresAt > nowMs) {
+        return null;
+      }
+      if (!this.chaosRepo.expireNumberBombById(gameId)) {
+        return null;
+      }
+      return this.chaosRepo.getNumberBombById(gameId) ?? { ...current, status: 'cancelled' };
+    })();
+  }
+
   guessNumberBomb(
     gameId: number,
     userId: string,
@@ -791,7 +873,7 @@ export class ChaosService {
       if (!game) return { ok: false, reason: 'not_found' };
       if (game.status !== 'open') return { ok: false, reason: 'not_open' };
       if (game.expiresAt <= nowMs) {
-        this.chaosRepo.saveNumberBomb({ ...game, status: 'cancelled' });
+        this.chaosRepo.expireNumberBombById(game.id);
         return { ok: false, reason: 'expired' };
       }
 
@@ -835,9 +917,6 @@ export class ChaosService {
               payouts.push({ userId: recipientId, amount: share });
             }
           });
-        } else if (userId !== game.hostId && actualPenalty > 0) {
-          this.profileRepo.addCoins(game.guildId, game.hostId, actualPenalty);
-          payouts.push({ userId: game.hostId, amount: actualPenalty });
         }
 
         const updated: NumberBombGame = {
@@ -846,6 +925,7 @@ export class ChaosService {
           guesses: nextGuesses,
           status: 'exploded',
           loserId: userId,
+          payoutsJson: JSON.stringify(payouts),
         };
         this.chaosRepo.saveNumberBomb(updated);
 
@@ -891,9 +971,8 @@ export class ChaosService {
     const due = this.chaosRepo.listDueNumberBombs(nowMs);
     const expired: NumberBombGame[] = [];
     for (const game of due) {
-      const updated: NumberBombGame = { ...game, status: 'cancelled' };
-      this.chaosRepo.saveNumberBomb(updated);
-      expired.push(updated);
+      const res = this.expireNumberBombIfDue(game.id, nowMs);
+      if (res) expired.push(res);
     }
     return expired;
   }

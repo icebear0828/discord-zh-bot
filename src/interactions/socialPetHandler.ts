@@ -1,5 +1,5 @@
 import { MessageFlags, type ButtonInteraction } from 'discord.js';
-import { createErrorEmbed, createSuccessEmbed, type AppContext } from '../ui/embeds.js';
+import { createErrorEmbed, type AppContext } from '../ui/embeds.js';
 import { buildPetBattleCard, buildProposalCard } from '../ui/socialPetMenuBuilder.js';
 import { sendPublicBroadcast } from './menuHelpers.js';
 
@@ -33,14 +33,8 @@ export async function handleSocialPetButton(
         await sendPublicBroadcast(interaction, {
           content:
             res.relationship.relType === 'marriage'
-              ? `💐 恭喜 <@${res.proposal.proposerId}> 与 <@${res.proposal.targetId}> 喜结良缘，全群撒花祝贺！`
+              ? `💐 恭喜 <@${res.proposal.proposerId}> 与 <@${res.proposal.targetId}> 喜结良缘！`
               : `🍻 恭喜 <@${res.proposal.proposerId}> 与 <@${res.proposal.targetId}> 正式结拜为铁血死党！`,
-          embeds: [
-            createSuccessEmbed(
-              res.relationship.relType === 'marriage' ? '💍 全群喜讯：新婚快乐！' : '🍻 全群喜讯：义结金兰！',
-              `<@${res.proposal.proposerId}> 与 <@${res.proposal.targetId}> 正式绑定关系（当前亲密度 **${res.relationship.affinity}**）！`,
-            ),
-          ],
         });
         return;
       }
@@ -109,13 +103,14 @@ export async function handleSocialPetButton(
       const msgMap: Record<typeof res.reason, string> = {
         not_found: '找不到这场宠物斗兽场对决。',
         already_resolved: '这场对决已经分出胜负或关闭啦！',
-        expired: '这场宠物挑战已经超时过期。',
+        expired: '这场宠物挑战已经超时过期（冻结赌注已退还）。',
         not_opponent: '这是定向挑战，只有指定的对手才能应战！',
         cannot_accept_self: '不能和自己的宠物自己打自己！',
         no_active_pet: '你还没有宠物，先在 `/菜单` → 关系宠物里抽一只盲盒宠物吧！',
         challenger_no_pet: '挑战方的出战宠物已不在宠物屋，无法开战。',
         challenger_insufficient_funds: '发起人当前口袋现金不足支付赌注。',
         opponent_insufficient_funds: '你的口袋现金不足以支付本场赌注（银行存款不参与决斗）。',
+        pvp_cooldown: `斗兽场冷却中，请等待 **${res.retryAfterSec ?? 1}** 秒后再进行有赌注对决！`,
       };
       await interaction.reply({
         embeds: [createErrorEmbed('❌ 无法出战', msgMap[res.reason])],
@@ -144,14 +139,24 @@ export async function handleSocialPetButton(
       }
       const msgMap: Record<typeof res.reason, string> = {
         not_found: '找不到这场宠物对决。',
-        not_participant: '只有挑战方或指定对手才能取消/拒绝本场挑战！',
+        not_participant: '只有挑战方（或指定对手）才能撤回/拒绝本场挑战！',
         already_resolved: '这场对决已经结束啦！',
-        expired: '这场对决已经超时过期。',
+        expired: '这场对决已经超时过期（冻结赌注已退还）。',
       };
       await interaction.reply({
         embeds: [createErrorEmbed('❌ 无法取消', msgMap[res.reason])],
         flags: MessageFlags.Ephemeral,
       });
+      const latest = ctx.services.socialPet.getPetBattle(targetId);
+      if (latest && latest.status !== 'pending') {
+        const cPet = ctx.services.socialPet.getPetById(latest.challengerPetId);
+        const oPet = latest.opponentPetId
+          ? ctx.services.socialPet.getPetById(latest.opponentPetId)
+          : null;
+        await interaction.message
+          .edit(buildPetBattleCard(latest, cPet, oPet, cfg.economy))
+          .catch(() => undefined);
+      }
     }
   }
 }
