@@ -137,10 +137,14 @@ export async function sendPublicBroadcast(
   interaction: MenuSupportedInteraction,
   payload: MessageCreateOptions,
 ): Promise<{ sent: boolean; messageId: string | null }> {
+  const safePayload: MessageCreateOptions = {
+    allowedMentions: { parse: [] },
+    ...payload,
+  };
   try {
     const direct = interaction.channel;
     if (direct && direct.isSendable()) {
-      const m = await direct.send(payload);
+      const m = await direct.send(safePayload);
       return { sent: true, messageId: m.id };
     }
     if (interaction.channelId && interaction.client?.channels) {
@@ -148,7 +152,7 @@ export async function sendPublicBroadcast(
         .fetch(interaction.channelId)
         .catch(() => null);
       if (fetched && fetched.isSendable()) {
-        const m = await fetched.send(payload);
+        const m = await fetched.send(safePayload);
         return { sent: true, messageId: m.id };
       }
     }

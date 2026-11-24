@@ -49,6 +49,7 @@ export const robCommand: CommandDefinition = {
         target_too_poor: `<@${target.id}> 钱包太干净了（不足 100 ${cfg.currencyName}），放过 TA 吧。`,
       };
       await interaction.reply({
+        allowedMentions: { parse: [] },
         embeds: [createErrorEmbed('❌ 打劫未执行', msgMap[res.reason])],
       });
       return;
@@ -56,6 +57,7 @@ export const robCommand: CommandDefinition = {
 
     if (res.success) {
       await interaction.reply({
+        allowedMentions: { parse: [] },
         embeds: [
           createSuccessEmbed(
             '🥷 打劫得手！',
@@ -70,6 +72,7 @@ export const robCommand: CommandDefinition = {
     }
 
     await interaction.reply({
+      allowedMentions: { parse: [] },
       embeds: [
         createErrorEmbed(
           '🚨 打劫翻车被抓现行！',

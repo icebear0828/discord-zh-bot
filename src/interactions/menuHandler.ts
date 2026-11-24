@@ -255,10 +255,14 @@ async function sendPublicBroadcast(
   interaction: MenuSupportedInteraction,
   payload: MessageCreateOptions,
 ): Promise<boolean> {
+  const safePayload: MessageCreateOptions = {
+    allowedMentions: { parse: [] },
+    ...payload,
+  };
   try {
     const direct = interaction.channel;
     if (direct && direct.isSendable()) {
-      await direct.send(payload);
+      await direct.send(safePayload);
       return true;
     }
     if (interaction.channelId) {
@@ -266,7 +270,7 @@ async function sendPublicBroadcast(
         .fetch(interaction.channelId)
         .catch(() => null);
       if (fetched && fetched.isSendable()) {
-        await fetched.send(payload);
+        await fetched.send(safePayload);
         return true;
       }
     }
@@ -1616,11 +1620,16 @@ export async function handleMenuUserSelect(
       return;
     }
 
+    const targetName = targetUser?.displayName ?? '群友';
+    const hasBounty = Boolean(res.success && res.bountyClaimed && res.bountyClaimed > 0);
     const broadcastSent = await sendPublicBroadcast(
       interaction,
       res.success
         ? {
-            content: `🥷 <@${actor.id}> 抢了 <@${targetId}> **${res.amount}** ${cfg.currencyName}！${res.bountyClaimed ? `顺手领走通缉赏金 **+${res.bountyClaimed}**！` : ''}`,
+            allowedMentions: hasBounty ? { users: [targetId] } : { parse: [] },
+            content: hasBounty
+              ? `🥷 <@${actor.id}> 抢了 <@${targetId}> **${res.amount}** ${cfg.currencyName}！顺手领走通缉赏金 **+${res.bountyClaimed}**！`
+              : `🥷 **${actor.displayName}** 抢了 **${targetName}** **${res.amount}** ${cfg.currencyName}！`,
             embeds: [
               createSuccessEmbed(
                 '🥷 频道快报：抢钱得手！',
@@ -1636,9 +1645,10 @@ export async function handleMenuUserSelect(
             ],
           }
         : {
+            allowedMentions: { parse: [] },
             content: res.trapped
-              ? `🪤 <@${actor.id}> 偷 <@${targetId}> 时一脚踩中防盗捕兽夹，双倍赔了 **${res.amount}** ${cfg.currencyName}！`
-              : `🚨 <@${actor.id}> 抢 <@${targetId}> 翻车被抓，反赔了 **${res.amount}** ${cfg.currencyName}！`,
+              ? `🪤 **${actor.displayName}** 偷 **${targetName}** 时一脚踩中防盗捕兽夹，双倍赔了 **${res.amount}** ${cfg.currencyName}！`
+              : `🚨 **${actor.displayName}** 抢 **${targetName}** 翻车被抓，反赔了 **${res.amount}** ${cfg.currencyName}！`,
             embeds: [
               createErrorEmbed(
                 res.trapped ? '🪤 频道快报：捕兽夹反抓小偷！' : '🚨 频道快报：抢钱翻车现场！',

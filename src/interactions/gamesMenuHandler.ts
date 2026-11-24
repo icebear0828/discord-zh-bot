@@ -1534,6 +1534,7 @@ export async function tryHandleGamesMenuUserSelect(
     }
 
     const broadcast = await sendPublicBroadcast(interaction, {
+      allowedMentions: { users: [targetId] },
       content:
         relType === 'marriage'
           ? `💍 <@${actor.id}> 当众单膝跪地向 <@${targetId}> 求婚啦！快来看 TA 答不答应！`
@@ -1763,6 +1764,7 @@ export async function tryHandleGamesMenuModal(
     }
 
     await sendPublicBroadcast(interaction, {
+      allowedMentions: { users: [targetId] },
       content: `🎯 全服通缉令！<@${actor.id}> 出资 **${amount}** ${cfg.currencyName} 悬赏 <@${targetId}>（累计赏金池 **${res.totalTargetBounty}** ${cfg.currencyName}）！偷赢或决斗击败即可领走！`,
       embeds: [
         createSuccessEmbed(
@@ -2133,6 +2135,7 @@ export async function tryHandleGamesMenuModal(
     }
 
     const broadcast = await sendPublicBroadcast(interaction, {
+      allowedMentions: opponentId ? { users: [opponentId] } : { parse: [] },
       content: opponentId
         ? `🏟️ <@${actor.id}> 派出了 **${res.challengerPet.nickname}**，向 <@${opponentId}> 发起宠物决斗（赌注 **${bet}** ${cfg.currencyName}）！`
         : `🏟️ <@${actor.id}> 携爱宠 **${res.challengerPet.nickname}** 在频道公开摆下擂台（赌注 **${bet}** ${cfg.currencyName}），谁敢来战？`,

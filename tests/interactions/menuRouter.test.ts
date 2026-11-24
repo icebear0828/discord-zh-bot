@@ -112,6 +112,7 @@ function makeMockUser(input: MockUserInput) {
 
 interface MockPayload {
   content?: string;
+  allowedMentions?: { parse?: string[]; users?: string[] };
   embeds?: ReadonlyArray<{ toJSON(): APIEmbed }>;
   components?: ReadonlyArray<{
     toJSON(): APIActionRowComponent<APIMessageActionRowComponent>;
@@ -684,7 +685,7 @@ describe('menu router & multiplayer interaction flows', () => {
     await routeInteraction(robSelf.interaction, ctx);
     expect(robSelf.update.mock.calls[0]![0].embeds?.[0]?.toJSON().description).toContain('不能打劫自己');
 
-    // Valid rob executes & sends public content with mentions + amount + embed
+    // Valid rob executes & sends public broadcast WITHOUT pinging members
     const robTarget = createUserSelectMock({
       customId: 'menu:user:rob',
       userId: 'attacker',
@@ -694,8 +695,11 @@ describe('menu router & multiplayer interaction flows', () => {
     expect(robTarget.update).toHaveBeenCalledTimes(1);
     expect(robTarget.channel!.send).toHaveBeenCalledTimes(1);
     const robBroadcast = robTarget.channel!.send.mock.calls[0]![0];
-    expect(robBroadcast.content).toContain('<@attacker>');
-    expect(robBroadcast.content).toContain('<@victim>');
+    expect(robBroadcast.allowedMentions).toEqual({ parse: [] });
+    expect(robBroadcast.content).not.toContain('<@attacker>');
+    expect(robBroadcast.content).not.toContain('<@victim>');
+    expect(robBroadcast.content).toContain('User-attacker');
+    expect(robBroadcast.content).toContain('User-victim');
     expect(robBroadcast.embeds?.[0]?.toJSON().title).toMatch(/抢钱/);
 
     // Fallback channel fetch works when interaction.channel is null
@@ -1550,6 +1554,7 @@ describe('menu router & multiplayer interaction flows', () => {
     });
     await routeInteraction(bountySub.interaction, ctx);
     expect(ctx.services.chaos.getOpenBountyTotal('g1', 'u2')).toBe(600);
+    expect(bountySub.channel.send.mock.calls[0]![0].allowedMentions).toEqual({ users: ['u2'] });
 
     const robSelect = createUserSelectMock({
       customId: 'menu:user:rob',
@@ -1558,6 +1563,7 @@ describe('menu router & multiplayer interaction flows', () => {
     });
     await routeInteraction(robSelect.interaction, ctx);
     expect(ctx.services.chaos.getOpenBountyTotal('g1', 'u2')).toBe(0);
+    expect(robSelect.channel.send.mock.calls[0]![0].allowedMentions).toEqual({ users: ['u2'] });
     expect(robSelect.channel.send.mock.calls[0]![0].content).toContain('600');
 
     // Roulette create & ch:rl:join/start
