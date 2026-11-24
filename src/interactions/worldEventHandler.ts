@@ -8,6 +8,7 @@ import {
   type ModalSubmitInteraction,
   type StringSelectMenuInteraction,
 } from 'discord.js';
+import { PREDICTION_MAX_BET } from '../config/economyConstants.js';
 import type { BossAttackMode } from '../services/worldEventService.js';
 import { createErrorEmbed, createInfoEmbed, createSuccessEmbed, type AppContext } from '../ui/embeds.js';
 import { truncateText } from '../ui/menuShared.js';
@@ -15,25 +16,26 @@ import {
   buildPredictionCard,
   buildWorldBossCard,
   buildWorldChestCard,
+  formatBossAttackLog,
 } from '../ui/worldEventMenuBuilder.js';
 import {
   editChannelMessage,
   isInteractionAdmin,
   parsePositiveInt,
-  sendPublicBroadcast,
 } from './menuHelpers.js';
 
 export function buildPredictionBetModal(
   customId: string,
   optionLabel: string,
+  currencyName = '星币',
 ): ModalBuilder {
   const input = new TextInputBuilder()
     .setCustomId('amount')
-    .setLabel(truncateText(`押注「${optionLabel.slice(0, 20)}」的金额（正整数）`, 45))
+    .setLabel(truncateText(`押注「${optionLabel.slice(0, 16)}」金额 (${currencyName})`, 45))
     .setStyle(TextInputStyle.Short)
     .setMinLength(1)
     .setMaxLength(12)
-    .setPlaceholder('例如：500')
+    .setPlaceholder(`1 ~ ${PREDICTION_MAX_BET.toLocaleString()}`)
     .setRequired(true);
 
   return new ModalBuilder()
@@ -74,7 +76,7 @@ export async function handleWorldEventButton(
         summary.prediction.closesAt <= Date.now()
       ) {
         if (summary && summary.prediction.status === 'open' && summary.prediction.closesAt <= Date.now()) {
-          ctx.services.worldEvent.autoLockDuePredictions();
+          ctx.services.worldEvent.lockPredictionIfDue(predId);
         }
         await interaction.reply({
           embeds: [createErrorEmbed('🔒 无法下注', '该吃瓜盘口已封盘或已结束！')],
@@ -89,17 +91,36 @@ export async function handleWorldEventButton(
         return;
       }
 
+      if (summary.prediction.creatorId === interaction.user.id) {
+        await interaction.reply({
+          embeds: [createErrorEmbed('❌ 无法下注', '开盘人不能押注自己发起的盘口，以保证公平！')],
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
       const optLabel = summary.prediction.options[optIdx];
       if (!optLabel) return;
 
       await interaction.showModal(
-        buildPredictionBetModal(`ev:pred_bet_sub:${predId}:${optIdx}`, optLabel),
+        buildPredictionBetModal(
+          `ev:pred_bet_sub:${predId}:${optIdx}`,
+          optLabel,
+          cfg.economy.currencyName,
+        ),
       );
       return;
     }
 
     if (action === 'refresh') {
-      ctx.services.worldEvent.autoLockDuePredictions();
+      if (!cfg.modules.worldEvents) {
+        await interaction.reply({
+          embeds: [createErrorEmbed('🚫 模块未开启', '当前服务器已关闭吃瓜与世界事件模块。')],
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+      ctx.services.worldEvent.lockPredictionIfDue(predId);
       const summary = ctx.services.worldEvent.getPredictionSummary(predId);
       if (!summary) {
         await interaction.reply({
@@ -113,6 +134,13 @@ export async function handleWorldEventButton(
     }
 
     if (action === 'lock') {
+      if (!cfg.modules.worldEvents || !cfg.modules.economy) {
+        await interaction.reply({
+          embeds: [createErrorEmbed('🚫 模块未开启', '当前服务器已关闭吃瓜与世界事件或经济系统。')],
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
       const isAdmin = isInteractionAdmin(interaction, ctx, guildId);
       const res = ctx.services.worldEvent.lockPrediction(predId, interaction.user.id, isAdmin);
       if (!res.ok) {
@@ -134,6 +162,13 @@ export async function handleWorldEventButton(
     }
 
     if (action === 'cancel') {
+      if (!cfg.modules.worldEvents || !cfg.modules.economy) {
+        await interaction.reply({
+          embeds: [createErrorEmbed('🚫 模块未开启', '当前服务器已关闭吃瓜与世界事件或经济系统。')],
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
       const isAdmin = isInteractionAdmin(interaction, ctx, guildId);
       const res = ctx.services.worldEvent.cancelPrediction(predId, interaction.user.id, isAdmin);
       if (!res.ok) {
@@ -178,7 +213,7 @@ export async function handleWorldEventButton(
         embeds: [
           createSuccessEmbed(
             '🎁 开箱成功！',
-            `你从「${res.event.name}」抢到了 ${cfg.economy.currencyEmoji} **+${res.amount}** ${cfg.economy.currencyName}！\n当前现金：**${res.balance}**`,
+            `你从「${res.event.name}」抢到了 ${cfg.economy.currencyEmoji} **+${res.amount}** ${cfg.economy.currencyName}！\n当前现金：**${res.balance}** ${cfg.economy.currencyName}`,
           ),
         ],
         flags: MessageFlags.Ephemeral,
@@ -187,7 +222,7 @@ export async function handleWorldEventButton(
     }
 
     if (res.reason === 'expired') {
-      ctx.services.worldEvent.expireDueWorldEvents();
+      ctx.services.worldEvent.expireWorldEventIfDue(eventId);
     }
 
     const msgMap: Record<typeof res.reason, string> = {
@@ -230,7 +265,7 @@ export async function handleWorldEventButton(
     const res = ctx.services.worldEvent.attackBoss(eventId, interaction.user.id, mode);
     if (!res.ok) {
       if (res.reason === 'expired') {
-        ctx.services.worldEvent.expireDueWorldEvents();
+        ctx.services.worldEvent.expireWorldEventIfDue(eventId);
       }
       const msgMap: Record<typeof res.reason, string> = {
         not_found: '找不到这个世界 Boss。',
@@ -255,31 +290,23 @@ export async function handleWorldEventButton(
       return;
     }
 
-    const logText = res.missed
-      ? `<@${interaction.user.id}> 蓄力重击挥空了！（0 伤害）`
-      : `<@${interaction.user.id}> ${mode === 'heavy' ? '蓄力重击' : '普通攻击'}${res.crit ? '💥暴击' : ''}造成了 **${res.damage}** 伤害！${res.petName ? `（🐾${res.petName}助战+${res.petBonus}）` : ''}`;
-
+    const logText = formatBossAttackLog(interaction.user.id, mode, res, cfg.economy);
     await interaction.update(
       buildWorldBossCard(res.event, res.participants, cfg.economy, logText, res.rewards),
     );
 
+    const mvpBonus = Math.floor(res.event.rewardPool * 0.25);
     await interaction.followUp({
       embeds: [
         res.missed
           ? createInfoEmbed('💨 蓄力重击空大了！', '差一点就命中了，等冷却结束再来一击！')
           : createSuccessEmbed(
               res.crit ? '💥 暴击命中！' : '⚔️ 攻击命中！',
-              `造成 **${res.damage}** 点伤害${res.petName ? `（含出战宠物「${res.petName}」助战 +${res.petBonus}）` : ''}！${res.killed ? '\n🏆 **恭喜你拿下尾刀绝杀！**' : ''}`,
+              `造成 **${res.damage}** 点伤害${res.petName ? `（含出战宠物「${res.petName}」助战 +${res.petBonus}）` : ''}！${res.killed ? `\n🏆 **恭喜你拿下尾刀绝杀！额外获得 25% 尾刀奖 +${mvpBonus} ${cfg.economy.currencyName}！**` : ''}`,
             ),
       ],
       flags: MessageFlags.Ephemeral,
     });
-
-    if (res.killed) {
-      await sendPublicBroadcast(interaction, {
-        content: `🏆 全群讨伐成功！<@${interaction.user.id}> 一记绝杀击倒了 **${res.event.name}**，拿下尾刀大奖！`,
-      });
-    }
   }
 }
 
@@ -297,6 +324,14 @@ export async function handleWorldEventStringSelect(
   const winningOption = Number(interaction.values[0]);
   if (!Number.isInteger(predId) || !Number.isInteger(winningOption)) return;
 
+  if (!cfg.modules.worldEvents || !cfg.modules.economy) {
+    await interaction.reply({
+      embeds: [createErrorEmbed('🚫 模块未开启', '当前服务器已关闭吃瓜与世界事件或经济系统。')],
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
   const isAdmin = isInteractionAdmin(interaction, ctx, guildId);
   const res = ctx.services.worldEvent.settlePrediction(
     predId,
@@ -308,6 +343,7 @@ export async function handleWorldEventStringSelect(
     const msgMap: Record<typeof res.reason, string> = {
       not_found: '找不到该盘口。',
       no_permission: '只有开盘人或 Bot 管理员才能公布结果并结算！',
+      not_locked: '请先封盘（锁定押注）后再公布胜出结果并结算！',
       invalid_status: '该盘口已结算或已作废。',
       invalid_option: '无效的胜出选项。',
     };
@@ -324,9 +360,6 @@ export async function handleWorldEventStringSelect(
     : `🏆 胜方：**${winLabel}** ｜ 奖池 **${res.totalPool}** ${cfg.economy.currencyName} 已派发给 **${res.payouts.length}** 位赢家！`;
 
   await interaction.update(buildPredictionCard(res.summary, cfg.economy, note));
-  await sendPublicBroadcast(interaction, {
-    content: `📊 吃瓜盘口 **#${predId}「${res.summary.prediction.title}」** 已结算！${note}`,
-  });
 }
 
 export async function handleWorldEventModal(
@@ -355,7 +388,12 @@ export async function handleWorldEventModal(
   const amount = parsePositiveInt(interaction.fields.getTextInputValue('amount'));
   if (!amount) {
     await interaction.reply({
-      embeds: [createErrorEmbed('❌ 金额无效', '下注金额必须是大于 0 的正整数。')],
+      embeds: [
+        createErrorEmbed(
+          '❌ 金额无效',
+          `下注金额必须是 1 ~ ${PREDICTION_MAX_BET.toLocaleString()} ${cfg.economy.currencyName} 的正整数。`,
+        ),
+      ],
       flags: MessageFlags.Ephemeral,
     });
     return;
@@ -369,12 +407,25 @@ export async function handleWorldEventModal(
   });
 
   if (!res.ok) {
+    if (res.reason === 'closed' || res.reason === 'not_open') {
+      const latest = ctx.services.worldEvent.getPredictionSummary(predId);
+      if (latest) {
+        await editChannelMessage(
+          interaction.client,
+          latest.prediction.channelId,
+          latest.prediction.messageId,
+          buildPredictionCard(latest, cfg.economy),
+          interaction.guild,
+        );
+      }
+    }
     const msgMap: Record<typeof res.reason, string> = {
       not_found: '找不到该吃瓜盘口。',
       not_open: '盘口已封盘或已结算，无法继续押注。',
       closed: '盘口已经到封盘时间啦！',
+      creator_cannot_bet: '开盘人不能押注自己发起的盘口，以保证公平！',
       invalid_option: '选项无效。',
-      invalid_amount: '下注金额无效。',
+      invalid_amount: `下注金额必须为 1 ~ ${PREDICTION_MAX_BET.toLocaleString()} ${cfg.economy.currencyName}。`,
       insufficient_funds: `你的口袋现金不足以押注 **${amount}** ${cfg.economy.currencyName}。`,
       deadbeat_blocked: '你当前有逾期未还贷款，已被列入失信名单，还清逾期欠款前禁止参与吃瓜押注！',
     };
@@ -393,7 +444,7 @@ export async function handleWorldEventModal(
       embeds: [
         createSuccessEmbed(
           '✅ 下注成功！',
-          `已在盘口 #${predId} 押注「**${optName}**」${cfg.economy.currencyEmoji} **${res.betAmount}** ${cfg.economy.currencyName}，剩余现金：**${res.balance}**。`,
+          `已在盘口 #${predId} 押注「**${optName}**」${cfg.economy.currencyEmoji} **${res.betAmount}** ${cfg.economy.currencyName}，剩余现金：**${res.balance}** ${cfg.economy.currencyName}。`,
         ),
       ],
       flags: MessageFlags.Ephemeral,
@@ -410,7 +461,7 @@ export async function handleWorldEventModal(
       embeds: [
         createSuccessEmbed(
           '✅ 下注成功！',
-          `已在盘口 #${predId} 押注「**${optName}**」${cfg.economy.currencyEmoji} **${res.betAmount}** ${cfg.economy.currencyName}，剩余现金：**${res.balance}**。`,
+          `已在盘口 #${predId} 押注「**${optName}**」${cfg.economy.currencyEmoji} **${res.betAmount}** ${cfg.economy.currencyName}，剩余现金：**${res.balance}** ${cfg.economy.currencyName}。`,
         ),
       ],
       flags: MessageFlags.Ephemeral,

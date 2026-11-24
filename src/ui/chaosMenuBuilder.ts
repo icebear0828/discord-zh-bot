@@ -7,6 +7,10 @@ import {
   UserSelectMenuBuilder,
 } from 'discord.js';
 import type { EconomyConfig } from '../config/defaults.js';
+import {
+  DUEL_BOUNTY_MIN_BET,
+  DUEL_BOUNTY_MIN_BET_RATIO,
+} from '../config/economyConstants.js';
 import type { NumberBombGame, RouletteGame } from '../db/repositories/chaosRepo.js';
 import {
   getPropPrice,
@@ -27,6 +31,24 @@ import {
   type MenuComponentRow,
   type MenuFeedback,
 } from './menuShared.js';
+
+export function parseBombPayoutsJson(raw: string): BombPayout[] {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    const list: BombPayout[] = [];
+    for (const item of parsed) {
+      if (typeof item !== 'object' || item === null || Array.isArray(item)) continue;
+      const obj = item as Record<string, unknown>;
+      if (typeof obj.userId === 'string' && typeof obj.amount === 'number') {
+        list.push({ userId: obj.userId, amount: obj.amount });
+      }
+    }
+    return list;
+  } catch {
+    return [];
+  }
+}
 
 export function buildPropsView(
   ctx: AppContext,
@@ -49,13 +71,13 @@ export function buildPropsView(
 
   const activeStatusLines: string[] = [];
   if (effects.some((e) => e.effectKey === 'trap_armed')) {
-    activeStatusLines.push('🪤 **捕兽夹已部署**：下位小偷将踩坑双倍赔款');
+    activeStatusLines.push('🪤 **捕兽夹已部署**：24h 内反抓下位小偷双倍赔款');
   }
   if (effects.some((e) => e.effectKey === 'lockpick_ready')) {
-    activeStatusLines.push('🗝️ **万能撬锁已就绪**：下次打劫成功率 +25%');
+    activeStatusLines.push('🗝️ **万能撬锁已就绪**：下次口袋打劫 +25% / 抢银行 +10%');
   }
   if (effects.some((e) => e.effectKey === 'work_cursed')) {
-    activeStatusLines.push('🧿 **衰神附体中**：下次打工收益减半');
+    activeStatusLines.push('🧿 **衰神附体中**：48h 内下次打工收益减半');
   }
   if (profile.robShieldUntil > nowMs) {
     activeStatusLines.push(`🛡️ **防盗护盾**：剩余 ${formatDurationZh(profile.robShieldUntil - nowMs)}`);
@@ -80,7 +102,7 @@ export function buildPropsView(
     .setAuthor({ name: `${actor.displayName} · 黑市攻防道具`, iconURL: actor.avatarUrl })
     .setTitle('🧰 黑市整蛊与攻防道具')
     .setDescription(withFeedback(description, feedback))
-    .setFooter({ text: '🔒 购买与自用仅自己可见；对群友使用衰神符/改昵称卡将在频道公开播报' })
+    .setFooter({ text: '🔒 购买与自用仅自己可见；同类效果生效中不可重复覆盖消耗' })
     .setTimestamp();
 
   const buySelectRow = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
@@ -118,7 +140,12 @@ export function buildPropsView(
   const curseRow = new ActionRowBuilder<UserSelectMenuBuilder>().addComponents(
     new UserSelectMenuBuilder()
       .setCustomId('menu:user:prop_curse')
-      .setPlaceholder(`🧿 选择群友贴「衰神符」(持有 ${curseQty} 个)...`)
+      .setPlaceholder(
+        curseQty > 0
+          ? `🧿 选择群友贴「衰神符」(持有 ${curseQty} 个，48h 有效)...`
+          : '🧿 暂无「衰神符」库存（请先在上方购买）',
+      )
+      .setDisabled(curseQty <= 0)
       .setMinValues(1)
       .setMaxValues(1),
   );
@@ -126,7 +153,12 @@ export function buildPropsView(
   const nickRow = new ActionRowBuilder<UserSelectMenuBuilder>().addComponents(
     new UserSelectMenuBuilder()
       .setCustomId('menu:user:prop_nick')
-      .setPlaceholder(`🎭 选择群友用「改昵称卡」(持有 ${nickQty} 张)...`)
+      .setPlaceholder(
+        nickQty > 0
+          ? `🎭 选择群友用「改昵称卡」(持有 ${nickQty} 张)...`
+          : '🎭 暂无「改昵称卡」库存（请先在上方购买）',
+      )
+      .setDisabled(nickQty <= 0)
       .setMinValues(1)
       .setMaxValues(1),
   );
@@ -166,10 +198,10 @@ export function buildBountyView(
   const description = [
     `${cfg.economy.currencyEmoji} 口袋现金：**${profile.coins}** ${cfg.economy.currencyName} ｜ 最低悬赏：**${cfg.games.bountyMinAmount}** ${cfg.economy.currencyName}`,
     ownBounty > 0
-      ? `🚨 **你当前被悬赏**：**${ownBounty}** ${cfg.economy.currencyName}（花 **${clearCost}** 可自费撤单）`
+      ? `🚨 **你当前被悬赏**：**${ownBounty}** ${cfg.economy.currencyName}（花 **${clearCost}** ${cfg.economy.currencyName} 可自费撤单）`
       : '✅ 你当前清白无悬赏在身',
     '',
-    '📜 **规则**：多人可叠加悬赏同一人；任何人对该目标**偷钱成功**或**骰子决斗获胜**，立即独吞全额赏金池！',
+    `📜 **规则**：多人可叠加悬赏同一人；对该目标**偷钱成功**或**骰子决斗获胜**（决斗赌注需 >= 赏金池 ${Math.round(DUEL_BOUNTY_MIN_BET_RATIO * 100)}% 且至少 ${DUEL_BOUNTY_MIN_BET} ${cfg.economy.currencyName}），立即独吞全额赏金池！`,
     '',
     '🎯 **当前通缉榜：**',
     ...boardLines,
@@ -222,7 +254,7 @@ export function buildRouletteView(
     games.length > 0
       ? games.map((g) => {
           const tag = g.status === 'recruiting' ? '🟡 招募中' : '🔴 激战中';
-          return `• **#${g.id}** [${tag}] 房主 <@${g.hostId}>｜入场 **${g.entryFee}**｜人数 **${g.players.length}/${g.maxPlayers}**`;
+          return `• **#${g.id}** [${tag}] 房主 <@${g.hostId}>｜入场 **${g.entryFee}** ${cfg.currencyName}｜人数 **${g.players.length}/${g.maxPlayers}**`;
         })
       : ['当前暂无进行中的轮盘房间，点下方按钮立即在频道开一桌！'];
 
@@ -270,9 +302,9 @@ export function buildRouletteView(
 
   components.push(
     buttonRow(
-      makeButton('menu:roulette:new:100', '🔫 开100币局', ButtonStyle.Danger),
-      makeButton('menu:roulette:new:300', '🔫 开300币局', ButtonStyle.Danger),
-      makeButton('menu:roulette:new:500', '🔫 开500币局', ButtonStyle.Danger),
+      makeButton('menu:roulette:new:100', `🔫 开100${cfg.currencyName}局`, ButtonStyle.Danger),
+      makeButton('menu:roulette:new:300', `🔫 开300${cfg.currencyName}局`, ButtonStyle.Danger),
+      makeButton('menu:roulette:new:500', `🔫 开500${cfg.currencyName}局`, ButtonStyle.Danger),
       makeButton('menu:modal:roulette', '⌨️ 自定义建房', ButtonStyle.Secondary),
     ),
   );
@@ -302,14 +334,14 @@ export function buildBombView(
     bombs.length > 0
       ? bombs.map(
           (b) =>
-            `• **#${b.id}** 范围 **[${b.minBound} ~ ${b.maxBound}]**｜踩雷罚金 **${b.penalty}**｜存活参与者 **${b.participants.length}** 人`,
+            `• **#${b.id}** 范围 **[${b.minBound} ~ ${b.maxBound}]**｜踩雷罚金 **${b.penalty}** ${cfg.currencyName}｜存活参与者 **${b.participants.length}** 人`,
         )
       : ['当前暂无进行中的数字炸弹，点下方按钮立即向频道丢一颗！'];
 
   const description = [
     `${cfg.currencyEmoji} 口袋现金：**${profile.coins}** ${cfg.currencyName}`,
     '',
-    '💣 **规则**：系统在 2~99 埋下一颗炸弹，群友在频道自由抢猜缩小区间（不可连猜，需现金 >= 罚金）。谁猜中雷谁掏罚金，**平分给本局其他所有存活参与者**！',
+    '💣 **规则**：系统在 **1~100**（含边界）埋下一颗炸弹，群友在频道自由抢猜缩小区间（不可连猜，需现金 >= 罚金）。谁猜中雷谁掏罚金，**平分给本局其他所有安全存活参与者**！',
     '',
     '**进行中的炸弹：**',
     ...bombLines,
@@ -336,7 +368,7 @@ export function buildBombView(
               new StringSelectMenuOptionBuilder()
                 .setLabel(
                   truncateText(
-                    `#${b.id} 范围 [${b.minBound}~${b.maxBound}] (罚金 ${b.penalty})`,
+                    `#${b.id} 范围 [${b.minBound}~${b.maxBound}] (罚金 ${b.penalty} ${cfg.currencyName})`,
                     100,
                   ),
                 )
@@ -350,9 +382,9 @@ export function buildBombView(
 
   components.push(
     buttonRow(
-      makeButton('menu:bomb:new:100', '💣 100币炸弹', ButtonStyle.Danger),
-      makeButton('menu:bomb:new:300', '💣 300币炸弹', ButtonStyle.Danger),
-      makeButton('menu:bomb:new:500', '💣 500币炸弹', ButtonStyle.Danger),
+      makeButton('menu:bomb:new:100', `💣 100${cfg.currencyName}炸弹`, ButtonStyle.Danger),
+      makeButton('menu:bomb:new:300', `💣 300${cfg.currencyName}炸弹`, ButtonStyle.Danger),
+      makeButton('menu:bomb:new:500', `💣 500${cfg.currencyName}炸弹`, ButtonStyle.Danger),
       makeButton('menu:modal:bomb', '⌨️ 自定义罚金', ButtonStyle.Secondary),
     ),
   );
@@ -395,6 +427,7 @@ export function buildRouletteCard(
             `⏳ 招募截止：<t:${deadlineUnix}:R>`,
             '',
             '至少 **2 人**即可由房主开局！2~6人吃鸡，最后幸存者独吞总奖池！',
+            '⚠️ 普通成员退出自动退币；房主退出即散桌（建议使用「取消散桌」按钮）。',
           ].join('\n'),
           4096,
         ),
@@ -407,7 +440,7 @@ export function buildRouletteCard(
       components: [
         buttonRow(
           makeButton(`ch:rl:join:${game.id}`, '🪑 交钱上桌', ButtonStyle.Success),
-          makeButton(`ch:rl:leave:${game.id}`, '🚪 退出退币', ButtonStyle.Secondary),
+          makeButton(`ch:rl:leave:${game.id}`, '🚪 退出退币（房主退出即散桌）', ButtonStyle.Secondary),
           makeButton(`ch:rl:start:${game.id}`, '🔥 房主开局', ButtonStyle.Danger),
           makeButton(`ch:rl:cancel:${game.id}`, '❌ 取消散桌', ButtonStyle.Secondary),
         ),
@@ -497,14 +530,17 @@ export function buildNumberBombCard(
 
   if (game.status === 'open') {
     const expUnix = Math.floor(game.expiresAt / 1000);
+    const isFinalNumber = game.minBound === game.maxBound;
     const embed = new EmbedBuilder()
-      .setColor(COLORS.PRIMARY)
-      .setTitle(`💣 频道数字炸弹 #${game.id}`)
+      .setColor(isFinalNumber ? COLORS.ERROR : COLORS.PRIMARY)
+      .setTitle(`💣 频道数字炸弹 #${game.id}${isFinalNumber ? '（⚠️ 仅剩最后一数！）' : ''}`)
       .setDescription(
         truncateText(
           [
             `发起人：<@${game.hostId}> ｜ 踩雷罚金：${economyCfg.currencyEmoji} **${game.penalty}** ${economyCfg.currencyName}`,
-            `🎯 当前安全区间：**[ ${game.minBound} ~ ${game.maxBound} ]**`,
+            isFinalNumber
+              ? `🚨 **绝杀警报：安全区间仅剩唯一数字【${game.minBound}】，下一猜必爆！**`
+              : `🎯 当前安全区间：**[ ${game.minBound} ~ ${game.maxBound} ]**`,
             `👥 已安全逃生（待分红）：**${game.participants.length}** 人 ｜ ⏳ <t:${expUnix}:R> 过期`,
             ...(historyLines.length > 0 ? ['', '**最近猜数：**', ...historyLines] : []),
           ].join('\n'),
@@ -520,7 +556,9 @@ export function buildNumberBombCard(
         buttonRow(
           makeButton(
             `ch:bomb:guess:${game.id}`,
-            `💣 抢猜数字 (${game.minBound}~${game.maxBound})`,
+            isFinalNumber
+              ? `💥 认命踩雷 (${game.minBound})`
+              : `💣 抢猜数字 (${game.minBound}~${game.maxBound})`,
             ButtonStyle.Danger,
           ),
         ),
@@ -529,9 +567,13 @@ export function buildNumberBombCard(
   }
 
   if (game.status === 'exploded') {
+    const resolvedPayouts =
+      payouts !== undefined ? payouts : parseBombPayoutsJson(game.payoutsJson);
     const payoutLines =
-      payouts && payouts.length > 0
-        ? payouts.map((p) => `• <@${p.userId}> 分得 **+${p.amount}** ${economyCfg.currencyName}`)
+      resolvedPayouts.length > 0
+        ? resolvedPayouts.map(
+            (p) => `• <@${p.userId}> 分得 **+${p.amount}** ${economyCfg.currencyName}`,
+          )
         : ['• 无其他存活分红者，罚金已由系统没收'];
     const embed = new EmbedBuilder()
       .setColor(COLORS.ERROR)

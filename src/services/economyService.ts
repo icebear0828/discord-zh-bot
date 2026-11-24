@@ -1,4 +1,38 @@
 import type Database from 'better-sqlite3';
+import {
+  BANK_ROB_ATTACKER_MIN_ASSETS,
+  BANK_ROB_FINE_MAX,
+  BANK_ROB_FINE_MIN,
+  BANK_ROB_FINE_RATE,
+  BANK_ROB_LOCKPICK_BONUS,
+  BANK_ROB_LOCKPICK_CAP,
+  BANK_ROB_STEAL_MAX,
+  BANK_ROB_STEAL_MAX_RATE,
+  BANK_ROB_STEAL_MIN,
+  BANK_ROB_STEAL_MIN_RATE,
+  BANK_ROB_TARGET_MIN,
+  BANK_ROB_TRAP_FINE_MAX,
+  BANK_ROB_TRAP_FINE_MIN,
+  BANK_ROB_TRAP_FINE_RATE,
+  DEFAULT_ROB_PROTECTED_KEYWORDS,
+  MAX_SOLO_GAMBLE_BET,
+  ROB_ATTACKER_MIN_ASSETS,
+  ROB_EASTER_EGG_FINE_RATE,
+  ROB_FINE_MAX,
+  ROB_FINE_MIN,
+  ROB_FINE_RATE,
+  ROB_KING_EASTER_EGG_STORIES,
+  ROB_LOCKPICK_BONUS,
+  ROB_LOCKPICK_CAP,
+  ROB_STEAL_MAX_AMOUNT,
+  ROB_STEAL_MAX_RATE,
+  ROB_STEAL_MIN_AMOUNT,
+  ROB_STEAL_MIN_RATE,
+  ROB_TARGET_MIN_COINS,
+  ROB_TRAP_FINE_MAX,
+  ROB_TRAP_FINE_MIN,
+  ROB_TRAP_FINE_RATE,
+} from '../config/economyConstants.js';
 import type { ChaosRepo } from '../db/repositories/chaosRepo.js';
 import type { GuildConfigRepo } from '../db/repositories/guildConfigRepo.js';
 import type { ProfileRepo } from '../db/repositories/profileRepo.js';
@@ -40,20 +74,91 @@ export type WorkResult =
     }
   | { ok: false; reason: 'cooldown'; retryAfterSec: number };
 
+export interface RobTargetHints {
+  displayNames?: readonly string[];
+  roleNames?: readonly string[];
+}
+
+export function matchesRobProtectedTarget(
+  targetProfile: { equippedTitle: string | null; cardNickname: string | null },
+  targetHints?: RobTargetHints,
+  keywords: readonly string[] = DEFAULT_ROB_PROTECTED_KEYWORDS,
+): boolean {
+  const loweredKeywords = keywords
+    .map((kw) => kw.trim().toLowerCase())
+    .filter((kw) => kw.length > 0);
+  if (loweredKeywords.length === 0) return false;
+
+  const candidates: string[] = [];
+  if (targetProfile.equippedTitle) candidates.push(targetProfile.equippedTitle);
+  if (targetProfile.cardNickname) candidates.push(targetProfile.cardNickname);
+  if (targetHints?.displayNames) {
+    for (const name of targetHints.displayNames) {
+      if (name) candidates.push(name);
+    }
+  }
+  if (targetHints?.roleNames) {
+    for (const roleName of targetHints.roleNames) {
+      if (roleName) candidates.push(roleName);
+    }
+  }
+
+  for (const raw of candidates) {
+    const normalized = raw.toLowerCase();
+    for (const kw of loweredKeywords) {
+      if (normalized.includes(kw)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function renderRobEasterEggStory(
+  attackerId: string,
+  targetId: string,
+  fine: number,
+  currencyName: string,
+  rng: () => number,
+): string {
+  const raw = rng();
+  const r = Number.isFinite(raw) ? Math.min(0.999999, Math.max(0, raw)) : 0;
+  const idx = Math.min(
+    ROB_KING_EASTER_EGG_STORIES.length - 1,
+    Math.floor(r * ROB_KING_EASTER_EGG_STORIES.length),
+  );
+  const template = ROB_KING_EASTER_EGG_STORIES[idx]!;
+  return template
+    .replaceAll('{attacker}', `<@${attackerId}>`)
+    .replaceAll('{target}', `<@${targetId}>`)
+    .replaceAll('{fine}', `**${fine}**`)
+    .replaceAll('{currency}', currencyName);
+}
+
 export type RobResult =
   | {
       ok: true;
       success: boolean;
       amount: number;
       attackerBalance: number;
+      attackerBankBalance?: number;
       targetBalance: number;
+      fineFromPocket?: number;
+      fineFromBank?: number;
       trapped?: boolean;
       usedLockpick?: boolean;
       bountyClaimed?: number;
+      easterEggTriggered?: boolean;
+      easterEggStory?: string;
     }
   | {
       ok: false;
-      reason: 'self_target' | 'cooldown' | 'target_shielded' | 'target_too_poor';
+      reason:
+        | 'self_target'
+        | 'cooldown'
+        | 'target_shielded'
+        | 'target_too_poor'
+        | 'attacker_too_poor';
       retryAfterSec?: number;
     };
 
@@ -70,6 +175,8 @@ export type BankRobResult =
       trapped?: boolean;
       usedLockpick?: boolean;
       bountyClaimed?: number;
+      easterEggTriggered?: boolean;
+      easterEggStory?: string;
     }
   | {
       ok: false;
@@ -109,7 +216,10 @@ export type DiceResult =
       netChange: number;
       balance: number;
     }
-  | { ok: false; reason: 'invalid_bet' | 'insufficient_funds' | 'deadbeat_blocked' };
+  | {
+      ok: false;
+      reason: 'invalid_bet' | 'bet_too_large' | 'insufficient_funds' | 'deadbeat_blocked';
+    };
 
 export type SlotsResult =
   | {
@@ -120,7 +230,10 @@ export type SlotsResult =
       netChange: number;
       balance: number;
     }
-  | { ok: false; reason: 'invalid_bet' | 'insufficient_funds' | 'deadbeat_blocked' };
+  | {
+      ok: false;
+      reason: 'invalid_bet' | 'bet_too_large' | 'insufficient_funds' | 'deadbeat_blocked';
+    };
 
 const WORK_STORIES = [
   '帮管理员整理频道归档',
@@ -287,6 +400,7 @@ export class EconomyService {
     targetId: string,
     nowMs = Date.now(),
     rng: () => number = Math.random,
+    targetHints?: RobTargetHints,
   ): RobResult {
     if (attackerId === targetId) {
       return { ok: false, reason: 'self_target' };
@@ -307,142 +421,54 @@ export class EconomyService {
         };
       }
 
-      if (target.robShieldUntil > nowMs) {
-        return {
-          ok: false,
-          reason: 'target_shielded',
-          retryAfterSec: Math.ceil((target.robShieldUntil - nowMs) / 1000),
-        };
-      }
-
-      if (target.coins < 100) {
-        return { ok: false, reason: 'target_too_poor' };
-      }
-
-      const usedLockpick = Boolean(
-        this.chaosRepo?.consumeEffect(guildId, attackerId, 'lockpick_ready', nowMs),
-      );
-      const trappedEffect = this.chaosRepo?.consumeEffect(guildId, targetId, 'trap_armed', nowMs);
-
-      if (trappedEffect) {
-        const rawTrapFine = Math.max(100, Math.min(1000, Math.floor(attacker.coins * 0.3)));
-        const actualFine = Math.min(rawTrapFine, attacker.coins);
-        const nextAttacker = attacker.coins - actualFine;
-        const nextTarget = target.coins + actualFine;
+      if (matchesRobProtectedTarget(target, targetHints)) {
+        const attackerTotal = attacker.coins + attacker.bankCoins;
+        const rawFine =
+          attackerTotal > 0 ? Math.max(1, Math.floor(attackerTotal * ROB_EASTER_EGG_FINE_RATE)) : 0;
+        const actualFine = Math.min(rawFine, attackerTotal);
+        const fineFromPocket = Math.min(attacker.coins, actualFine);
+        const fineFromBank = actualFine - fineFromPocket;
+        const nextAttackerCoins = attacker.coins - fineFromPocket;
+        const nextAttackerBank = attacker.bankCoins - fineFromBank;
+        const nextTargetCoins = target.coins + actualFine;
 
         this.profileRepo.save({
           ...attacker,
-          coins: nextAttacker,
+          coins: nextAttackerCoins,
+          bankCoins: nextAttackerBank,
           lastRobAt: nowMs,
         });
         this.profileRepo.save({
           ...target,
-          coins: nextTarget,
+          coins: nextTargetCoins,
         });
         this.creditLoanService?.adjustCredit(
           guildId,
           attackerId,
           -10,
-          '偷窃踩捕兽夹信用扣分',
+          '打劫触发王者反噬信用扣分',
           nowMs,
+        );
+
+        const easterEggStory = renderRobEasterEggStory(
+          attackerId,
+          targetId,
+          actualFine,
+          cfg.currencyName,
+          rng,
         );
 
         return {
           ok: true,
           success: false,
           amount: actualFine,
-          attackerBalance: nextAttacker,
-          targetBalance: nextTarget,
-          trapped: true,
-          ...(usedLockpick ? { usedLockpick: true } : {}),
-        };
-      }
-
-      const effectiveRate = usedLockpick
-        ? Math.min(0.85, cfg.robSuccessRate + 0.25)
-        : cfg.robSuccessRate;
-      const succeeded = rng() < effectiveRate;
-      if (succeeded) {
-        const pct = 0.15 + rng() * 0.2;
-        const stolen = Math.max(15, Math.min(1000, Math.floor(target.coins * pct)));
-        const actualStolen = Math.min(stolen, target.coins);
-        const bountyClaimed =
-          this.chaosRepo?.claimOpenBounties(guildId, targetId, attackerId, nowMs) ?? 0;
-        const nextAttacker = attacker.coins + actualStolen + bountyClaimed;
-        const nextTarget = target.coins - actualStolen;
-
-        this.profileRepo.save({
-          ...attacker,
-          coins: nextAttacker,
-          lastRobAt: nowMs,
-        });
-        this.profileRepo.save({
-          ...target,
-          coins: nextTarget,
-          robShieldUntil: nowMs + cfg.robTargetShieldSec * 1000,
-        });
-
-        return {
-          ok: true,
-          success: true,
-          amount: actualStolen,
-          attackerBalance: nextAttacker,
-          targetBalance: nextTarget,
-          ...(usedLockpick ? { usedLockpick: true } : {}),
-          ...(bountyClaimed > 0 ? { bountyClaimed } : {}),
-        };
-      }
-
-      const rawFine = Math.max(50, Math.min(500, Math.floor(attacker.coins * 0.15)));
-      const actualFine = Math.min(rawFine, attacker.coins);
-      const nextAttacker = attacker.coins - actualFine;
-      const nextTarget = target.coins + actualFine;
-
-      this.profileRepo.save({
-        ...attacker,
-        coins: nextAttacker,
-        lastRobAt: nowMs,
-      });
-      this.profileRepo.save({
-        ...target,
-        coins: nextTarget,
-      });
-      this.creditLoanService?.adjustCredit(guildId, attackerId, -10, '偷窃失败信用扣分', nowMs);
-
-      return {
-        ok: true,
-        success: false,
-        amount: actualFine,
-        attackerBalance: nextAttacker,
-        targetBalance: nextTarget,
-        ...(usedLockpick ? { usedLockpick: true } : {}),
-      };
-    })();
-  }
-
-  robBank(
-    guildId: string,
-    attackerId: string,
-    targetId: string,
-    nowMs = Date.now(),
-    rng: () => number = Math.random,
-  ): BankRobResult {
-    if (attackerId === targetId) {
-      return { ok: false, reason: 'self_target' };
-    }
-    const cfg = this.configRepo.getOrCreate(guildId).economy;
-
-    return this.db.transaction((): BankRobResult => {
-      const attacker = this.profileRepo.getOrCreate(guildId, attackerId);
-      const target = this.profileRepo.getOrCreate(guildId, targetId);
-
-      const cooldownMs = cfg.robCooldownSec * 1000;
-      const elapsed = nowMs - attacker.lastRobAt;
-      if (attacker.lastRobAt > 0 && elapsed < cooldownMs) {
-        return {
-          ok: false,
-          reason: 'cooldown',
-          retryAfterSec: Math.ceil((cooldownMs - elapsed) / 1000),
+          fineFromPocket,
+          fineFromBank,
+          attackerBalance: nextAttackerCoins,
+          attackerBankBalance: nextAttackerBank,
+          targetBalance: nextTargetCoins,
+          easterEggTriggered: true,
+          easterEggStory,
         };
       }
 
@@ -454,12 +480,12 @@ export class EconomyService {
         };
       }
 
-      if (target.bankCoins < 100) {
-        return { ok: false, reason: 'target_bank_too_poor' };
+      if (target.coins < ROB_TARGET_MIN_COINS) {
+        return { ok: false, reason: 'target_too_poor' };
       }
 
       const attackerTotal = attacker.coins + attacker.bankCoins;
-      if (attackerTotal < 100) {
+      if (attackerTotal < ROB_ATTACKER_MIN_ASSETS) {
         return { ok: false, reason: 'attacker_too_poor' };
       }
 
@@ -488,7 +514,236 @@ export class EconomyService {
       };
 
       if (trappedEffect) {
-        const rawTrapFine = Math.max(300, Math.min(4000, Math.floor(attackerTotal * 0.5)));
+        const rawTrapFine = Math.max(
+          ROB_TRAP_FINE_MIN,
+          Math.min(ROB_TRAP_FINE_MAX, Math.floor(attackerTotal * ROB_TRAP_FINE_RATE)),
+        );
+        const fine = applyFine(rawTrapFine);
+        const nextTarget = target.coins + fine.actualFine;
+
+        this.profileRepo.save({
+          ...attacker,
+          coins: fine.nextAttackerCoins,
+          bankCoins: fine.nextAttackerBank,
+          lastRobAt: nowMs,
+        });
+        this.profileRepo.save({
+          ...target,
+          coins: nextTarget,
+        });
+        this.creditLoanService?.adjustCredit(
+          guildId,
+          attackerId,
+          -10,
+          '偷窃踩捕兽夹信用扣分',
+          nowMs,
+        );
+
+        return {
+          ok: true,
+          success: false,
+          amount: fine.actualFine,
+          fineFromPocket: fine.fineFromPocket,
+          fineFromBank: fine.fineFromBank,
+          attackerBalance: fine.nextAttackerCoins,
+          attackerBankBalance: fine.nextAttackerBank,
+          targetBalance: nextTarget,
+          trapped: true,
+          ...(usedLockpick ? { usedLockpick: true } : {}),
+        };
+      }
+
+      const effectiveRate = usedLockpick
+        ? Math.min(ROB_LOCKPICK_CAP, cfg.robSuccessRate + ROB_LOCKPICK_BONUS)
+        : cfg.robSuccessRate;
+      const succeeded = rng() < effectiveRate;
+      if (succeeded) {
+        const pct = ROB_STEAL_MIN_RATE + rng() * (ROB_STEAL_MAX_RATE - ROB_STEAL_MIN_RATE);
+        const stolen = Math.max(
+          ROB_STEAL_MIN_AMOUNT,
+          Math.min(ROB_STEAL_MAX_AMOUNT, Math.floor(target.coins * pct)),
+        );
+        const actualStolen = Math.min(stolen, target.coins);
+        const bountyClaimed =
+          this.chaosRepo?.claimOpenBounties(guildId, targetId, attackerId, nowMs) ?? 0;
+        const nextAttacker = attacker.coins + actualStolen + bountyClaimed;
+        const nextTarget = target.coins - actualStolen;
+
+        this.profileRepo.save({
+          ...attacker,
+          coins: nextAttacker,
+          lastRobAt: nowMs,
+        });
+        this.profileRepo.save({
+          ...target,
+          coins: nextTarget,
+          robShieldUntil: nowMs + cfg.robTargetShieldSec * 1000,
+        });
+
+        return {
+          ok: true,
+          success: true,
+          amount: actualStolen,
+          fineFromPocket: 0,
+          fineFromBank: 0,
+          attackerBalance: nextAttacker,
+          attackerBankBalance: attacker.bankCoins,
+          targetBalance: nextTarget,
+          ...(usedLockpick ? { usedLockpick: true } : {}),
+          ...(bountyClaimed > 0 ? { bountyClaimed } : {}),
+        };
+      }
+
+      const rawFine = Math.max(
+        ROB_FINE_MIN,
+        Math.min(ROB_FINE_MAX, Math.floor(attackerTotal * ROB_FINE_RATE)),
+      );
+      const fine = applyFine(rawFine);
+      const nextTarget = target.coins + fine.actualFine;
+
+      this.profileRepo.save({
+        ...attacker,
+        coins: fine.nextAttackerCoins,
+        bankCoins: fine.nextAttackerBank,
+        lastRobAt: nowMs,
+      });
+      this.profileRepo.save({
+        ...target,
+        coins: nextTarget,
+      });
+      this.creditLoanService?.adjustCredit(guildId, attackerId, -10, '偷窃失败信用扣分', nowMs);
+
+      return {
+        ok: true,
+        success: false,
+        amount: fine.actualFine,
+        fineFromPocket: fine.fineFromPocket,
+        fineFromBank: fine.fineFromBank,
+        attackerBalance: fine.nextAttackerCoins,
+        attackerBankBalance: fine.nextAttackerBank,
+        targetBalance: nextTarget,
+        ...(usedLockpick ? { usedLockpick: true } : {}),
+      };
+    })();
+  }
+
+  robBank(
+    guildId: string,
+    attackerId: string,
+    targetId: string,
+    nowMs = Date.now(),
+    rng: () => number = Math.random,
+    targetHints?: RobTargetHints,
+  ): BankRobResult {
+    if (attackerId === targetId) {
+      return { ok: false, reason: 'self_target' };
+    }
+    const cfg = this.configRepo.getOrCreate(guildId).economy;
+
+    return this.db.transaction((): BankRobResult => {
+      const attacker = this.profileRepo.getOrCreate(guildId, attackerId);
+      const target = this.profileRepo.getOrCreate(guildId, targetId);
+
+      const cooldownMs = cfg.robCooldownSec * 1000;
+      const elapsed = nowMs - attacker.lastRobAt;
+      if (attacker.lastRobAt > 0 && elapsed < cooldownMs) {
+        return {
+          ok: false,
+          reason: 'cooldown',
+          retryAfterSec: Math.ceil((cooldownMs - elapsed) / 1000),
+        };
+      }
+
+      if (matchesRobProtectedTarget(target, targetHints)) {
+        const attackerTotal = attacker.coins + attacker.bankCoins;
+        const rawFine =
+          attackerTotal > 0 ? Math.max(1, Math.floor(attackerTotal * ROB_EASTER_EGG_FINE_RATE)) : 0;
+        const actualFine = Math.min(rawFine, attackerTotal);
+        const fineFromPocket = Math.min(attacker.coins, actualFine);
+        const fineFromBank = actualFine - fineFromPocket;
+        const nextAttackerCoins = attacker.coins - fineFromPocket;
+        const nextAttackerBank = attacker.bankCoins - fineFromBank;
+        const nextTargetBank = target.bankCoins + actualFine;
+
+        this.profileRepo.save({
+          ...attacker,
+          coins: nextAttackerCoins,
+          bankCoins: nextAttackerBank,
+          lastRobAt: nowMs,
+        });
+        this.profileRepo.save({
+          ...target,
+          bankCoins: nextTargetBank,
+        });
+
+        const easterEggStory = renderRobEasterEggStory(
+          attackerId,
+          targetId,
+          actualFine,
+          cfg.currencyName,
+          rng,
+        );
+
+        return {
+          ok: true,
+          success: false,
+          amount: actualFine,
+          fineFromPocket,
+          fineFromBank,
+          attackerBalance: nextAttackerCoins,
+          attackerBankBalance: nextAttackerBank,
+          targetBankBalance: nextTargetBank,
+          easterEggTriggered: true,
+          easterEggStory,
+        };
+      }
+
+      if (target.robShieldUntil > nowMs) {
+        return {
+          ok: false,
+          reason: 'target_shielded',
+          retryAfterSec: Math.ceil((target.robShieldUntil - nowMs) / 1000),
+        };
+      }
+
+      if (target.bankCoins < BANK_ROB_TARGET_MIN) {
+        return { ok: false, reason: 'target_bank_too_poor' };
+      }
+
+      const attackerTotal = attacker.coins + attacker.bankCoins;
+      if (attackerTotal < BANK_ROB_ATTACKER_MIN_ASSETS) {
+        return { ok: false, reason: 'attacker_too_poor' };
+      }
+
+      const usedLockpick = Boolean(
+        this.chaosRepo?.consumeEffect(guildId, attackerId, 'lockpick_ready', nowMs),
+      );
+      const trappedEffect = this.chaosRepo?.consumeEffect(guildId, targetId, 'trap_armed', nowMs);
+
+      const applyFine = (rawFine: number): {
+        actualFine: number;
+        fineFromPocket: number;
+        fineFromBank: number;
+        nextAttackerCoins: number;
+        nextAttackerBank: number;
+      } => {
+        const actualFine = Math.min(rawFine, attackerTotal);
+        const fineFromPocket = Math.min(attacker.coins, actualFine);
+        const fineFromBank = actualFine - fineFromPocket;
+        return {
+          actualFine,
+          fineFromPocket,
+          fineFromBank,
+          nextAttackerCoins: attacker.coins - fineFromPocket,
+          nextAttackerBank: attacker.bankCoins - fineFromBank,
+        };
+      };
+
+      if (trappedEffect) {
+        const rawTrapFine = Math.max(
+          BANK_ROB_TRAP_FINE_MIN,
+          Math.min(BANK_ROB_TRAP_FINE_MAX, Math.floor(attackerTotal * BANK_ROB_TRAP_FINE_RATE)),
+        );
         const fine = applyFine(rawTrapFine);
         const nextTargetBank = target.bankCoins + fine.actualFine;
 
@@ -528,13 +783,18 @@ export class EconomyService {
         ? cfg.robBankSuccessRate
         : 0.2;
       const effectiveRate = usedLockpick
-        ? Math.min(0.5, baseBankRate + 0.1)
+        ? Math.min(BANK_ROB_LOCKPICK_CAP, baseBankRate + BANK_ROB_LOCKPICK_BONUS)
         : baseBankRate;
       const succeeded = rng() < effectiveRate;
 
       if (succeeded) {
-        const pct = 0.05 + rng() * 0.07;
-        const stolen = Math.max(10, Math.min(500, Math.floor(target.bankCoins * pct)));
+        const pct =
+          BANK_ROB_STEAL_MIN_RATE +
+          rng() * (BANK_ROB_STEAL_MAX_RATE - BANK_ROB_STEAL_MIN_RATE);
+        const stolen = Math.max(
+          BANK_ROB_STEAL_MIN,
+          Math.min(BANK_ROB_STEAL_MAX, Math.floor(target.bankCoins * pct)),
+        );
         const actualStolen = Math.min(stolen, target.bankCoins);
         const bountyClaimed =
           this.chaosRepo?.claimOpenBounties(guildId, targetId, attackerId, nowMs) ?? 0;
@@ -566,7 +826,10 @@ export class EconomyService {
         };
       }
 
-      const rawFine = Math.max(200, Math.min(2000, Math.floor(attackerTotal * 0.3)));
+      const rawFine = Math.max(
+        BANK_ROB_FINE_MIN,
+        Math.min(BANK_ROB_FINE_MAX, Math.floor(attackerTotal * BANK_ROB_FINE_RATE)),
+      );
       const fine = applyFine(rawFine);
       const nextTargetBank = target.bankCoins + fine.actualFine;
 
@@ -648,6 +911,9 @@ export class EconomyService {
     if (!Number.isFinite(cleanBet) || cleanBet <= 0) {
       return { ok: false, reason: 'invalid_bet' };
     }
+    if (cleanBet > MAX_SOLO_GAMBLE_BET) {
+      return { ok: false, reason: 'bet_too_large' };
+    }
 
     return this.db.transaction((): DiceResult => {
       if (this.creditLoanService?.isDeadbeatBlocked(guildId, userId, nowMs).blocked) {
@@ -698,6 +964,9 @@ export class EconomyService {
     const cleanBet = Math.floor(bet);
     if (!Number.isFinite(cleanBet) || cleanBet <= 0) {
       return { ok: false, reason: 'invalid_bet' };
+    }
+    if (cleanBet > MAX_SOLO_GAMBLE_BET) {
+      return { ok: false, reason: 'bet_too_large' };
     }
 
     return this.db.transaction((): SlotsResult => {

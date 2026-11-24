@@ -1,4 +1,4 @@
-import { SlashCommandBuilder, type ChatInputCommandInteraction } from 'discord.js';
+import { MessageFlags, SlashCommandBuilder, type ChatInputCommandInteraction } from 'discord.js';
 import {
   createErrorEmbed,
   createSuccessEmbed,
@@ -7,6 +7,11 @@ import {
 } from '../../ui/embeds.js';
 import { applyZh } from '../../ui/localization.js';
 import { requireGuildMember, requireModuleEnabled } from '../guards.js';
+
+function formatTimezoneLabel(timezone: string): string {
+  if (timezone === 'Asia/Shanghai') return '北京时间 (Asia/Shanghai)';
+  return `时区 ${timezone}`;
+}
 
 export const dailyCommand: CommandDefinition = {
   name: 'daily',
@@ -28,9 +33,10 @@ export const dailyCommand: CommandDefinition = {
         embeds: [
           createErrorEmbed(
             '🗓️ 今天已经签过到啦',
-            `你当前已连续签到 **${res.streak}** 天，请明天（北京时间 00:00 后）再来领取！`,
+            `你当前已连续签到 **${res.streak}** 天，请明天（${formatTimezoneLabel(ctx.timezone)} 00:00 后）再来领取！`,
           ),
         ],
+        flags: MessageFlags.Ephemeral,
       });
       return;
     }
@@ -46,6 +52,7 @@ export const dailyCommand: CommandDefinition = {
           ].join('\n'),
         ),
       ],
+      flags: MessageFlags.Ephemeral,
     });
   },
 };

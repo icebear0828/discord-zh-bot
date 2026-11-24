@@ -5,7 +5,9 @@ import {
   type ChatInputCommandInteraction,
 } from 'discord.js';
 import { DEFAULT_LEVELING_CONFIG } from '../../config/defaults.js';
+import { syncLevelRewardRoles } from '../../events/ready.js';
 import {
+  createErrorEmbed,
   createInfoEmbed,
   createSuccessEmbed,
   type AppContext,
@@ -82,7 +84,7 @@ export const levelAdminCommand: CommandDefinition = {
               applyZh(
                 opt
                   .setName('channel')
-                  .setDescription('播报频道（留空则在当前发言频道提示）')
+                  .setDescription('播报频道（留空则保留原频道设置）')
                   .addChannelTypes(ChannelType.GuildText),
                 '频道',
                 '指定统一播报频道',
@@ -142,7 +144,7 @@ export const levelAdminCommand: CommandDefinition = {
             .setDescription('调整聊天热度倍率上限、冷却、每小时上限与升级星币奖励')
             .addNumberOption((opt) =>
               applyZh(
-                opt.setName('heat-max').setDescription('聊天连击最高倍率 (1.0~3.0)').setMinValue(1.0).setMaxValue(3.0),
+                opt.setName('heat-max').setDescription('聊天连击最高倍率 (1.0~5.0)').setMinValue(1.0).setMaxValue(5.0),
                 '热度上限',
                 '聊天热度连击最高倍率',
               ),
@@ -296,10 +298,11 @@ export const levelAdminCommand: CommandDefinition = {
           ? cfg.leveling.levelUpTemplate
           : rawMessage.trim() || DEFAULT_LEVELING_CONFIG.levelUpTemplate;
 
+      const nextAnnounceChannelId = channel ? channel.id : cfg.leveling.announceChannelId;
       ctx.repos.guildConfig.updateLeveling(guildId, {
         ...cfg.leveling,
         announceEnabled: enabled,
-        announceChannelId: channel ? channel.id : null,
+        announceChannelId: nextAnnounceChannelId,
         levelUpTitle,
         levelUpTemplate,
       });
@@ -309,7 +312,9 @@ export const levelAdminCommand: CommandDefinition = {
             '✅ 升级播报已更新',
             [
               `升级播报：**${enabled ? '开启' : '关闭'}**`,
-              channel ? `播报频道：<#${channel.id}>` : '播报频道：原发言频道',
+              nextAnnounceChannelId
+                ? `播报频道：<#${nextAnnounceChannelId}>`
+                : '播报频道：原发言频道',
               `播报标题：**${levelUpTitle}**`,
               `提示语模板：${levelUpTemplate}`,
             ].join('\n'),
@@ -376,15 +381,38 @@ export const levelAdminCommand: CommandDefinition = {
 
     if (sub === 'set-xp') {
       const user = interaction.options.getUser('user', true);
+      if (user.bot) {
+        await interaction.reply({
+          embeds: [createErrorEmbed('❌ 无法修改', '不能修改机器人的经验值，请选择真实群友。')],
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
       const xp = interaction.options.getInteger('xp', true);
       const res = ctx.services.leveling.setUserXp(guildId, user.id, xp);
+      let roleSyncNote = '';
+      if (res.rolesToAdd.length > 0 || res.rolesToRemove.length > 0) {
+        const targetMember = await interaction.guild?.members.fetch(user.id).catch(() => null);
+        if (targetMember) {
+          await syncLevelRewardRoles(targetMember, res);
+          const parts: string[] = [];
+          if (res.rolesToAdd.length > 0) {
+            parts.push(`发放 ${res.rolesToAdd.map((id) => `<@&${id}>`).join('、')}`);
+          }
+          if (res.rolesToRemove.length > 0) {
+            parts.push(`回收 ${res.rolesToRemove.map((id) => `<@&${id}>`).join('、')}`);
+          }
+          roleSyncNote = `\n已同步等级奖励身份组：${parts.join('；')}。`;
+        }
+      }
       await interaction.reply({
         embeds: [
           createSuccessEmbed(
             '✅ 经验已调整',
-            `已将 <@${user.id}> 的总经验设为 **${res.totalXp} XP**（当前 Lv.**${res.newLevel}**）。`,
+            `已将 <@${user.id}> 的总经验设为 **${res.totalXp} XP**（Lv.**${res.oldLevel}** → Lv.**${res.newLevel}**）。${roleSyncNote}`,
           ),
         ],
+        allowedMentions: { parse: [] },
         flags: MessageFlags.Ephemeral,
       });
       return;
@@ -392,6 +420,18 @@ export const levelAdminCommand: CommandDefinition = {
 
     if (sub === 'set-stat') {
       const user = interaction.options.getUser('user', true);
+      if (user.bot) {
+        await interaction.reply({
+          embeds: [
+            createErrorEmbed(
+              '❌ 无法修改',
+              `不能修改机器人的${cfg.leveling.statName}，请选择真实群友。`,
+            ),
+          ],
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
       const value = interaction.options.getInteger('value', true);
       const updated = ctx.repos.profile.setStatValue(guildId, user.id, value);
       await interaction.reply({
@@ -401,6 +441,7 @@ export const levelAdminCommand: CommandDefinition = {
             `已将 <@${user.id}> 的 **${cfg.leveling.statName}** 设为 **${updated.statValue}** ${cfg.leveling.statUnit}。`,
           ),
         ],
+        allowedMentions: { parse: [] },
         flags: MessageFlags.Ephemeral,
       });
     }

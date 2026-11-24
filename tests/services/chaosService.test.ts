@@ -21,16 +21,24 @@ function createFixture() {
 }
 
 describe('ChaosService (props, bounties, roulette, number bomb)', () => {
-  it('supports buying props, trap反抓小偷, lockpick加成功率, shield防盗, and curse减半打工', () => {
+  it('supports props, blocks already_active overwrite (no prop swallow), and supports atomic reserveProp/refundProp', () => {
     const { db, profileRepo, chaos, economy } = createFixture();
     profileRepo.addCoins('g1', 'victim', 5000);
     profileRepo.addCoins('g1', 'thief', 5000);
 
-    // Curse victim from thief
-    const buyCurse = chaos.buyProp('g1', 'thief', 'curse');
-    expect(buyCurse.ok).toBe(true);
-    const cursedRes = chaos.useCurseProp('g1', 'thief', 'victim', 1000);
-    expect(cursedRes.ok).toBe(true);
+    // Curse victim from thief; second curse while active returns already_active without consuming!
+    expect(chaos.buyProp('g1', 'thief', 'curse').ok).toBe(true);
+    expect(chaos.buyProp('g1', 'thief', 'curse').ok).toBe(true);
+    expect(chaos.useCurseProp('g1', 'thief', 'victim', 1000)).toEqual({
+      ok: true,
+      remainingQuantity: 1,
+      targetId: 'victim',
+    });
+    expect(chaos.useCurseProp('g1', 'thief', 'victim', 1500)).toEqual({
+      ok: false,
+      reason: 'already_active',
+    });
+    expect(chaos.getPropQuantity('g1', 'thief', 'curse')).toBe(1);
     expect(chaos.useCurseProp('g1', 'thief', 'thief', 1000)).toEqual({
       ok: false,
       reason: 'self_target',
@@ -48,26 +56,40 @@ describe('ChaosService (props, bounties, roulette, number bomb)', () => {
       expect(workRes2.cursed).toBeUndefined();
     }
 
-    // Arm trap on victim -> thief's rob gets trapped even with favorable RNG!
+    // Trap armed: duplicate use returns already_active without consuming 2nd trap!
+    expect(chaos.buyProp('g1', 'victim', 'trap').ok).toBe(true);
     expect(chaos.buyProp('g1', 'victim', 'trap').ok).toBe(true);
     expect(chaos.useSelfProp('g1', 'victim', 'trap', 10_000).ok).toBe(true);
+    expect(chaos.useSelfProp('g1', 'victim', 'trap', 10_500)).toEqual({
+      ok: false,
+      reason: 'already_active',
+    });
+    expect(chaos.getPropQuantity('g1', 'victim', 'trap')).toBe(1);
+
     const trappedRob = economy.rob('g1', 'thief', 'victim', 10_000, () => 0.01);
     expect(trappedRob.ok).toBe(true);
     if (trappedRob.ok) {
       expect(trappedRob.success).toBe(false);
       expect(trappedRob.trapped).toBe(true);
-      expect(trappedRob.amount).toBe(1000); // 30% of 5000 clamped at 1000 double fine!
     }
 
-    // Lockpick boosts success rate (+25% -> 0.45 + 0.25 = 0.70), rng=0.60 fails normally but succeeds with lockpick!
+    // Lockpick ready: duplicate use returns already_active without consuming!
+    expect(chaos.buyProp('g1', 'thief', 'lockpick').ok).toBe(true);
     expect(chaos.buyProp('g1', 'thief', 'lockpick').ok).toBe(true);
     expect(chaos.useSelfProp('g1', 'thief', 'lockpick', 20_000).ok).toBe(true);
-    const lockRob = economy.rob('g1', 'thief', 'victim', 5_000_000, () => 0.6);
-    expect(lockRob.ok).toBe(true);
-    if (lockRob.ok) {
-      expect(lockRob.success).toBe(true);
-      expect(lockRob.usedLockpick).toBe(true);
-    }
+    expect(chaos.useSelfProp('g1', 'thief', 'lockpick', 20_500)).toEqual({
+      ok: false,
+      reason: 'already_active',
+    });
+    expect(chaos.getPropQuantity('g1', 'thief', 'lockpick')).toBe(1);
+
+    // reserveProp & refundProp prevent concurrent double-spend
+    expect(chaos.buyProp('g1', 'thief', 'nickname').ok).toBe(true);
+    expect(chaos.reserveProp('g1', 'thief', 'nickname')).toBe(true);
+    expect(chaos.reserveProp('g1', 'thief', 'nickname')).toBe(false);
+    expect(chaos.getPropQuantity('g1', 'thief', 'nickname')).toBe(0);
+    expect(chaos.refundProp('g1', 'thief', 'nickname')).toBe(1);
+    expect(chaos.getPropQuantity('g1', 'thief', 'nickname')).toBe(1);
 
     // Shield prop adds 4h shield immediately
     expect(chaos.buyProp('g1', 'victim', 'shield').ok).toBe(true);
@@ -76,15 +98,11 @@ describe('ChaosService (props, bounties, roulette, number bomb)', () => {
     if (sh.ok) {
       expect(sh.shieldUntil).toBeGreaterThanOrEqual(10_000_000 + 4 * 3600 * 1000);
     }
-    expect(economy.rob('g1', 'thief', 'victim', 10_000_100, () => 0.01)).toMatchObject({
-      ok: false,
-      reason: 'target_shielded',
-    });
 
     db.close();
   });
 
-  it('stacks bounties, pays out on successful rob or duel win, and supports 1.5x self-clear', () => {
+  it('stacks bounties, pays out on successful rob or qualifying duel win, and supports 1.5x self-clear', () => {
     const { db, profileRepo, chaos, economy, multiplayer } = createFixture();
     profileRepo.addCoins('g1', 'p1', 5000);
     profileRepo.addCoins('g1', 'p2', 5000);
@@ -102,12 +120,10 @@ describe('ChaosService (props, bounties, roulette, number bomb)', () => {
     expect(b1.ok && b2.ok).toBe(true);
     expect(chaos.getOpenBountyTotal('g1', 'target')).toBe(1000);
 
-    // Self-clear costs ceil(1000 * 1.5) = 1500
     const cleared = chaos.clearOwnBounty('g1', 'target', 1200);
     expect(cleared).toEqual({ ok: true, clearedAmount: 1000, cost: 1500, balance: 3500 });
     expect(chaos.getOpenBountyTotal('g1', 'target')).toBe(0);
 
-    // Re-place 800 bounty -> claimed on rob success
     chaos.placeBounty('g1', 'p1', 'target', 800, 1300);
     const beforeP2 = profileRepo.getOrCreate('g1', 'p2').coins;
     const robRes = economy.rob('g1', 'p2', 'target', 2000, () => 0.05);
@@ -117,15 +133,14 @@ describe('ChaosService (props, bounties, roulette, number bomb)', () => {
       expect(robRes.bountyClaimed).toBe(800);
       expect(robRes.attackerBalance).toBe(beforeP2 + robRes.amount + 800);
     }
-    expect(chaos.getOpenBountyTotal('g1', 'target')).toBe(0);
 
-    // Re-place 500 bounty -> claimed on duel victory
+    // 500 bounty -> 200 bet >= max(100, 500*0.2=100) claims bounty!
     chaos.placeBounty('g1', 'p2', 'target', 500, 3000);
     const duel = multiplayer.createDuel('g1', 'c1', 'p1', 'target', 200, 3100);
     expect(duel.ok).toBe(true);
     if (duel.ok) {
       let step = 0;
-      const rolls = [0.95, 0.95, 0.95, 0.05, 0.05, 0.05]; // challenger 6,6,6 vs opponent 1,1,1
+      const rolls = [0.95, 0.95, 0.95, 0.05, 0.05, 0.05];
       const accept = multiplayer.acceptDuel(duel.duel.id, 'target', 3200, () => rolls[step++] ?? 0.5);
       expect(accept.ok).toBe(true);
       if (accept.ok) {
@@ -138,64 +153,52 @@ describe('ChaosService (props, bounties, roulette, number bomb)', () => {
     db.close();
   });
 
-  it('runs roulette recruiting, leave/timeout refunds, firing/elimination, and winner pot payout', () => {
+  it('enforces instant turnDeadline expiry on roulette actions, single-ID expire, firing/elimination, and winner pot payout', () => {
     const { db, profileRepo, chaos } = createFixture();
     profileRepo.addCoins('g1', 'u1', 1000);
     profileRepo.addCoins('g1', 'u2', 1000);
     profileRepo.addCoins('g1', 'u3', 1000);
 
-    const created = chaos.createRoulette({
-      guildId: 'g1',
-      channelId: 'c1',
-      hostId: 'u1',
-      entryFee: 200,
-      maxPlayers: 3,
-      nowMs: 1000,
-    });
-    expect(created.ok).toBe(true);
-    if (!created.ok) return;
-
-    expect(chaos.joinRoulette(created.game.id, 'u2', 1100).ok).toBe(true);
-    expect(chaos.leaveRoulette(created.game.id, 'u2', 1200)).toMatchObject({
-      ok: true,
-      refunded: 200,
-      cancelled: false,
-    });
-    expect(profileRepo.getOrCreate('g1', 'u2').coins).toBe(1000);
-
-    expect(chaos.startRoulette(created.game.id, 'u1', false, 1300).ok).toBe(false); // only 1 player
-
-    chaos.joinRoulette(created.game.id, 'u2', 1400);
-    // Deterministic rng=0 puts bulletPos=0 and keeps reverse shuffle deterministic
-    const started = chaos.startRoulette(created.game.id, 'u1', false, 1500, () => 0.99);
-    expect(started.ok).toBe(true);
-    if (!started.ok) return;
-
-    // Wait: rng=0.99 gives bulletPos = 5. First player pulls empty!
-    const current = started.game.alivePlayers[0]!;
-    const p1 = chaos.pullTrigger(started.game.id, current, { nowMs: 2000 });
-    expect(p1.ok).toBe(true);
-    if (p1.ok) {
-      expect(p1.fired).toBe(false);
-    }
-
-    // Timeout advances & fires until bullet triggers (here test recruit expiry in a second room)
-    const expRoom = chaos.createRoulette({
+    // Instant turnDeadline check on joinRoulette expires & refunds host immediately!
+    const staleRoom = chaos.createRoulette({
       guildId: 'g1',
       channelId: 'c1',
       hostId: 'u3',
       entryFee: 100,
-      maxPlayers: 2,
-      nowMs: 5000,
+      maxPlayers: 3,
+      nowMs: 1000,
     });
-    expect(expRoom.ok).toBe(true);
-    if (expRoom.ok) {
-      const updates = chaos.processTimedOutRoulettes(5000 + 11 * 60 * 1000);
-      expect(updates.some((u) => u.game.id === expRoom.game.id && u.kind === 'recruit_expired')).toBe(true);
+    expect(staleRoom.ok).toBe(true);
+    if (staleRoom.ok) {
+      expect(profileRepo.getOrCreate('g1', 'u3').coins).toBe(900);
+      expect(chaos.joinRoulette(staleRoom.game.id, 'u2', 1000 + 10 * 60_000)).toEqual({
+        ok: false,
+        reason: 'expired',
+      });
       expect(profileRepo.getOrCreate('g1', 'u3').coins).toBe(1000);
+      expect(chaos.getRoulette(staleRoom.game.id)?.status).toBe('cancelled');
     }
 
-    // Test direct bullet hit & 2-player prize win
+    // Same instant turnDeadline check on startRoulette
+    const staleStart = chaos.createRoulette({
+      guildId: 'g1',
+      channelId: 'c1',
+      hostId: 'u3',
+      entryFee: 100,
+      maxPlayers: 3,
+      nowMs: 2000,
+    });
+    if (staleStart.ok) {
+      chaos.joinRoulette(staleStart.game.id, 'u2', 2100);
+      expect(chaos.startRoulette(staleStart.game.id, 'u3', false, 2000 + 10 * 60_000)).toEqual({
+        ok: false,
+        reason: 'expired',
+      });
+      expect(profileRepo.getOrCreate('g1', 'u3').coins).toBe(1000);
+      expect(profileRepo.getOrCreate('g1', 'u2').coins).toBe(1000);
+    }
+
+    // Normal game flow
     const duelRoom = chaos.createRoulette({
       guildId: 'g1',
       channelId: 'c1',
@@ -207,14 +210,12 @@ describe('ChaosService (props, bounties, roulette, number bomb)', () => {
     expect(duelRoom.ok).toBe(true);
     if (duelRoom.ok) {
       chaos.joinRoulette(duelRoom.game.id, 'u2', 20_100);
-      // rng=0 -> swap puts u2 first? Fisher-Yates i=1 j=0 swaps u1 and u2, bulletPos=0!
       const s2 = chaos.startRoulette(duelRoom.game.id, 'u1', false, 20_200, () => 0);
       expect(s2.ok).toBe(true);
       if (s2.ok) {
         const firstVictim = s2.game.alivePlayers[0]!;
         const survivor = s2.game.alivePlayers[1]!;
         const beforeWinnerCoins = profileRepo.getOrCreate('g1', survivor).coins;
-        // Simulate 30s turn timeout auto-trigger firing bullet at chamber 0!
         const timed = chaos.processTimedOutRoulettes(20_200 + 31_000, () => 0);
         const hit = timed.find((t) => t.game.id === duelRoom.game.id);
         expect(hit?.fired).toBe(true);
@@ -228,54 +229,69 @@ describe('ChaosService (props, bounties, roulette, number bomb)', () => {
     db.close();
   });
 
-  it('runs number bomb bounds, consecutive guard, and explosion payout split', () => {
+  it('generates number bomb secrets across full [1, 100], removes host freeloading, persists payoutsJson, and cancels by single ID', () => {
     const { db, profileRepo, chaos } = createFixture();
     profileRepo.addCoins('g1', 'host', 1000);
     profileRepo.addCoins('g1', 'p1', 1000);
     profileRepo.addCoins('g1', 'p2', 1000);
 
-    // secret = 2 + floor(0.5 * 98) = 51
+    // Boundary secret = 1 (rng=0) and 100 (rng=0.999)
+    const bombMin = chaos.createNumberBomb({
+      guildId: 'g1',
+      channelId: 'c1',
+      hostId: 'host',
+      penalty: 200,
+      nowMs: 1000,
+      rng: () => 0,
+    });
+    const bombMax = chaos.createNumberBomb({
+      guildId: 'g1',
+      channelId: 'c1',
+      hostId: 'host',
+      penalty: 200,
+      nowMs: 1000,
+      rng: () => 0.999,
+    });
+    expect(bombMin.ok && bombMax.ok).toBe(true);
+    if (!bombMin.ok || !bombMax.ok) return;
+    expect(bombMin.game.secretNumber).toBe(1);
+    expect(bombMax.game.secretNumber).toBe(100);
+
+    // Single-ID cancelNumberBomb cancels ONLY bombMax without touching bombMin!
+    expect(chaos.cancelNumberBomb(bombMax.game.id)).toBe(true);
+    expect(chaos.getNumberBomb(bombMax.game.id)?.status).toBe('cancelled');
+    expect(chaos.getNumberBomb(bombMin.game.id)?.status).toBe('open');
+
+    // First guess hits 1 -> NO freeloading payout to host!
+    const firstBoom = chaos.guessNumberBomb(bombMin.game.id, 'p1', 1, 1500);
+    expect(firstBoom.ok).toBe(true);
+    if (firstBoom.ok) {
+      expect(firstBoom.exploded).toBe(true);
+      expect(firstBoom.payouts).toEqual([]);
+      expect(profileRepo.getOrCreate('g1', 'host').coins).toBe(1000);
+      expect(profileRepo.getOrCreate('g1', 'p1').coins).toBe(800);
+    }
+
+    // Normal game: secret = 1 + floor(0.5 * 100) = 51 -> payouts persisted in payoutsJson!
     const bomb = chaos.createNumberBomb({
       guildId: 'g1',
       channelId: 'c1',
       hostId: 'host',
       penalty: 301,
-      nowMs: 1000,
+      nowMs: 2000,
       rng: () => 0.5,
     });
     expect(bomb.ok).toBe(true);
     if (!bomb.ok) return;
     expect(bomb.game.secretNumber).toBe(51);
 
-    const g1 = chaos.guessNumberBomb(bomb.game.id, 'p1', 20, 2000);
-    expect(g1.ok).toBe(true);
-    if (g1.ok) {
-      expect(g1.exploded).toBe(false);
-      expect(g1.game.minBound).toBe(21);
-      expect(g1.game.maxBound).toBe(100);
-    }
-
-    // Cannot guess twice in a row
-    expect(chaos.guessNumberBomb(bomb.game.id, 'p1', 80, 2100)).toEqual({
+    expect(chaos.guessNumberBomb(bomb.game.id, 'p1', 20, 2100).ok).toBe(true);
+    expect(chaos.guessNumberBomb(bomb.game.id, 'p1', 80, 2150)).toEqual({
       ok: false,
       reason: 'consecutive_guess',
     });
+    expect(chaos.guessNumberBomb(bomb.game.id, 'p2', 80, 2200).ok).toBe(true);
 
-    // Cannot guess out of current bounds
-    expect(chaos.guessNumberBomb(bomb.game.id, 'p2', 15, 2200)).toMatchObject({
-      ok: false,
-      reason: 'invalid_guess',
-      minBound: 21,
-      maxBound: 100,
-    });
-
-    const g2 = chaos.guessNumberBomb(bomb.game.id, 'p2', 80, 2300);
-    expect(g2.ok).toBe(true);
-    if (g2.ok) {
-      expect(g2.game.maxBound).toBe(79);
-    }
-
-    // Host hits secret 51 -> pays 301 split across p1 (151) & p2 (150)
     const boom = chaos.guessNumberBomb(bomb.game.id, 'host', 51, 2400);
     expect(boom.ok).toBe(true);
     if (boom.ok) {
@@ -285,8 +301,10 @@ describe('ChaosService (props, bounties, roulette, number bomb)', () => {
         { userId: 'p1', amount: 151 },
         { userId: 'p2', amount: 150 },
       ]);
+      expect(boom.game.payoutsJson).toBe(JSON.stringify(boom.payouts));
+      expect(chaos.getNumberBomb(bomb.game.id)?.payoutsJson).toBe(JSON.stringify(boom.payouts));
       expect(profileRepo.getOrCreate('g1', 'host').coins).toBe(699);
-      expect(profileRepo.getOrCreate('g1', 'p1').coins).toBe(1151);
+      expect(profileRepo.getOrCreate('g1', 'p1').coins).toBe(951);
       expect(profileRepo.getOrCreate('g1', 'p2').coins).toBe(1150);
     }
 

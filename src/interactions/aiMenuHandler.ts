@@ -106,7 +106,8 @@ export async function tryHandleAiMenuButton(
       );
       return true;
     }
-    await interaction.update(buildMenuMessage(ctx, guildId, actor, { page: 'admin_ai' }));
+    const tab: 'basic' | 'channels' = parts[3] === 'channels' ? 'channels' : 'basic';
+    await interaction.update(buildMenuMessage(ctx, guildId, actor, { page: 'admin_ai', tab }));
     return true;
   }
 
@@ -319,7 +320,11 @@ export async function tryHandleAiMenuChannelSelect(
     return false;
   }
   const target = parts[2];
-  if (target !== 'admin_ai_free' && target !== 'admin_ai_ignore') {
+  if (
+    target !== 'admin_ai_free' &&
+    target !== 'admin_ai_allowed' &&
+    target !== 'admin_ai_ignore'
+  ) {
     return false;
   }
 
@@ -353,13 +358,33 @@ export async function tryHandleAiMenuChannelSelect(
     return true;
   }
 
+  if (target === 'admin_ai_allowed') {
+    ctx.repos.guildConfig.updateAi(guildId, { ...cfg.ai, allowedChannelIds: channelIds });
+    await interaction.update(
+      buildMenuMessage(
+        ctx,
+        guildId,
+        actor,
+        { page: 'admin_ai' },
+        {
+          type: 'success',
+          text:
+            channelIds.length > 0
+              ? `已更新 AI 白名单限定频道：${channelIds.map((id) => `<#${id}>`).join('、')}`
+              : '已清空 AI 频道白名单限制（全频道可用，除屏蔽频道）。',
+        },
+      ),
+    );
+    return true;
+  }
+
   ctx.repos.guildConfig.updateAi(guildId, { ...cfg.ai, ignoredChannelIds: channelIds });
   await interaction.update(
     buildMenuMessage(
       ctx,
       guildId,
       actor,
-      { page: 'admin_ai' },
+      { page: 'admin_ai', tab: 'channels' },
       {
         type: 'success',
         text:

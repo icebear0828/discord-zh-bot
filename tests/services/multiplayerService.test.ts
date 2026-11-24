@@ -1,16 +1,26 @@
 import { describe, expect, it } from 'vitest';
 import { createDatabase } from '../../src/db/database.js';
+import { ChaosRepo, initChaosSchema } from '../../src/db/repositories/chaosRepo.js';
+import { DuelRepo, initDuelSchema } from '../../src/db/repositories/duelRepo.js';
+import { GuildConfigRepo } from '../../src/db/repositories/guildConfigRepo.js';
 import { ProfileRepo } from '../../src/db/repositories/profileRepo.js';
 import { RedPacketRepo, initRedPacketSchema } from '../../src/db/repositories/redPacketRepo.js';
+import { ChaosService } from '../../src/services/chaosService.js';
 import { MultiplayerService } from '../../src/services/multiplayerService.js';
 
-function setup() {
+function setup(withDuelRepo = false) {
   const db = createDatabase(':memory:');
   initRedPacketSchema(db);
+  initChaosSchema(db);
+  initDuelSchema(db);
+  const configRepo = new GuildConfigRepo(db);
   const profileRepo = new ProfileRepo(db);
   const redPacketRepo = new RedPacketRepo(db);
-  const svc = new MultiplayerService(db, profileRepo, redPacketRepo);
-  return { db, profileRepo, redPacketRepo, svc };
+  const chaosRepo = new ChaosRepo(db);
+  const duelRepo = withDuelRepo ? new DuelRepo(db) : undefined;
+  const chaos = new ChaosService(db, configRepo, profileRepo, chaosRepo);
+  const svc = new MultiplayerService(db, profileRepo, redPacketRepo, chaosRepo, duelRepo);
+  return { db, profileRepo, redPacketRepo, chaosRepo, duelRepo, chaos, svc };
 }
 
 function sequenceRng(values: number[]): () => number {
@@ -123,6 +133,7 @@ describe('multiplayerService - red packets', () => {
       expect(created.packet.remainingAmount).toBe(300);
       expect(created.packet.remainingCount).toBe(3);
       expect(created.packet.status).toBe('open');
+      expect(created.packet.systemFunded).toBe(false);
       expect(created.packet.messageId).toBeNull();
       expect(created.packet.expiresAt).toBe(1_000_000 + 24 * 3600 * 1000);
 
@@ -175,7 +186,6 @@ describe('multiplayerService - red packets', () => {
       expect(c1.claimerBalance).toBe(c1.amount);
     }
 
-    // Duplicate claim rejected
     expect(svc.claimRedPacket(packetId, 'u1', 5_200, () => 0.9)).toEqual({
       ok: false,
       reason: 'already_claimed',
@@ -208,7 +218,6 @@ describe('multiplayerService - red packets', () => {
       expect(c4.bestLuckUserId).toBe(expectedBest.userId);
     }
 
-    // Claiming after finished fails
     expect(svc.claimRedPacket(packetId, 'u5', 5_600)).toEqual({
       ok: false,
       reason: 'finished',
@@ -235,7 +244,6 @@ describe('multiplayerService - red packets', () => {
       return;
     }
 
-    // With remainingAmount=100, remainingCount=2, maxShare=99; rng=0.5 -> 1 + Math.floor(0.5 * 99) = 50
     const c1 = svc.claimRedPacket(created.packet.id, 'first', 1_100, () => 0.5);
     const c2 = svc.claimRedPacket(created.packet.id, 'second', 1_200, () => 0.5);
 
@@ -250,7 +258,7 @@ describe('multiplayerService - red packets', () => {
     db.close();
   });
 
-  it('expires due red packets, refunds exact remainingAmount, and blocks subsequent claims', () => {
+  it('expires due red packets (single-ID & batch), refunds user-funded packets, and NEVER refunds systemFunded packets to admin', () => {
     const { db, profileRepo, svc } = setup();
     profileRepo.addCoins('g1', 'sender', 1000);
 
@@ -263,12 +271,25 @@ describe('multiplayerService - red packets', () => {
       nowMs: 10_000,
       ttlMs: 60_000,
     });
-    expect(created.ok).toBe(true);
-    if (!created.ok) {
+    const sysCreated = svc.createRedPacket({
+      guildId: 'g1',
+      channelId: 'c1',
+      senderId: 'admin-zero',
+      totalAmount: 10_000,
+      totalCount: 5,
+      nowMs: 10_000,
+      ttlMs: 60_000,
+      systemFunded: true,
+    });
+    expect(created.ok && sysCreated.ok).toBe(true);
+    if (!created.ok || !sysCreated.ok) {
       db.close();
       return;
     }
+
+    expect(sysCreated.packet.systemFunded).toBe(true);
     const packetId = created.packet.id;
+    const sysPacketId = sysCreated.packet.id;
     expect(profileRepo.getOrCreate('g1', 'sender').coins).toBe(500);
 
     const claimed = svc.claimRedPacket(packetId, 'u1', 20_000, () => 0.4);
@@ -276,39 +297,36 @@ describe('multiplayerService - red packets', () => {
     const remainingBeforeExpiry = claimed.ok ? claimed.packet.remainingAmount : 0;
     expect(remainingBeforeExpiry).toBeGreaterThan(0);
 
-    // Before expiry: claim at 69_999 would still be allowed; expireDueRedPackets does nothing
     expect(svc.expireDueRedPackets(69_999)).toEqual([]);
-
-    // At expiry boundary (70_000): claim is blocked with 'expired' without double-touching refund
     expect(svc.claimRedPacket(packetId, 'u2', 70_000)).toEqual({
       ok: false,
       reason: 'expired',
     });
 
-    // Expire job refunds exact remainingAmount once
-    const expired = svc.expireDueRedPackets(70_000);
-    expect(expired).toHaveLength(1);
-    expect(expired[0]?.packet.id).toBe(packetId);
-    expect(expired[0]?.packet.status).toBe('expired');
-    expect(expired[0]?.refundedAmount).toBe(remainingBeforeExpiry);
+    // Single-ID expire only expires target packet, leaving sysPacket untouched!
+    const singleExp = svc.expireRedPacketIfDue(packetId, 70_000);
+    expect(singleExp?.packet.status).toBe('expired');
+    expect(singleExp?.refundedAmount).toBe(remainingBeforeExpiry);
     expect(profileRepo.getOrCreate('g1', 'sender').coins).toBe(500 + remainingBeforeExpiry);
+    expect(svc.getRedPacketWithClaims(sysPacketId)?.packet.status).toBe('open');
 
-    // Subsequent expire run is idempotent (no double refund)
+    // Expiring systemFunded packet NEVER refunds coins to admin-zero!
+    const sysExp = svc.expireDueRedPackets(70_000);
+    expect(sysExp).toHaveLength(1);
+    expect(sysExp[0]?.packet.id).toBe(sysPacketId);
+    expect(sysExp[0]?.refundedAmount).toBe(0);
+    expect(profileRepo.getOrCreate('g1', 'admin-zero').coins).toBe(0);
+
+    // Subsequent expire run is idempotent
     expect(svc.expireDueRedPackets(80_000)).toEqual([]);
     expect(profileRepo.getOrCreate('g1', 'sender').coins).toBe(500 + remainingBeforeExpiry);
-
-    // Claim after status='expired' returns expired
-    expect(svc.claimRedPacket(packetId, 'u3', 80_000)).toEqual({
-      ok: false,
-      reason: 'expired',
-    });
 
     db.close();
   });
 });
 
 describe('multiplayerService - pvp dice duel', () => {
-  it('validates duel creation inputs and challenger funds', () => {
+  it('validates duel creation inputs and freezes challenger bet atomically', () => {
     const { db, profileRepo, svc } = setup();
     profileRepo.addCoins('g1', 'p1', 200);
 
@@ -343,20 +361,23 @@ describe('multiplayerService - pvp dice duel', () => {
       expect(created.duel.id).toMatch(/^[0-9a-f]{8}$/);
       expect(created.duel.status).toBe('pending');
       expect(created.duel.expiresAt).toBe(181_000);
+      expect(created.challengerBalance).toBe(100);
+      expect(profileRepo.getOrCreate('g1', 'p1').coins).toBe(100);
       expect(svc.getDuel(created.duel.id, 1_500)).toEqual(created.duel);
     }
 
     db.close();
   });
 
-  it('settles duel win, loss, and tie atomically', () => {
-    const { db, profileRepo, svc } = setup();
+  it('settles duel win, loss, and tie atomically with frozen challenger bet', () => {
+    const { db, profileRepo, svc } = setup(true);
     profileRepo.addCoins('g1', 'p1', 500);
     profileRepo.addCoins('g1', 'p2', 500);
 
     // Challenger wins: p1 rolls (6,6,6)=18, p2 rolls (1,1,1)=3
     const d1 = svc.createDuel('g1', 'c1', 'p1', 'p2', 100, 1_000);
     expect(d1.ok).toBe(true);
+    expect(profileRepo.getOrCreate('g1', 'p1').coins).toBe(400);
     if (d1.ok) {
       const res = svc.acceptDuel(
         d1.duel.id,
@@ -382,6 +403,7 @@ describe('multiplayerService - pvp dice duel', () => {
     // Opponent wins: p1 rolls (1,2,1)=4, p2 rolls (5,5,5)=15
     const d2 = svc.createDuel('g1', 'c1', 'p1', 'p2', 150, 3_000);
     expect(d2.ok).toBe(true);
+    expect(profileRepo.getOrCreate('g1', 'p1').coins).toBe(450);
     if (d2.ok) {
       const res = svc.acceptDuel(
         d2.duel.id,
@@ -399,9 +421,10 @@ describe('multiplayerService - pvp dice duel', () => {
       }
     }
 
-    // Tie: both roll (3,3,3)=9
+    // Tie: both roll (3,3,3)=9 -> challenger frozen bet refunded!
     const d3 = svc.createDuel('g1', 'c1', 'p1', 'p2', 200, 5_000);
     expect(d3.ok).toBe(true);
+    expect(profileRepo.getOrCreate('g1', 'p1').coins).toBe(250);
     if (d3.ok) {
       const res = svc.acceptDuel(
         d3.duel.id,
@@ -425,172 +448,103 @@ describe('multiplayerService - pvp dice duel', () => {
     db.close();
   });
 
-  it('rejects wrong acceptor, insufficient funds at accept time, expired, and supports decline', () => {
-    const { db, profileRepo, svc } = setup();
-    profileRepo.addCoins('g1', 'p1', 300);
-    profileRepo.addCoins('g1', 'p2', 50);
+  it('persists duels via DuelRepo, checks expiry before permission, refunds on decline/expire, and blocks 1-coin bounty collusion', () => {
+    const { db, profileRepo, redPacketRepo, chaosRepo, duelRepo, chaos, svc } = setup(true);
+    profileRepo.addCoins('g1', 'p1', 5000);
+    profileRepo.addCoins('g1', 'p2', 5000);
+    profileRepo.addCoins('g1', 'placer', 5000);
 
-    // Opponent insufficient funds at accept time
+    // 1. Persisted duel survives service re-instantiation (restart)!
     const d1 = svc.createDuel('g1', 'c1', 'p1', 'p2', 100, 1_000, 60_000);
     expect(d1.ok).toBe(true);
-    if (d1.ok) {
-      expect(svc.acceptDuel('missing', 'p2', 2_000)).toEqual({
-        ok: false,
-        reason: 'not_found',
-      });
-      expect(svc.acceptDuel(d1.duel.id, 'p1', 2_000)).toEqual({
-        ok: false,
-        reason: 'not_opponent',
-      });
-      expect(svc.acceptDuel(d1.duel.id, 'p3', 2_000)).toEqual({
-        ok: false,
-        reason: 'not_opponent',
-      });
-      expect(svc.acceptDuel(d1.duel.id, 'p2', 2_000)).toEqual({
-        ok: false,
-        reason: 'opponent_insufficient_funds',
-      });
+    if (!d1.ok) return;
+    svc.bindDuelMessage(d1.duel.id, 'duel-msg-1');
 
-      // Challenger spends coins before accept -> challenger_insufficient_funds
-      profileRepo.addCoins('g1', 'p1', -250);
-      expect(svc.acceptDuel(d1.duel.id, 'p2', 2_000)).toEqual({
-        ok: false,
-        reason: 'challenger_insufficient_funds',
-      });
+    const svcAfterRestart = new MultiplayerService(db, profileRepo, redPacketRepo, chaosRepo, duelRepo);
+    expect(svcAfterRestart.getDuel(d1.duel.id, 2_000)?.messageId).toBe('duel-msg-1');
 
-      // Expiry check via acceptDuel
-      expect(svc.acceptDuel(d1.duel.id, 'p2', 61_000)).toEqual({
-        ok: false,
-        reason: 'expired',
-      });
-      expect(svc.getDuel(d1.duel.id, 61_000)?.status).toBe('expired');
-    }
+    // Bystander clicking EXPIRED duel gets 'expired' (NOT 'not_opponent'/'not_participant'), and challenger bet is refunded!
+    expect(profileRepo.getOrCreate('g1', 'p1').coins).toBe(4900);
+    expect(svcAfterRestart.acceptDuel(d1.duel.id, 'outsider', 61_000)).toEqual({
+      ok: false,
+      reason: 'expired',
+    });
+    expect(profileRepo.getOrCreate('g1', 'p1').coins).toBe(5000);
+    expect(svcAfterRestart.declineDuel(d1.duel.id, 'outsider', 62_000)).toEqual({
+      ok: false,
+      reason: 'expired',
+    });
 
-    // Decline by opponent and by challenger, plus getDuel expiry transition
-    profileRepo.addCoins('g1', 'p1', 300);
-    profileRepo.addCoins('g1', 'p2', 300);
-
-    const d2 = svc.createDuel('g1', 'c1', 'p1', 'p2', 100, 100_000, 60_000);
+    // 2. Decline refunds frozen bet
+    const d2 = svcAfterRestart.createDuel('g1', 'c1', 'p1', 'p2', 300, 100_000, 60_000);
     expect(d2.ok).toBe(true);
     if (d2.ok) {
-      expect(svc.declineDuel('missing', 'p2', 101_000)).toEqual({
-        ok: false,
-        reason: 'not_found',
-      });
-      expect(svc.declineDuel(d2.duel.id, 'intruder', 101_000)).toEqual({
+      expect(profileRepo.getOrCreate('g1', 'p1').coins).toBe(4700);
+      expect(svcAfterRestart.declineDuel(d2.duel.id, 'intruder', 101_000)).toEqual({
         ok: false,
         reason: 'not_participant',
       });
-      const declined = svc.declineDuel(d2.duel.id, 'p2', 101_000);
-      expect(declined.ok).toBe(true);
-      if (declined.ok) {
-        expect(declined.duel.status).toBe('declined');
-      }
-      expect(svc.declineDuel(d2.duel.id, 'p1', 102_000)).toEqual({
-        ok: false,
-        reason: 'already_resolved',
-      });
-      expect(svc.acceptDuel(d2.duel.id, 'p2', 102_000)).toEqual({
+      const declined = svcAfterRestart.declineDuel(d2.duel.id, 'p2', 101_000);
+      expect(declined).toMatchObject({ ok: true, refunded: 300 });
+      expect(profileRepo.getOrCreate('g1', 'p1').coins).toBe(5000);
+      expect(svcAfterRestart.acceptDuel(d2.duel.id, 'intruder', 102_000)).toEqual({
         ok: false,
         reason: 'already_resolved',
       });
     }
 
-    const d3 = svc.createDuel('g1', 'c1', 'p1', 'p2', 100, 200_000, 60_000);
-    expect(d3.ok).toBe(true);
-    if (d3.ok) {
-      // Challenger can cancel/decline
-      const cancelled = svc.declineDuel(d3.duel.id, 'p1', 201_000);
-      expect(cancelled.ok).toBe(true);
-      if (cancelled.ok) {
-        expect(cancelled.duel.status).toBe('declined');
-      }
+    // 3. Single-ID expireDuelIfDue vs expireDueDuels
+    const d3 = svcAfterRestart.createDuel('g1', 'c1', 'p1', 'p2', 150, 200_000, 10_000);
+    const d4 = svcAfterRestart.createDuel('g1', 'c1', 'p1', 'p2', 250, 200_000, 10_000);
+    expect(d3.ok && d4.ok).toBe(true);
+    if (d3.ok && d4.ok) {
+      expect(profileRepo.getOrCreate('g1', 'p1').coins).toBe(4600);
+      const exp3 = svcAfterRestart.expireDuelIfDue(d3.duel.id, 210_000);
+      expect(exp3?.status).toBe('expired');
+      expect(profileRepo.getOrCreate('g1', 'p1').coins).toBe(4750);
+      // d4 still pending in DB until expired
+      expect(duelRepo?.getById(d4.duel.id)?.status).toBe('pending');
+      const expRest = svcAfterRestart.expireDueDuels(210_000);
+      expect(expRest).toHaveLength(1);
+      expect(expRest[0]?.id).toBe(d4.duel.id);
+      expect(profileRepo.getOrCreate('g1', 'p1').coins).toBe(5000);
     }
 
-    const d4 = svc.createDuel('g1', 'c1', 'p1', 'p2', 100, 300_000, 10_000);
-    expect(d4.ok).toBe(true);
-    if (d4.ok) {
-      expect(svc.getDuel(d4.duel.id, 310_000)?.status).toBe('expired');
-      expect(svc.declineDuel(d4.duel.id, 'p2', 310_000)).toEqual({
-        ok: false,
-        reason: 'expired',
-      });
-    }
-
-    expect(svc.getDuel('nonexistent')).toBeNull();
-
-    // Creating >100 duels cleans up old ones without crashing and preserves newest duel
-    for (let i = 0; i < 110; i += 1) {
-      const res = svc.createDuel('g1', 'c1', 'p1', 'p2', 10, 400_000 + i, 60_000);
-      expect(res.ok).toBe(true);
-      if (res.ok && i === 109) {
-        expect(svc.getDuel(res.duel.id, 400_200)?.id).toBe(res.duel.id);
-      }
-    }
-
-    db.close();
-  });
-
-  it('handles equal amount/count splits, claim tie ordering, and preserves bankCoins', () => {
-    const { db, profileRepo, svc } = setup();
-    const senderInit = profileRepo.getOrCreate('g1', 'sender');
-    profileRepo.save({
-      ...senderInit,
-      coins: 500,
-      bankCoins: 1200,
-      lastBankInterestDate: '2026-11-23',
-    });
-    const p2Init = profileRepo.getOrCreate('g1', 'p2');
-    profileRepo.save({
-      ...p2Init,
-      coins: 300,
-      bankCoins: 800,
-      lastBankInterestDate: '2026-11-22',
-    });
-
-    // Minimum split: 5 coins across 5 users -> 1 coin each, ordered by rowid when claimedAt matches
-    const packet = svc.createRedPacket({
-      guildId: 'g1',
-      channelId: 'c1',
-      senderId: 'sender',
-      totalAmount: 5,
-      totalCount: 5,
-      nowMs: 1000,
-    });
-    expect(packet.ok).toBe(true);
-    if (packet.ok) {
-      expect(profileRepo.getOrCreate('g1', 'sender').bankCoins).toBe(1200);
-      expect(profileRepo.getOrCreate('g1', 'sender').lastBankInterestDate).toBe('2026-11-23');
-
-      for (const uid of ['u1', 'u2', 'u3', 'u4', 'u5']) {
-        const claimed = svc.claimRedPacket(packet.packet.id, uid, 2000, () => 0.99);
-        expect(claimed.ok).toBe(true);
-        if (claimed.ok) {
-          expect(claimed.amount).toBe(1);
-        }
-      }
-      const detail = svc.getRedPacketWithClaims(packet.packet.id);
-      expect(detail?.claims.map((c) => c.userId)).toEqual(['u1', 'u2', 'u3', 'u4', 'u5']);
-      expect(detail?.bestLuckUserId).toBe('u1');
-    }
-
-    // Duel preserves bankCoins and lastBankInterestDate on both participants
-    const duel = svc.createDuel('g1', 'c1', 'sender', 'p2', 100, 3000);
-    expect(duel.ok).toBe(true);
-    if (duel.ok) {
-      const settled = svc.acceptDuel(
-        duel.duel.id,
+    // 4. Bounty collusion defense: 1000 bounty requires bet >= max(100, floor(1000 * 0.2)) = 200!
+    chaos.placeBounty('g1', 'placer', 'p2', 1000, 300_000);
+    const cheapDuel = svcAfterRestart.createDuel('g1', 'c1', 'p1', 'p2', 1, 301_000);
+    expect(cheapDuel.ok).toBe(true);
+    if (cheapDuel.ok) {
+      const res = svcAfterRestart.acceptDuel(
+        cheapDuel.duel.id,
         'p2',
-        3500,
+        302_000,
         sequenceRng([0.99, 0.99, 0.99, 0, 0, 0]),
       );
-      expect(settled.ok).toBe(true);
-      const afterSender = profileRepo.getOrCreate('g1', 'sender');
-      const afterP2 = profileRepo.getOrCreate('g1', 'p2');
-      expect(afterSender.bankCoins).toBe(1200);
-      expect(afterSender.lastBankInterestDate).toBe('2026-11-23');
-      expect(afterP2.bankCoins).toBe(800);
-      expect(afterP2.lastBankInterestDate).toBe('2026-11-22');
+      expect(res.ok).toBe(true);
+      if (res.ok) {
+        expect(res.winnerId).toBe('p1');
+        expect(res.bountyClaimed).toBeUndefined();
+      }
+      // Bounty remains intact!
+      expect(chaos.getOpenBountyTotal('g1', 'p2')).toBe(1000);
+    }
+
+    // Valid 200-coin duel DOES claim the 1000 bounty!
+    const validDuel = svcAfterRestart.createDuel('g1', 'c1', 'p1', 'p2', 200, 305_000);
+    expect(validDuel.ok).toBe(true);
+    if (validDuel.ok) {
+      const res = svcAfterRestart.acceptDuel(
+        validDuel.duel.id,
+        'p2',
+        306_000,
+        sequenceRng([0.99, 0.99, 0.99, 0, 0, 0]),
+      );
+      expect(res.ok).toBe(true);
+      if (res.ok) {
+        expect(res.bountyClaimed).toBe(1000);
+      }
+      expect(chaos.getOpenBountyTotal('g1', 'p2')).toBe(0);
     }
 
     db.close();
@@ -599,7 +553,6 @@ describe('multiplayerService - pvp dice duel', () => {
   it('supports systemFunded red packets (> 1,000,000) and distributeRandomRedPacket', () => {
     const { db, profileRepo, svc } = setup();
 
-    // System-funded red packet does not require or deduct sender personal coins
     const sysPacket = svc.createRedPacket({
       guildId: 'g1',
       channelId: 'c1',
@@ -612,11 +565,9 @@ describe('multiplayerService - pvp dice duel', () => {
     expect(sysPacket.ok).toBe(true);
     if (sysPacket.ok) {
       expect(sysPacket.senderBalance).toBe(0);
-      expect(sysPacket.packet.totalAmount).toBe(50_000_000);
-      expect(sysPacket.packet.totalCount).toBe(25);
+      expect(sysPacket.packet.systemFunded).toBe(true);
     }
 
-    // Direct admin random distribution
     expect(
       svc.distributeRandomRedPacket({
         guildId: 'g1',

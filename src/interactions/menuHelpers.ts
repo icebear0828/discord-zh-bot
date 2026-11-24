@@ -1,12 +1,15 @@
 import {
   ActionRowBuilder,
+  DiscordAPIError,
   MessageFlags,
+  PermissionFlagsBits,
   TextInputBuilder,
   TextInputStyle,
   type ButtonInteraction,
   type ChannelSelectMenuInteraction,
   type Client,
   type Guild,
+  type GuildMember,
   type MessageCreateOptions,
   type MessageEditOptions,
   type ModalSubmitInteraction,
@@ -32,15 +35,42 @@ export const ADMIN_DENIED_FEEDBACK: MenuFeedback = {
   text: '🔒 权限不足：仅服务器管理员或已授权的 Bot 管理员可进入管理后台。',
 };
 
+export const SUPER_ADMIN_DENIED_FEEDBACK: MenuFeedback = {
+  type: 'error',
+  text: '🔒 权限不足：该高危操作仅限拥有服务器「管理员」或「管理服务器」权限的超级管理员执行。',
+};
+
+function hasSuperAdminPerms(
+  perms: { has(permission: bigint): boolean } | null | undefined,
+): boolean {
+  if (!perms) return false;
+  return (
+    perms.has(PermissionFlagsBits.Administrator) ||
+    perms.has(PermissionFlagsBits.ManageGuild)
+  );
+}
+
+export function isGuildSuperAdmin(
+  interaction: MenuSupportedInteraction,
+  _ctx?: AppContext,
+  _guildId?: string,
+): boolean {
+  if (interaction.inCachedGuild()) {
+    return hasSuperAdminPerms(interaction.member.permissions);
+  }
+  return hasSuperAdminPerms(interaction.memberPermissions);
+}
+
 export function getActor(
   interaction: MenuSupportedInteraction,
   ctx: AppContext,
   guildId: string,
 ): MenuActor {
   const cfg = ctx.repos.guildConfig.getOrCreate(guildId);
+  const isSuperAdmin = isGuildSuperAdmin(interaction, ctx, guildId);
   const isAdmin = interaction.inCachedGuild()
     ? checkMemberIsBotAdmin(interaction.member, cfg)
-    : cfg.adminUserIds.includes(interaction.user.id);
+    : isSuperAdmin || cfg.adminUserIds.includes(interaction.user.id);
   const roleIds = interaction.inCachedGuild()
     ? [...interaction.member.roles.cache.keys()]
     : undefined;
@@ -49,7 +79,53 @@ export function getActor(
     displayName: interaction.user.displayName,
     avatarUrl: interaction.user.displayAvatarURL(),
     isAdmin,
+    isSuperAdmin,
     roleIds,
+  };
+}
+
+export async function resolveActor(
+  interaction: MenuSupportedInteraction,
+  ctx: AppContext,
+  guildId: string,
+): Promise<MenuActor> {
+  if (interaction.inCachedGuild()) {
+    return getActor(interaction, ctx, guildId);
+  }
+
+  const cfg = ctx.repos.guildConfig.getOrCreate(guildId);
+  let fetchedMember: GuildMember | null = null;
+  if (interaction.guild?.members?.fetch) {
+    fetchedMember = await interaction.guild.members
+      .fetch(interaction.user.id)
+      .catch(() => null);
+  }
+
+  if (fetchedMember) {
+    const isSuperAdmin = hasSuperAdminPerms(fetchedMember.permissions);
+    const isAdmin = checkMemberIsBotAdmin(fetchedMember, cfg);
+    const roleIds = fetchedMember.roles?.cache
+      ? [...fetchedMember.roles.cache.keys()]
+      : undefined;
+    return {
+      id: interaction.user.id,
+      displayName: interaction.user.displayName,
+      avatarUrl: interaction.user.displayAvatarURL(),
+      isAdmin,
+      isSuperAdmin,
+      roleIds,
+    };
+  }
+
+  const isSuperAdmin = hasSuperAdminPerms(interaction.memberPermissions);
+  const isAdmin = isSuperAdmin || cfg.adminUserIds.includes(interaction.user.id);
+  return {
+    id: interaction.user.id,
+    displayName: interaction.user.displayName,
+    avatarUrl: interaction.user.displayAvatarURL(),
+    isAdmin,
+    isSuperAdmin,
+    roleIds: undefined,
   };
 }
 
@@ -59,6 +135,35 @@ export function isInteractionAdmin(
   guildId: string,
 ): boolean {
   return Boolean(getActor(interaction, ctx, guildId).isAdmin);
+}
+
+export function extractDiscordErrorCode(err: unknown): number | null {
+  if (err instanceof DiscordAPIError) {
+    const numeric = Number(err.code);
+    return Number.isFinite(numeric) ? numeric : null;
+  }
+  if (err && typeof err === 'object' && 'code' in err) {
+    const raw = (err as { code?: unknown }).code;
+    if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
+    if (typeof raw === 'string' && /^\d+$/.test(raw)) return Number(raw);
+  }
+  return null;
+}
+
+export function isTokenOrMessageExpiredError(err: unknown): boolean {
+  const code = extractDiscordErrorCode(err);
+  if (code === 10008 || code === 50027) {
+    return true;
+  }
+  if (err instanceof Error) {
+    return (
+      err.message.includes('10008') ||
+      err.message.includes('50027') ||
+      err.message.includes('Unknown Message') ||
+      err.message.includes('Invalid Webhook Token')
+    );
+  }
+  return false;
 }
 
 export function parsePositiveInt(raw: string): number | null {
@@ -129,9 +234,33 @@ export async function respondFromModal(
   msg: BuiltMenuMessage,
 ): Promise<void> {
   if (interaction.isFromMessage()) {
-    await interaction.update(msg);
-  } else {
-    await interaction.reply({ ...msg, flags: MessageFlags.Ephemeral });
+    try {
+      await interaction.update(msg);
+      return;
+    } catch {
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({ ...msg, flags: MessageFlags.Ephemeral });
+        return;
+      }
+      await interaction.followUp({ ...msg, flags: MessageFlags.Ephemeral });
+      return;
+    }
+  }
+  await interaction.reply({ ...msg, flags: MessageFlags.Ephemeral });
+}
+
+export async function safeEditOrFollowUp(
+  interaction: MenuSupportedInteraction,
+  msg: BuiltMenuMessage,
+): Promise<void> {
+  try {
+    await interaction.editReply(msg);
+  } catch (err) {
+    if (isTokenOrMessageExpiredError(err)) {
+      await interaction.followUp({ ...msg, flags: MessageFlags.Ephemeral });
+      return;
+    }
+    throw err;
   }
 }
 

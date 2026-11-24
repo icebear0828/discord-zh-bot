@@ -3,14 +3,31 @@ import {
   ButtonBuilder,
   ButtonStyle,
   EmbedBuilder,
+  MessageFlags,
   SlashCommandBuilder,
   StringSelectMenuBuilder,
   type ChatInputCommandInteraction,
 } from 'discord.js';
+import type { ModuleKey } from '../../config/defaults.js';
 import type { LeaderboardType } from '../../services/levelingService.js';
 import { COLORS, type AppContext, type CommandDefinition } from '../../ui/embeds.js';
 import { applyZh } from '../../ui/localization.js';
-import { requireGuildMember } from '../guards.js';
+import { requireGuildMember, requireModuleEnabled } from '../guards.js';
+
+export const LEADERBOARD_MODULE_MAP: Readonly<
+  Record<LeaderboardType, { key: ModuleKey; name: string }>
+> = {
+  xp: { key: 'leveling', name: '等级与热度' },
+  stat: { key: 'leveling', name: '等级与热度' },
+  coins: { key: 'economy', name: '经济系统' },
+  invites: { key: 'invites', name: '邀请追踪' },
+  credit: { key: 'creditLoan', name: '征信与借贷' },
+  deadbeat: { key: 'creditLoan', name: '征信与借贷' },
+  hustle: { key: 'creditLoan', name: '征信与借贷' },
+  gambling_profit: { key: 'creditLoan', name: '征信与借贷' },
+  gambling_loss: { key: 'creditLoan', name: '征信与借贷' },
+  rpg: { key: 'rpg', name: '奇幻RPG地牢' },
+};
 
 const ALL_LEADERBOARD_TYPES: ReadonlySet<string> = new Set<LeaderboardType>([
   'xp',
@@ -37,6 +54,8 @@ export function buildLeaderboardMessage(
   guildId: string,
   type: LeaderboardType,
   page: number,
+  ownerId?: string,
+  options?: { includeComponents?: boolean },
 ): {
   embeds: EmbedBuilder[];
   components: Array<ActionRowBuilder<ButtonBuilder> | ActionRowBuilder<StringSelectMenuBuilder>>;
@@ -98,33 +117,61 @@ export function buildLeaderboardMessage(
     .setFooter({ text: `第 ${res.page} / ${res.totalPages} 页 · 共 ${res.totalItems} 名成员` })
     .setTimestamp();
 
+  if (options?.includeComponents === false) {
+    return { embeds: [embed], components: [] };
+  }
+
+  const ownerSuffix = ownerId ? `:${ownerId}` : '';
+  const prevId = `lb:${type}:${Math.max(1, res.page - 1)}:prev${ownerSuffix}`;
+  const nextId = `lb:${type}:${Math.min(res.totalPages, res.page + 1)}:next${ownerSuffix}`;
+  const tabId = (t: LeaderboardType): string =>
+    ownerId ? `lb:${t}:1:tab:${ownerId}` : `lb:${t}:1`;
+  const shareId = ownerId
+    ? `lb:share:${type}:${res.page}:${ownerId}`
+    : `lb:share:${type}:${res.page}`;
+
   const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
-      .setCustomId(`lb:${type}:${Math.max(1, res.page - 1)}:prev`)
+      .setCustomId(prevId)
       .setLabel('上一页')
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(res.page <= 1),
     new ButtonBuilder()
-      .setCustomId(`lb:${type}:${Math.min(res.totalPages, res.page + 1)}:next`)
+      .setCustomId(nextId)
       .setLabel('下一页')
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(res.page >= res.totalPages),
     new ButtonBuilder()
-      .setCustomId('lb:xp:1')
+      .setCustomId(tabId('xp'))
       .setLabel('经验榜')
       .setStyle(type === 'xp' ? ButtonStyle.Primary : ButtonStyle.Secondary),
     new ButtonBuilder()
-      .setCustomId('lb:coins:1')
+      .setCustomId(tabId('coins'))
       .setLabel('富豪榜')
       .setStyle(type === 'coins' ? ButtonStyle.Primary : ButtonStyle.Secondary),
     new ButtonBuilder()
-      .setCustomId('lb:gambling_profit:1')
-      .setLabel('赌神榜')
+      .setCustomId(tabId('invites'))
+      .setLabel('邀请榜')
+      .setStyle(type === 'invites' ? ButtonStyle.Primary : ButtonStyle.Secondary),
+  );
+
+  const statRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(tabId('stat'))
+      .setLabel(`📏 ${cfg.leveling.statName}榜`)
+      .setStyle(type === 'stat' ? ButtonStyle.Primary : ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId(tabId('gambling_profit'))
+      .setLabel('🎰 赌神榜')
       .setStyle(type === 'gambling_profit' ? ButtonStyle.Primary : ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId(shareId)
+      .setLabel('📢 晒到公屏')
+      .setStyle(ButtonStyle.Success),
   );
 
   const selectMenu = new StringSelectMenuBuilder()
-    .setCustomId('lb:select')
+    .setCustomId(ownerId ? `lb:select:${ownerId}` : 'lb:select')
     .setPlaceholder('🔀 切换其他全服排行榜...')
     .addOptions(
       { label: '📈 等级经验榜', value: 'xp', default: type === 'xp' },
@@ -141,7 +188,7 @@ export function buildLeaderboardMessage(
 
   const selectRow = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(selectMenu);
 
-  return { embeds: [embed], components: [row, selectRow] };
+  return { embeds: [embed], components: [row, statRow, selectRow] };
 }
 
 export const leaderboardCommand: CommandDefinition = {
@@ -180,6 +227,12 @@ export const leaderboardCommand: CommandDefinition = {
 
     const type = parseLeaderboardType(interaction.options.getString('type'));
 
-    await interaction.reply(buildLeaderboardMessage(ctx, guildCtx.guildId, type, 1));
+    const modInfo = LEADERBOARD_MODULE_MAP[type];
+    if (!(await requireModuleEnabled(interaction, ctx, modInfo.key, modInfo.name))) return;
+
+    await interaction.reply({
+      ...buildLeaderboardMessage(ctx, guildCtx.guildId, type, 1, interaction.user.id),
+      flags: MessageFlags.Ephemeral,
+    });
   },
 };

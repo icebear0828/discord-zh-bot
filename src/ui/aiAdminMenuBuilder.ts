@@ -34,6 +34,7 @@ export function buildAdminAiView(
   guildId: string,
   actor: MenuActor,
   feedback: MenuFeedback | undefined,
+  tab: 'basic' | 'channels' = 'basic',
 ): BuiltMenuMessage {
   const cfg = ctx.repos.guildConfig.getOrCreate(guildId);
   const ai = cfg.ai;
@@ -57,9 +58,9 @@ export function buildAdminAiView(
       : '无';
 
   const description = [
-    `🔌 **网关状态**：${llmConfigured ? '✅ 已连接配置' : '⚠️ 未配置 `.env` (`LLM_BASE_URL` / `LLM_API_KEY`)'} ｜ **模块总开关**：${aiEnabled ? '✅ 已开启' : '⛔ 已关闭'}`,
+    `🔌 **网关状态**：${llmConfigured ? '✅ 已连接配置' : '⚠️ 未配置网关参数'} ｜ **模块总开关**：${aiEnabled ? '✅ 已开启' : '⛔ 已关闭'}`,
     `🎭 **当前人格**：**${ai.personaName}**（预设：${AI_PRESET_LABELS[ai.preset] ?? ai.preset}）`,
-    `🤖 **当前模型**：\`${effectiveModel}\`${ai.modelOverride ? '（后台覆盖）' : '（`.env` 默认）'} ｜ 温度 **${ai.temperature}** ｜ MaxTokens **${ai.maxTokens}**`,
+    `🤖 **当前模型**：\`${effectiveModel}\`${ai.modelOverride ? '（后台覆盖）' : '（默认）'} ｜ 温度 **${ai.temperature}** ｜ MaxTokens **${ai.maxTokens}**`,
     `💬 **上下文与记忆**：滑窗 **${ai.contextWindowMessages}** 条 ｜ 记忆抽取 ${ai.memoryEnabled ? `✅ 开（每域上限 ${ai.maxMemoriesPerScope} 条）` : '⛔ 关'} ｜ 图片识图 ${ai.visionEnabled ? '✅ 开' : '⛔ 关'}`,
     `🧠 **SQLite 记忆库**：共 **${memCounts.total}** 条（用户 ${memCounts.user} / 频道 ${memCounts.channel} / 全服 ${memCounts.guild}）`,
     `🗨️ **免 @ 直聊频道**：${freeText}`,
@@ -76,7 +77,7 @@ export function buildAdminAiView(
   const embed = new EmbedBuilder()
     .setColor(resolveColor(COLORS.PRIMARY, feedback))
     .setAuthor({ name: `${actor.displayName} · AI 对话配置中心`, iconURL: actor.avatarUrl })
-    .setTitle('🤖 AI 对话与人格记忆管理')
+    .setTitle(tab === 'channels' ? '📡 AI 频道范围配置（免@ / 白名单 / 屏蔽）' : '🤖 AI 对话与人格记忆管理')
     .setDescription(withFeedback(description, feedback))
     .setFooter({ text: '🔒 仅管理员可见；修改立即生效，群友可用 /ai 重置 与 /ai 记忆' })
     .setTimestamp();
@@ -110,6 +111,20 @@ export function buildAdminAiView(
     freeChanSelect.setDefaultChannels(ai.freeChatChannelIds.slice(0, 10));
   }
 
+  const allowedChanSelect = new ChannelSelectMenuBuilder()
+    .setCustomId('menu:chan:admin_ai_allowed')
+    .setPlaceholder('📌 设置 AI 白名单限定频道（清空即全频道允许）...')
+    .setChannelTypes(
+      ChannelType.GuildText,
+      ChannelType.PublicThread,
+      ChannelType.PrivateThread,
+    )
+    .setMinValues(0)
+    .setMaxValues(10);
+  if (ai.allowedChannelIds.length > 0) {
+    allowedChanSelect.setDefaultChannels(ai.allowedChannelIds.slice(0, 10));
+  }
+
   const ignoreChanSelect = new ChannelSelectMenuBuilder()
     .setCustomId('menu:chan:admin_ai_ignore')
     .setPlaceholder('🔕 设置 AI 屏蔽频道（清空即取消）...')
@@ -124,10 +139,31 @@ export function buildAdminAiView(
     ignoreChanSelect.setDefaultChannels(ai.ignoredChannelIds.slice(0, 10));
   }
 
+  if (tab === 'channels') {
+    const components: MenuComponentRow[] = [
+      new ActionRowBuilder<ChannelSelectMenuBuilder>().addComponents(freeChanSelect),
+      new ActionRowBuilder<ChannelSelectMenuBuilder>().addComponents(allowedChanSelect),
+      new ActionRowBuilder<ChannelSelectMenuBuilder>().addComponents(ignoreChanSelect),
+      buttonRow(
+        makeButton('menu:admin:ai_toggle_allowed_here', '📌 切换本频道白名单', ButtonStyle.Secondary),
+        makeButton(
+          'menu:admin:ai_clear_allowed',
+          '🌐 解除白名单限制',
+          ButtonStyle.Secondary,
+          ai.allowedChannelIds.length === 0,
+        ),
+        makeButton('menu:nav:admin_ai:basic', '🎭 人设与参数', ButtonStyle.Primary),
+        makeButton('menu:nav:admin', '⬅️ 管理后台', ButtonStyle.Secondary),
+        makeButton('menu:nav:home', '🏠 主菜单', ButtonStyle.Secondary),
+      ),
+    ];
+    return { embeds: [embed], components };
+  }
+
   const components: MenuComponentRow[] = [
     presetRow,
+    new ActionRowBuilder<ChannelSelectMenuBuilder>().addComponents(allowedChanSelect),
     new ActionRowBuilder<ChannelSelectMenuBuilder>().addComponents(freeChanSelect),
-    new ActionRowBuilder<ChannelSelectMenuBuilder>().addComponents(ignoreChanSelect),
     buttonRow(
       makeButton('menu:modal:admin_ai_persona', '✍️ 编辑人设/世界书', ButtonStyle.Primary),
       makeButton('menu:modal:admin_ai_params', '🎛️ 模型与参数', ButtonStyle.Primary),
@@ -144,17 +180,8 @@ export function buildAdminAiView(
       makeButton('menu:admin:ai_reset_config', '♻️ 恢复默认', ButtonStyle.Danger),
     ),
     buttonRow(
-      makeButton(
-        'menu:admin:ai_toggle_allowed_here',
-        '📌 切换本频道白名单',
-        ButtonStyle.Secondary,
-      ),
-      makeButton(
-        'menu:admin:ai_clear_allowed',
-        '🌐 解除白名单限制',
-        ButtonStyle.Secondary,
-        ai.allowedChannelIds.length === 0,
-      ),
+      makeButton('menu:admin:ai_toggle_allowed_here', '📌 切换本频道白名单', ButtonStyle.Secondary),
+      makeButton('menu:nav:admin_ai:channels', '🔕 屏蔽与全部频道', ButtonStyle.Primary),
       makeButton('menu:nav:admin', '⬅️ 管理后台', ButtonStyle.Secondary),
       makeButton('menu:nav:home', '🏠 主菜单', ButtonStyle.Secondary),
     ),

@@ -282,12 +282,14 @@ function createChatCommandMock(opts: {
 function createButtonMock(opts: {
   customId: string;
   userId: string;
+  isAdmin?: boolean;
   channel?: MockChannel | null;
   fetchedChannel?: MockChannel | null;
   messageCustomIds?: string[];
 }) {
   const reply = vi.fn(async (_payload: MockPayload) => undefined);
   const update = vi.fn(async (_payload: MockPayload) => undefined);
+  const editReply = vi.fn(async (_payload: MockPayload) => undefined);
   const followUp = vi.fn(async (_payload: MockPayload) => undefined);
   const deferUpdate = vi.fn(async () => undefined);
   const showModal = vi.fn(async (_modal: { toJSON(): { custom_id: string } }) => undefined);
@@ -307,16 +309,17 @@ function createButtonMock(opts: {
   const mock = {
     customId: opts.customId,
     guildId: 'g1',
-    guild: { id: 'g1', name: '测试服务器' },
+    guild: { id: 'g1', name: '测试服务器', channels: { cache: new Map() } },
     channelId: channel?.id ?? 'c1',
     channel,
     client: {
       channels: {
+        cache: new Map(),
         fetch: fetchChannel,
       },
     },
     user: makeMockUser({ id: opts.userId }),
-    member: makeMockMember(opts.userId),
+    member: makeMockMember(opts.userId, opts.isAdmin ?? false),
     replied: false,
     deferred: false,
     message: {
@@ -335,6 +338,7 @@ function createButtonMock(opts: {
     isRepliable: () => true,
     reply,
     update,
+    editReply,
     followUp,
     deferUpdate,
     showModal,
@@ -344,6 +348,7 @@ function createButtonMock(opts: {
     interaction: mock as unknown as ButtonInteraction & Interaction,
     reply,
     update,
+    editReply,
     followUp,
     deferUpdate,
     showModal,
@@ -357,16 +362,19 @@ function createStringSelectMock(opts: {
   customId: string;
   userId: string;
   values: string[];
+  isAdmin?: boolean;
   failRoleAdd?: boolean;
   initialRoles?: string[];
 }) {
   const reply = vi.fn(async (_payload: MockPayload) => undefined);
   const update = vi.fn(async (_payload: MockPayload) => undefined);
+  const deferUpdate = vi.fn(async () => undefined);
+  const editReply = vi.fn(async (_payload: MockPayload) => undefined);
   const followUp = vi.fn(async (_payload: MockPayload) => undefined);
   const showModal = vi.fn(async (_modal: { toJSON(): { custom_id: string } }) => undefined);
   const member = makeMockMember(
     opts.userId,
-    false,
+    opts.isAdmin ?? false,
     opts.failRoleAdd ?? false,
     opts.initialRoles ?? [],
   );
@@ -375,11 +383,12 @@ function createStringSelectMock(opts: {
   const mock = {
     customId: opts.customId,
     guildId: 'g1',
-    guild: { id: 'g1', name: '测试服务器' },
+    guild: { id: 'g1', name: '测试服务器', channels: { cache: new Map() } },
     channelId: channel.id,
     channel,
     client: {
       channels: {
+        cache: new Map(),
         fetch: vi.fn(async () => null),
       },
     },
@@ -399,6 +408,8 @@ function createStringSelectMock(opts: {
     isRepliable: () => true,
     reply,
     update,
+    deferUpdate,
+    editReply,
     followUp,
     showModal,
   };
@@ -407,6 +418,9 @@ function createStringSelectMock(opts: {
     interaction: mock as unknown as StringSelectMenuInteraction & Interaction,
     reply,
     update,
+    deferUpdate,
+    editReply,
+    followUp,
     showModal,
     member,
   };
@@ -416,12 +430,15 @@ function createUserSelectMock(opts: {
   customId: string;
   userId: string;
   target: MockUserInput;
+  isAdmin?: boolean;
   channel?: MockChannel | null;
   fetchedChannel?: MockChannel | null;
 }) {
   const reply = vi.fn(async (_payload: MockPayload) => undefined);
   const update = vi.fn(async (_payload: MockPayload) => undefined);
   const deferUpdate = vi.fn(async () => undefined);
+  const editReply = vi.fn(async (_payload: MockPayload) => undefined);
+  const followUp = vi.fn(async (_payload: MockPayload) => undefined);
   const showModal = vi.fn(async (_modal: { toJSON(): { custom_id: string } }) => undefined);
   const channel = opts.channel === undefined ? makeMockChannel(true) : opts.channel;
   const fetchChannel = vi.fn(async () => opts.fetchedChannel ?? null);
@@ -436,18 +453,19 @@ function createUserSelectMock(opts: {
   const mock = {
     customId: opts.customId,
     guildId: 'g1',
-    guild: { id: 'g1', name: '测试服务器' },
+    guild: { id: 'g1', name: '测试服务器', channels: { cache: new Map() } },
     channelId: channel?.id ?? 'c1',
     channel,
     client: {
       channels: {
+        cache: new Map(),
         fetch: fetchChannel,
       },
     },
     values: [targetUser.id],
     users,
     user: makeMockUser({ id: opts.userId }),
-    member: makeMockMember(opts.userId),
+    member: makeMockMember(opts.userId, opts.isAdmin ?? false),
     replied: false,
     deferred: false,
     inCachedGuild: () => true,
@@ -462,6 +480,8 @@ function createUserSelectMock(opts: {
     reply,
     update,
     deferUpdate,
+    editReply,
+    followUp,
     showModal,
   };
 
@@ -470,6 +490,8 @@ function createUserSelectMock(opts: {
     reply,
     update,
     deferUpdate,
+    editReply,
+    followUp,
     showModal,
     channel,
     fetchChannel,
@@ -480,6 +502,7 @@ function createModalMock(opts: {
   customId: string;
   userId: string;
   fields: Record<string, string>;
+  isAdmin?: boolean;
   fromMessage?: boolean;
   channel?: MockChannel;
   membersMap?: Map<string, { id: string; user: ReturnType<typeof makeMockUser> }>;
@@ -500,6 +523,7 @@ function createModalMock(opts: {
     guild: {
       id: 'g1',
       name: '测试服务器',
+      channels: { cache: new Map() },
       members: {
         fetch: vi.fn(async () => membersMap),
       },
@@ -508,11 +532,12 @@ function createModalMock(opts: {
     channel,
     client: {
       channels: {
+        cache: new Map(),
         fetch: vi.fn(async () => null),
       },
     },
     user: makeMockUser({ id: opts.userId }),
-    member: makeMockMember(opts.userId),
+    member: makeMockMember(opts.userId, opts.isAdmin ?? false),
     replied: false,
     deferred: false,
     fields: {
@@ -540,6 +565,7 @@ function createModalMock(opts: {
     interaction: mock as unknown as ModalSubmitInteraction & Interaction,
     reply,
     update,
+    followUp,
     deferUpdate,
     deferReply,
     editReply,
@@ -708,11 +734,10 @@ describe('menu router & multiplayer interaction flows', () => {
     await routeInteraction(navSolo.interaction, ctx);
     expect(navSolo.update.mock.calls[0]![0].embeds?.[0]?.toJSON().title).toContain('独立游玩');
 
-    // Daily action from solo keeps solo view
+    // Daily action from solo keeps solo view via explicit source segment
     const dailyOnSolo = createButtonMock({
-      customId: 'menu:act:daily',
+      customId: 'menu:act:daily:solo',
       userId: 'u1',
-      messageCustomIds: ['menu:nav:slots'],
     });
     await routeInteraction(dailyOnSolo.interaction, ctx);
     expect(dailyOnSolo.update.mock.calls[0]![0].embeds?.[0]?.toJSON().title).toContain('独立游玩');
@@ -807,14 +832,15 @@ describe('menu router & multiplayer interaction flows', () => {
     await routeInteraction(robSelf.interaction, ctx);
     expect(robSelf.update.mock.calls[0]![0].embeds?.[0]?.toJSON().description).toContain('不能打劫自己');
 
-    // Valid rob executes & sends public broadcast WITHOUT pinging members
+    // Valid rob executes with deferUpdate + editReply & sends public broadcast WITHOUT pinging members
     const robTarget = createUserSelectMock({
       customId: 'menu:user:rob',
       userId: 'attacker',
       target: { id: 'victim' },
     });
     await routeInteraction(robTarget.interaction, ctx);
-    expect(robTarget.update).toHaveBeenCalledTimes(1);
+    expect(robTarget.deferUpdate).toHaveBeenCalledTimes(1);
+    expect(robTarget.editReply).toHaveBeenCalledTimes(1);
     expect(robTarget.channel!.send).toHaveBeenCalledTimes(1);
     const robBroadcast = robTarget.channel!.send.mock.calls[0]![0];
     expect(robBroadcast.allowedMentions).toEqual({ parse: [] });
@@ -825,6 +851,7 @@ describe('menu router & multiplayer interaction flows', () => {
     expect(robBroadcast.embeds?.[0]?.toJSON().title).toMatch(/抢钱/);
 
     // Fallback channel fetch works when interaction.channel is null
+    ctx.repos.profile.addCoins('g1', 'attacker2', 500);
     ctx.repos.profile.addCoins('g1', 'victim2', 1000);
     const fetchedFallback = makeMockChannel(true, 'fallback-1');
     const robFallback = createUserSelectMock({
@@ -867,7 +894,8 @@ describe('menu router & multiplayer interaction flows', () => {
     expect(payModal.channel.send.mock.calls[0]![0].content).toContain('<@sender>');
     expect(payModal.channel.send.mock.calls[0]![0].content).toContain('<@receiver>');
     expect(payModal.channel.send.mock.calls[0]![0].content).toContain('250');
-    expect(payModal.update).toHaveBeenCalledTimes(1);
+    expect(payModal.deferUpdate).toHaveBeenCalledTimes(1);
+    expect(payModal.editReply).toHaveBeenCalledTimes(1);
 
     ctx.db.close();
   });
@@ -1024,15 +1052,16 @@ describe('menu router & multiplayer interaction flows', () => {
       custom_id: 'menu:user:social:hug',
     });
 
-    // Social user select -> sends public embed & updates menu
+    // Social user select -> defers, sends public embed & edits menu
     const socialUser = createUserSelectMock({
       customId: 'menu:user:social:hug',
       userId: 'u1',
       target: { id: 'u2' },
     });
     await routeInteraction(socialUser.interaction, ctx);
+    expect(socialUser.deferUpdate).toHaveBeenCalledTimes(1);
     expect(socialUser.channel.send).toHaveBeenCalledTimes(1);
-    expect(socialUser.update).toHaveBeenCalledTimes(1);
+    expect(socialUser.editReply).toHaveBeenCalledTimes(1);
 
     // Shop: role item failure auto-refunds; boost item succeeds & activates in bag
     const roleItem = ctx.services.shop.createRoleItem({
@@ -1150,18 +1179,14 @@ describe('menu router & multiplayer interaction flows', () => {
     await routeInteraction(subDice.interaction, ctx);
     expect(subDice.update).toHaveBeenCalledTimes(1);
 
-    // Leaderboard pagination & public broadcast on click
+    // Leaderboard pagination & private-only tab switching (never broadcasts on tab click)
     for (let i = 1; i <= 12; i++) {
       ctx.repos.profile.addCoins('g1', `rich-${i}`, i * 100);
     }
     const lbPage1 = createButtonMock({ customId: 'menu:rank:coins:1', userId: 'u1' });
     await routeInteraction(lbPage1.interaction, ctx);
     expect(lbPage1.update.mock.calls[0]![0].embeds?.[0]?.toJSON().footer?.text).toContain('第 1 / 2 页');
-    expect(lbPage1.channel.send).toHaveBeenCalledTimes(1);
-    const pubLbPayload = lbPage1.channel.send.mock.calls[0]![0];
-    expect(pubLbPayload.content).toContain('富豪榜');
-    expect(pubLbPayload.embeds?.[0]?.toJSON().footer?.text).toContain('第 1 / 2 页');
-    expect(pubLbPayload.components?.length).toBe(2);
+    expect(lbPage1.channel.send).not.toHaveBeenCalled();
 
     const lbPage2 = createButtonMock({ customId: 'menu:rank:coins:2:next', userId: 'u1' });
     await routeInteraction(lbPage2.interaction, ctx);
@@ -1170,8 +1195,8 @@ describe('menu router & multiplayer interaction flows', () => {
 
     const lbStat = createButtonMock({ customId: 'menu:rank:stat:1', userId: 'u1' });
     await routeInteraction(lbStat.interaction, ctx);
-    expect(lbStat.channel.send).toHaveBeenCalledTimes(1);
-    expect(lbStat.channel.send.mock.calls[0]![0].content).toContain('成长值排行榜');
+    expect(lbStat.channel.send).not.toHaveBeenCalled();
+    expect(lbStat.update.mock.calls[0]![0].embeds?.[0]?.toJSON().title).toContain('成长值排行榜');
 
     ctx.db.close();
   });
@@ -1343,22 +1368,28 @@ describe('menu router & multiplayer interaction flows', () => {
         status: 'player_blackjack',
         payout: 1250,
         canDouble: false,
+        createdAt: Date.now(),
+        expiresAt: Date.now() + 900_000,
       },
     });
     const bjWin = createButtonMock({ customId: 'menu:bj_start:500', userId: 'u1' });
     await routeInteraction(bjWin.interaction, ctx);
     expect(bjWin.channel!.send).toHaveBeenCalledTimes(1);
-    expect(bjWin.channel!.send.mock.calls[0]![0].content).toContain('<@u1>');
+    expect(bjWin.channel!.send.mock.calls[0]![0].allowedMentions).toEqual({ parse: [] });
+    expect(bjWin.channel!.send.mock.calls[0]![0].embeds?.[0]?.toJSON().title).toContain('二十一点战报');
+    expect(bjWin.channel!.send.mock.calls[0]![0].embeds?.[0]?.toJSON().description).toContain('<@u1>');
 
-    // Share rank & leaderboard to channel
+    // Share rank & leaderboard to channel (uses deferUpdate + editReply)
     const shareRank = createButtonMock({ customId: 'menu:share:rank', userId: 'u1' });
     await routeInteraction(shareRank.interaction, ctx);
+    expect(shareRank.deferUpdate).toHaveBeenCalledTimes(1);
     expect(shareRank.channel!.send).toHaveBeenCalledTimes(1);
     expect(shareRank.channel!.send.mock.calls[0]![0].embeds).toHaveLength(1);
-    expect(shareRank.update.mock.calls[0]![0].embeds?.[0]?.toJSON().description).toContain('晒出');
+    expect(shareRank.editReply.mock.calls[0]![0].embeds?.[0]?.toJSON().description).toContain('晒出');
 
     const shareLb = createButtonMock({ customId: 'menu:share:lb:coins:1', userId: 'u1' });
     await routeInteraction(shareLb.interaction, ctx);
+    expect(shareLb.deferUpdate).toHaveBeenCalledTimes(1);
     expect(shareLb.channel!.send).toHaveBeenCalledTimes(1);
     expect(shareLb.channel!.send.mock.calls[0]![0].embeds?.[0]?.toJSON().title).toContain('富豪榜');
 
@@ -1514,20 +1545,42 @@ describe('menu router & multiplayer interaction flows', () => {
       levelUpCoinReward: 250,
     });
 
-    // Toggle voice, announce, module, and reset leveling (preserving announceChannelId)
+    // Toggle voice works for adminUserIds; reset leveling/econ require Guild Super Admin + two-step confirm
     const curLvl = ctx.repos.guildConfig.getOrCreate('g1').leveling;
     ctx.repos.guildConfig.updateLeveling('g1', { ...curLvl, announceChannelId: 'ch-ann' });
     const toggleVoice = createButtonMock({ customId: 'menu:admin:toggle_voice', userId: 'auth1' });
     await routeInteraction(toggleVoice.interaction, ctx);
     expect(ctx.repos.guildConfig.getOrCreate('g1').leveling.voiceEnabled).toBe(false);
 
-    const resetLvl = createButtonMock({ customId: 'menu:admin:reset_lvl', userId: 'auth1' });
-    await routeInteraction(resetLvl.interaction, ctx);
+    // Ordinary adminUserIds helper cannot reset leveling or econ
+    const resetLvlDenied = createButtonMock({ customId: 'menu:admin:reset_lvl', userId: 'auth1' });
+    await routeInteraction(resetLvlDenied.interaction, ctx);
+    expect(ctx.repos.guildConfig.getOrCreate('g1').leveling.baseMinXp).toBe(30);
+    expect(resetLvlDenied.update.mock.calls[0]![0].embeds?.[0]?.toJSON().description).toContain('超级管理员');
+
+    // Guild Super Admin resets leveling with two-step confirm (preserving announceChannelId)
+    const resetLvlStep1 = createButtonMock({
+      customId: 'menu:admin:reset_lvl',
+      userId: 'super1',
+      isAdmin: true,
+    });
+    await routeInteraction(resetLvlStep1.interaction, ctx);
+    expect(ctx.repos.guildConfig.getOrCreate('g1').leveling.baseMinXp).toBe(30);
+    const resetLvlConfirm = createButtonMock({
+      customId: 'menu:admin:reset_lvl:confirm',
+      userId: 'super1',
+      isAdmin: true,
+    });
+    await routeInteraction(resetLvlConfirm.interaction, ctx);
     expect(ctx.repos.guildConfig.getOrCreate('g1').leveling.baseMinXp).toBe(15);
     expect(ctx.repos.guildConfig.getOrCreate('g1').leveling.announceChannelId).toBe('ch-ann');
 
-    const resetEcon = createButtonMock({ customId: 'menu:admin:reset_econ', userId: 'auth1' });
-    await routeInteraction(resetEcon.interaction, ctx);
+    const resetEconConfirm = createButtonMock({
+      customId: 'menu:admin:reset_econ:confirm',
+      userId: 'super1',
+      isAdmin: true,
+    });
+    await routeInteraction(resetEconConfirm.interaction, ctx);
     expect(ctx.repos.guildConfig.getOrCreate('g1').economy.robSuccessRate).toBe(0.45);
 
     const modToggle = createStringSelectMock({
@@ -1538,25 +1591,28 @@ describe('menu router & multiplayer interaction flows', () => {
     await routeInteraction(modToggle.interaction, ctx);
     expect(ctx.repos.guildConfig.getOrCreate('g1').modules.fun).toBe(false);
 
-    // Self-removal blocked for non-Discord-Administrator; toggling another admin user succeeds
-    const selfToggle = createUserSelectMock({
+    // Authorized adminUserIds cannot toggle admin users; Guild Super Admin can
+    const helperToggleDenied = createUserSelectMock({
       customId: 'menu:user:admin_toggle_user',
       userId: 'auth1',
-      target: { id: 'auth1' },
+      target: { id: 'auth2' },
     });
-    await routeInteraction(selfToggle.interaction, ctx);
-    expect(ctx.repos.guildConfig.getOrCreate('g1').adminUserIds).toContain('auth1');
-    expect(selfToggle.update.mock.calls[0]![0].embeds?.[0]?.toJSON().description).toContain('防误锁');
+    await routeInteraction(helperToggleDenied.interaction, ctx);
+    expect(ctx.repos.guildConfig.getOrCreate('g1').adminUserIds).toEqual(['auth1']);
+    expect(helperToggleDenied.update.mock.calls[0]![0].embeds?.[0]?.toJSON().description).toContain(
+      '超级管理员',
+    );
 
     const addSecondAdmin = createUserSelectMock({
       customId: 'menu:user:admin_toggle_user',
-      userId: 'auth1',
+      userId: 'super1',
+      isAdmin: true,
       target: { id: 'auth2' },
     });
     await routeInteraction(addSecondAdmin.interaction, ctx);
     expect(ctx.repos.guildConfig.getOrCreate('g1').adminUserIds).toEqual(['auth1', 'auth2']);
 
-    // Single coin grant modal & server-wide coin grant modal via admin panel
+    // Single coin grant modal works for auth1; server-wide grant requires Guild Super Admin
     const grantSelect = createUserSelectMock({
       customId: 'menu:user:admin_grant',
       userId: 'auth1',
@@ -1579,9 +1635,19 @@ describe('menu router & multiplayer interaction flows', () => {
       ['u10', { id: 'u10', user: makeMockUser({ id: 'u10' }) }],
       ['b1', { id: 'b1', user: makeMockUser({ id: 'b1', bot: true }) }],
     ]);
-    const grantAllModal = createModalMock({
+    const grantAllDenied = createModalMock({
       customId: 'menu:modal_sub:admin_grant_all',
       userId: 'auth1',
+      fields: { amount: '2000' },
+      membersMap,
+    });
+    await routeInteraction(grantAllDenied.interaction, ctx);
+    expect(ctx.repos.profile.getOrCreate('g1', 'u10').coins).toBe(0);
+
+    const grantAllModal = createModalMock({
+      customId: 'menu:modal_sub:admin_grant_all',
+      userId: 'super1',
+      isAdmin: true,
       fields: { amount: '2000' },
       membersMap,
     });
@@ -1800,6 +1866,8 @@ describe('menu router & multiplayer interaction flows', () => {
     await routeInteraction(predBetSub.interaction, ctx);
     expect(ctx.repos.profile.getOrCreate('g1', 'u2').coins).toBe(9500);
 
+    // Lock prediction before settling (per #9 P0-3)
+    ctx.services.worldEvent.lockPrediction(pred.id, 'u1', true);
     const predSettle = createStringSelectMock({
       customId: `ev:pred:settle:${pred.id}`,
       userId: 'u1',
@@ -2054,9 +2122,10 @@ describe('menu router & multiplayer interaction flows', () => {
       failRoleAdd: true,
     });
     await routeInteraction(failPickRoles.interaction, ctx);
-    expect(failPickRoles.update.mock.calls[0]![0].embeds?.[0]?.toJSON().description).toContain('身份组更新失败');
+    expect(failPickRoles.deferUpdate).toHaveBeenCalledTimes(1);
+    expect(failPickRoles.editReply.mock.calls[0]![0].embeds?.[0]?.toJSON().description).toContain('身份组更新失败');
 
-    // Admin removes an option & deletes panel
+    // Admin removes an option & deletes panel (two-step confirm)
     const delOpt = createStringSelectMock({
       customId: `menu:admin_rp_del_opt:${panelId}`,
       userId: 'admin1',
@@ -2065,11 +2134,18 @@ describe('menu router & multiplayer interaction flows', () => {
     await routeInteraction(delOpt.interaction, ctx);
     expect(ctx.services.rolePanel.getPanelWithOptions('g1', panelId)?.options).toHaveLength(1);
 
-    const delPanel = createButtonMock({
+    const delPanelStep1 = createButtonMock({
       customId: `menu:admin:rp_delete:${panelId}`,
       userId: 'admin1',
     });
-    await routeInteraction(delPanel.interaction, ctx);
+    await routeInteraction(delPanelStep1.interaction, ctx);
+    expect(ctx.services.rolePanel.listPanels('g1')).toHaveLength(1);
+
+    const delPanelConfirm = createButtonMock({
+      customId: `menu:admin:rp_delete:${panelId}:confirm`,
+      userId: 'admin1',
+    });
+    await routeInteraction(delPanelConfirm.interaction, ctx);
     expect(ctx.services.rolePanel.listPanels('g1')).toHaveLength(0);
 
     // 6. Member edits personal ID card via modal (rejects invalid color, saves valid card)
@@ -2225,6 +2301,13 @@ describe('menu router & multiplayer interaction flows', () => {
       values: [String(statShopItem!.id)],
     });
     await routeInteraction(delShopSelect.interaction, ctx);
+    expect(ctx.services.shop.listItems('g1').some((i) => i.id === statShopItem!.id)).toBe(true);
+
+    const delShopConfirm = createButtonMock({
+      customId: `menu:admin:shop_del_confirm:${statShopItem!.id}:1`,
+      userId: 'admin1',
+    });
+    await routeInteraction(delShopConfirm.interaction, ctx);
     expect(ctx.services.shop.listItems('g1').some((i) => i.id === statShopItem!.id)).toBe(false);
 
     ctx.db.close();
@@ -2403,7 +2486,7 @@ describe('menu router & multiplayer interaction flows', () => {
     await routeInteraction(highGrantModal.interaction, ctx);
     expect(ctx.repos.profile.getOrCreate('g1', 'u1').coins).toBe(50_000_000);
 
-    // 2. Admin random red packet distribution (5,000,000 across 2 members)
+    // 2. Admin random red packet distribution (5,000,000 across 2 members, requires Guild Super Admin)
     const membersMap = new Map([
       ['u1', { id: 'u1', user: makeMockUser({ id: 'u1' }) }],
       ['u2', { id: 'u2', user: makeMockUser({ id: 'u2' }) }],
@@ -2412,6 +2495,7 @@ describe('menu router & multiplayer interaction flows', () => {
     const randomRpModal = createModalMock({
       customId: 'menu:modal_sub:admin_random_redpacket',
       userId: 'admin1',
+      isAdmin: true,
       fields: {
         totalAmount: '5000000',
         totalCount: '2',
@@ -2459,7 +2543,8 @@ describe('menu router & multiplayer interaction flows', () => {
       target: { id: 'u1' },
     });
     await routeInteraction(robBankSelect.interaction, ctx);
-    expect(robBankSelect.update).toHaveBeenCalledTimes(1);
+    expect(robBankSelect.deferUpdate).toHaveBeenCalledTimes(1);
+    expect(robBankSelect.editReply).toHaveBeenCalledTimes(1);
     expect(robBankSelect.channel!.send).toHaveBeenCalledTimes(1);
     expect(robBankSelect.channel!.send.mock.calls[0]![0].embeds?.[0]?.toJSON().title).toContain(
       '银行金库大劫案',
@@ -2509,9 +2594,20 @@ describe('menu router & multiplayer interaction flows', () => {
       monitorAllBtn.update.mock.calls[0]![0].embeds?.[0]?.toJSON().description,
     ).toContain('全部交互流水');
 
-    const monitorClearBtn = createButtonMock({
+    const monitorClearStep1 = createButtonMock({
       customId: 'menu:admin_monitor:clear',
       userId: 'admin1',
+      isAdmin: true,
+    });
+    await routeInteraction(monitorClearStep1.interaction, ctx);
+    expect(
+      monitorClearStep1.update.mock.calls[0]![0].embeds?.[0]?.toJSON().description,
+    ).toContain('确认清空');
+
+    const monitorClearBtn = createButtonMock({
+      customId: 'menu:admin_monitor:clear:confirm',
+      userId: 'admin1',
+      isAdmin: true,
     });
     await routeInteraction(monitorClearBtn.interaction, ctx);
     expect(

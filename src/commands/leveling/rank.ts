@@ -1,7 +1,14 @@
-import { EmbedBuilder, SlashCommandBuilder, type ChatInputCommandInteraction } from 'discord.js';
+import {
+  EmbedBuilder,
+  MessageFlags,
+  SlashCommandBuilder,
+  type ChatInputCommandInteraction,
+} from 'discord.js';
 import { parseCardColor } from '../../services/levelingService.js';
+import { PET_SPECIES_MAP } from '../../services/socialPetService.js';
 import {
   COLORS,
+  createErrorEmbed,
   formatDurationZh,
   renderProgressBar,
   type AppContext,
@@ -32,6 +39,14 @@ export const rankCommand: CommandDefinition = {
     if (!(await requireModuleEnabled(interaction, ctx, 'leveling', '等级与热度'))) return;
 
     const target = interaction.options.getUser('user') ?? interaction.user;
+    if (target.bot) {
+      await interaction.reply({
+        embeds: [createErrorEmbed('❌ 无法查询', '机器人没有等级名片，请选择真实群友查询。')],
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
     const cfg = ctx.repos.guildConfig.getOrCreate(guildCtx.guildId);
     const data = ctx.services.leveling.getRankCardData(guildCtx.guildId, target.id);
     const creditProfile = ctx.services.creditLoan.getCreditProfile(guildCtx.guildId, target.id);
@@ -54,6 +69,21 @@ export const rankCommand: CommandDefinition = {
       data.activeBoostMultiplier > 1 && data.boostExpiresAt > Date.now()
         ? `⚡ **${data.activeBoostMultiplier}x** 生效中（剩余 ${formatDurationZh(data.boostExpiresAt - Date.now())}）`
         : '未启用';
+
+    const rels = ctx.services.socialPet.listUserRelationships(guildCtx.guildId, target.id);
+    const marriage = rels.find((r) => r.relType === 'marriage');
+    const swornCount = rels.filter((r) => r.relType === 'sworn').length;
+    const partnerText = marriage
+      ? `💍 <@${marriage.userA === target.id ? marriage.userB : marriage.userA}>（亲密 ${marriage.affinity}）`
+      : swornCount > 0
+        ? `🍻 结拜死党 ${swornCount} 人`
+        : '暂无 CP 绑定';
+
+    const activePet = ctx.services.socialPet.getActivePet(guildCtx.guildId, target.id);
+    const petSpecies = activePet ? PET_SPECIES_MAP.get(activePet.speciesKey) : undefined;
+    const petText = activePet
+      ? `${petSpecies?.emoji ?? '🐾'} **${activePet.nickname}** [${activePet.rarity} Lv.${activePet.level}]`
+      : '暂无出战宠';
 
     const cardHeaderLines: string[] = [];
     if (data.profile.cardTag) {
@@ -81,8 +111,8 @@ export const rankCommand: CommandDefinition = {
           inline: true,
         },
         {
-          name: `${cfg.economy.currencyEmoji} 持有${cfg.economy.currencyName}`,
-          value: `**${data.profile.coins}**`,
+          name: `${cfg.economy.currencyEmoji} 总资产 (${cfg.economy.currencyName})`,
+          value: `**${data.profile.coins + data.profile.bankCoins}**（现金 ${data.profile.coins} / 银行 ${data.profile.bankCoins}）`,
           inline: true,
         },
         ...(cfg.leveling.statEnabled
@@ -109,6 +139,10 @@ export const rankCommand: CommandDefinition = {
           inline: true,
         },
         {
+          name: '💞 关系 / 出战宠物',
+          value: `${partnerText} ｜ ${petText}`,
+        },
+        {
           name: '💬 活跃统计',
           value: `有效发言 **${data.profile.messageCount}** 条 ｜ 语音挂机 **${data.profile.voiceMinutes}** 分钟`,
         },
@@ -123,6 +157,6 @@ export const rankCommand: CommandDefinition = {
       )
       .setTimestamp();
 
-    await interaction.reply({ embeds: [embed] });
+    await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
   },
 };

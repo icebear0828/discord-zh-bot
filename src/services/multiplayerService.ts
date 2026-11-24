@@ -1,6 +1,13 @@
 import { randomBytes } from 'node:crypto';
 import type Database from 'better-sqlite3';
+import {
+  DUEL_BOUNTY_MIN_BET,
+  DUEL_BOUNTY_MIN_BET_RATIO,
+  DUEL_TTL_MS,
+  MAX_COIN_AMOUNT,
+} from '../config/economyConstants.js';
 import type { ChaosRepo } from '../db/repositories/chaosRepo.js';
+import type { DuelChallengeRecord, DuelRepo } from '../db/repositories/duelRepo.js';
 import type { ProfileRepo } from '../db/repositories/profileRepo.js';
 import type {
   RedPacket,
@@ -8,6 +15,8 @@ import type {
   RedPacketRepo,
 } from '../db/repositories/redPacketRepo.js';
 import type { CreditLoanService } from './creditLoanService.js';
+
+export { MAX_COIN_AMOUNT };
 
 export type CreateRedPacketResult =
   | { ok: true; packet: RedPacket; senderBalance: number }
@@ -52,6 +61,7 @@ export interface DuelChallenge {
   id: string;
   guildId: string;
   channelId: string;
+  messageId?: string | null;
   challengerId: string;
   opponentId: string;
   bet: number;
@@ -61,7 +71,7 @@ export interface DuelChallenge {
 }
 
 export type CreateDuelResult =
-  | { ok: true; duel: DuelChallenge }
+  | { ok: true; duel: DuelChallenge; challengerBalance: number }
   | {
       ok: false;
       reason: 'self_target' | 'invalid_bet' | 'insufficient_funds' | 'deadbeat_blocked';
@@ -95,7 +105,7 @@ export type AcceptDuelResult =
     };
 
 export type DeclineDuelResult =
-  | { ok: true; duel: DuelChallenge }
+  | { ok: true; duel: DuelChallenge; refunded: number }
   | {
       ok: false;
       reason: 'not_found' | 'not_participant' | 'already_resolved' | 'expired';
@@ -125,7 +135,6 @@ export type DistributeRandomRedPacketResult =
         | 'amount_too_small_for_count';
     };
 
-export const MAX_COIN_AMOUNT = 1_000_000_000;
 export const MAX_RED_PACKET_COUNT = 100;
 const MAX_DUELS_IN_MEMORY = 100;
 const DEFAULT_RED_PACKET_TTL_MS = 24 * 3600 * 1000;
@@ -144,16 +153,45 @@ function computeBestLuckUserId(packet: RedPacket, claims: RedPacketClaim[]): str
   return best ? best.userId : null;
 }
 
+function mapDuelRecord(record: DuelChallengeRecord): DuelChallenge {
+  return {
+    id: record.id,
+    guildId: record.guildId,
+    channelId: record.channelId,
+    messageId: record.messageId,
+    challengerId: record.challengerId,
+    opponentId: record.opponentId,
+    bet: record.bet,
+    status: record.status,
+    createdAt: record.createdAt,
+    expiresAt: record.expiresAt,
+  };
+}
+
 export class MultiplayerService {
   private readonly duels = new Map<string, DuelChallenge>();
+  private readonly duelRepo?: DuelRepo;
+  private readonly creditLoanService?: CreditLoanService;
 
   constructor(
     private readonly db: Database.Database,
     private readonly profileRepo: ProfileRepo,
     private readonly redPacketRepo: RedPacketRepo,
     private readonly chaosRepo?: ChaosRepo,
-    private readonly creditLoanService?: CreditLoanService,
-  ) {}
+    duelRepoOrCreditLoan?: DuelRepo | CreditLoanService,
+    creditLoanService?: CreditLoanService,
+  ) {
+    if (duelRepoOrCreditLoan) {
+      if ('isDeadbeatBlocked' in duelRepoOrCreditLoan) {
+        this.creditLoanService = duelRepoOrCreditLoan;
+      } else {
+        this.duelRepo = duelRepoOrCreditLoan;
+        this.creditLoanService = creditLoanService;
+      }
+    } else {
+      this.creditLoanService = creditLoanService;
+    }
+  }
 
   createRedPacket(input: {
     guildId: string;
@@ -187,11 +225,12 @@ export class MultiplayerService {
     const nowMs = input.nowMs ?? Date.now();
     const expiresAt = nowMs + (input.ttlMs ?? DEFAULT_RED_PACKET_TTL_MS);
     const greeting = input.greeting?.trim() || DEFAULT_GREETING;
+    const systemFunded = Boolean(input.systemFunded);
 
     return this.db.transaction((): CreateRedPacketResult => {
       const sender = this.profileRepo.getOrCreate(input.guildId, input.senderId);
       let senderBalance = sender.coins;
-      if (!input.systemFunded) {
+      if (!systemFunded) {
         if (sender.coins < input.totalAmount) {
           return { ok: false, reason: 'insufficient_funds' };
         }
@@ -208,6 +247,7 @@ export class MultiplayerService {
         greeting,
         expiresAt,
         createdAt: nowMs,
+        systemFunded,
       });
 
       return { ok: true, packet, senderBalance };
@@ -379,30 +419,35 @@ export class MultiplayerService {
     })();
   }
 
+  expireRedPacketIfDue(packetId: number, nowMs = Date.now()): ExpiredRedPacketResult | null {
+    return this.db.transaction((): ExpiredRedPacketResult | null => {
+      const current = this.redPacketRepo.getById(packetId);
+      if (!current || current.status !== 'open' || current.expiresAt > nowMs) {
+        return null;
+      }
+      const changed = this.redPacketRepo.markExpired(current.id);
+      if (!changed) {
+        return null;
+      }
+      const refundedAmount =
+        !current.systemFunded && current.remainingAmount > 0 ? current.remainingAmount : 0;
+      if (refundedAmount > 0) {
+        this.profileRepo.addCoins(current.guildId, current.senderId, refundedAmount);
+      }
+      const updated = this.redPacketRepo.getById(current.id) ?? {
+        ...current,
+        status: 'expired' as const,
+      };
+      return { packet: updated, refundedAmount };
+    })();
+  }
+
   expireDueRedPackets(nowMs = Date.now()): ExpiredRedPacketResult[] {
     const due = this.redPacketRepo.listDueOpen(nowMs);
     const results: ExpiredRedPacketResult[] = [];
 
     for (const item of due) {
-      const result = this.db.transaction((): ExpiredRedPacketResult | null => {
-        const current = this.redPacketRepo.getById(item.id);
-        if (!current || current.status !== 'open') {
-          return null;
-        }
-        const changed = this.redPacketRepo.markExpired(current.id);
-        if (!changed) {
-          return null;
-        }
-        if (current.remainingAmount > 0) {
-          this.profileRepo.addCoins(current.guildId, current.senderId, current.remainingAmount);
-        }
-        const updated = this.redPacketRepo.getById(current.id) ?? {
-          ...current,
-          status: 'expired' as const,
-        };
-        return { packet: updated, refundedAmount: current.remainingAmount };
-      })();
-
+      const result = this.expireRedPacketIfDue(item.id, nowMs);
       if (result) {
         results.push(result);
       }
@@ -431,7 +476,7 @@ export class MultiplayerService {
     opponentId: string,
     bet: number,
     nowMs = Date.now(),
-    ttlMs = 180_000,
+    ttlMs = DUEL_TTL_MS,
   ): CreateDuelResult {
     if (challengerId === opponentId) {
       return { ok: false, reason: 'self_target' };
@@ -443,28 +488,85 @@ export class MultiplayerService {
       return { ok: false, reason: 'deadbeat_blocked' };
     }
 
-    const challenger = this.profileRepo.getOrCreate(guildId, challengerId);
-    if (challenger.coins < bet) {
-      return { ok: false, reason: 'insufficient_funds' };
+    return this.db.transaction((): CreateDuelResult => {
+      const challenger = this.profileRepo.getOrCreate(guildId, challengerId);
+      if (challenger.coins < bet) {
+        return { ok: false, reason: 'insufficient_funds' };
+      }
+      const challengerBalance = challenger.coins - bet;
+      this.profileRepo.save({ ...challenger, coins: challengerBalance });
+
+      if (!this.duelRepo) {
+        this.cleanupInMemoryDuels(nowMs);
+      }
+
+      const id = this.generateDuelId();
+      const expiresAt = nowMs + ttlMs;
+
+      if (this.duelRepo) {
+        const created = this.duelRepo.create({
+          id,
+          guildId,
+          channelId,
+          challengerId,
+          opponentId,
+          bet,
+          status: 'pending',
+          createdAt: nowMs,
+          expiresAt,
+        });
+        return { ok: true, duel: mapDuelRecord(created), challengerBalance };
+      }
+
+      const duel: DuelChallenge = {
+        id,
+        guildId,
+        channelId,
+        messageId: null,
+        challengerId,
+        opponentId,
+        bet,
+        status: 'pending',
+        createdAt: nowMs,
+        expiresAt,
+      };
+      this.duels.set(id, duel);
+
+      return { ok: true, duel: { ...duel }, challengerBalance };
+    })();
+  }
+
+  bindDuelMessage(duelId: string, messageId: string): void {
+    if (this.duelRepo) {
+      this.duelRepo.bindMessageId(duelId, messageId);
+      return;
     }
+    const duel = this.duels.get(duelId);
+    if (duel) {
+      duel.messageId = messageId;
+    }
+  }
 
-    this.cleanupDuels(nowMs);
+  private loadDuelRaw(duelId: string): DuelChallenge | null {
+    if (this.duelRepo) {
+      const rec = this.duelRepo.getById(duelId);
+      return rec ? mapDuelRecord(rec) : null;
+    }
+    return this.duels.get(duelId) ?? null;
+  }
 
-    const id = this.generateDuelId();
-    const duel: DuelChallenge = {
-      id,
-      guildId,
-      channelId,
-      challengerId,
-      opponentId,
-      bet,
-      status: 'pending',
-      createdAt: nowMs,
-      expiresAt: nowMs + ttlMs,
-    };
-    this.duels.set(id, duel);
-
-    return { ok: true, duel: { ...duel } };
+  private transitionDuelStatus(
+    duelId: string,
+    nextStatus: DuelStatus,
+    expectedStatus: DuelStatus,
+  ): boolean {
+    if (this.duelRepo) {
+      return this.duelRepo.updateStatus(duelId, nextStatus, expectedStatus);
+    }
+    const duel = this.duels.get(duelId);
+    if (!duel || duel.status !== expectedStatus) return false;
+    duel.status = nextStatus;
+    return true;
   }
 
   acceptDuel(
@@ -473,25 +575,26 @@ export class MultiplayerService {
     nowMs = Date.now(),
     rng: () => number = Math.random,
   ): AcceptDuelResult {
-    const duel = this.duels.get(duelId);
-    if (!duel) {
-      return { ok: false, reason: 'not_found' };
-    }
-    if (acceptorId !== duel.opponentId) {
-      return { ok: false, reason: 'not_opponent' };
-    }
-    if (duel.status === 'expired') {
-      return { ok: false, reason: 'expired' };
-    }
-    if (duel.status !== 'pending') {
-      return { ok: false, reason: 'already_resolved' };
-    }
-    if (duel.expiresAt <= nowMs) {
-      duel.status = 'expired';
-      return { ok: false, reason: 'expired' };
-    }
-
     return this.db.transaction((): AcceptDuelResult => {
+      const duel = this.loadDuelRaw(duelId);
+      if (!duel) {
+        return { ok: false, reason: 'not_found' };
+      }
+      if (duel.status === 'expired') {
+        return { ok: false, reason: 'expired' };
+      }
+      if (duel.status !== 'pending') {
+        return { ok: false, reason: 'already_resolved' };
+      }
+      if (duel.expiresAt <= nowMs) {
+        if (this.transitionDuelStatus(duel.id, 'expired', 'pending')) {
+          this.profileRepo.addCoins(duel.guildId, duel.challengerId, duel.bet);
+        }
+        return { ok: false, reason: 'expired' };
+      }
+      if (acceptorId !== duel.opponentId) {
+        return { ok: false, reason: 'not_opponent' };
+      }
       if (
         duel.bet > 0 &&
         (this.creditLoanService?.isDeadbeatBlocked(duel.guildId, acceptorId, nowMs).blocked ||
@@ -501,13 +604,13 @@ export class MultiplayerService {
       }
 
       const challenger = this.profileRepo.getOrCreate(duel.guildId, duel.challengerId);
-      if (challenger.coins < duel.bet) {
-        return { ok: false, reason: 'challenger_insufficient_funds' };
-      }
-
       const opponent = this.profileRepo.getOrCreate(duel.guildId, duel.opponentId);
       if (opponent.coins < duel.bet) {
         return { ok: false, reason: 'opponent_insufficient_funds' };
+      }
+
+      if (!this.transitionDuelStatus(duel.id, 'completed', 'pending')) {
+        return { ok: false, reason: 'already_resolved' };
       }
 
       const rollDie = (): number => 1 + Math.min(5, Math.max(0, Math.floor(rng() * 6)));
@@ -523,25 +626,37 @@ export class MultiplayerService {
       let loserId: string | null = null;
       let bountyClaimed = 0;
 
+      const tryClaimBounty = (loser: string, winner: string): number => {
+        if (!this.chaosRepo) return 0;
+        const openBounty = this.chaosRepo.getOpenBountyTotal(duel.guildId, loser);
+        if (openBounty <= 0) return 0;
+        const minBet = Math.max(
+          DUEL_BOUNTY_MIN_BET,
+          Math.floor(openBounty * DUEL_BOUNTY_MIN_BET_RATIO),
+        );
+        if (duel.bet < minBet) return 0;
+        return this.chaosRepo.claimOpenBounties(duel.guildId, loser, winner, nowMs);
+      };
+
+      // Challenger's bet was already frozen/deducted at createDuel.
       if (challengerSum === opponentSum) {
         tie = true;
+        challengerBalance = challenger.coins + duel.bet;
+        this.profileRepo.save({ ...challenger, coins: challengerBalance });
       } else if (challengerSum > opponentSum) {
         winnerId = duel.challengerId;
         loserId = duel.opponentId;
-        bountyClaimed =
-          this.chaosRepo?.claimOpenBounties(duel.guildId, loserId, winnerId, nowMs) ?? 0;
-        challengerBalance = challenger.coins + duel.bet + bountyClaimed;
+        bountyClaimed = tryClaimBounty(loserId, winnerId);
+        challengerBalance = challenger.coins + duel.bet * 2 + bountyClaimed;
         opponentBalance = opponent.coins - duel.bet;
         this.profileRepo.save({ ...challenger, coins: challengerBalance });
         this.profileRepo.save({ ...opponent, coins: opponentBalance });
       } else {
         winnerId = duel.opponentId;
         loserId = duel.challengerId;
-        bountyClaimed =
-          this.chaosRepo?.claimOpenBounties(duel.guildId, loserId, winnerId, nowMs) ?? 0;
-        challengerBalance = challenger.coins - duel.bet;
+        bountyClaimed = tryClaimBounty(loserId, winnerId);
+        challengerBalance = challenger.coins;
         opponentBalance = opponent.coins + duel.bet + bountyClaimed;
-        this.profileRepo.save({ ...challenger, coins: challengerBalance });
         this.profileRepo.save({ ...opponent, coins: opponentBalance });
       }
 
@@ -562,11 +677,9 @@ export class MultiplayerService {
         );
       }
 
-      duel.status = 'completed';
-
       return {
         ok: true,
-        duel: { ...duel },
+        duel: { ...duel, status: 'completed' },
         challengerDice,
         challengerSum,
         opponentDice,
@@ -582,42 +695,87 @@ export class MultiplayerService {
   }
 
   declineDuel(duelId: string, actorId: string, nowMs = Date.now()): DeclineDuelResult {
-    const duel = this.duels.get(duelId);
-    if (!duel) {
-      return { ok: false, reason: 'not_found' };
-    }
-    if (actorId !== duel.opponentId && actorId !== duel.challengerId) {
-      return { ok: false, reason: 'not_participant' };
-    }
-    if (duel.status === 'expired') {
-      return { ok: false, reason: 'expired' };
-    }
-    if (duel.status !== 'pending') {
-      return { ok: false, reason: 'already_resolved' };
-    }
-    if (duel.expiresAt <= nowMs) {
-      duel.status = 'expired';
-      return { ok: false, reason: 'expired' };
+    return this.db.transaction((): DeclineDuelResult => {
+      const duel = this.loadDuelRaw(duelId);
+      if (!duel) {
+        return { ok: false, reason: 'not_found' };
+      }
+      if (duel.status === 'expired') {
+        return { ok: false, reason: 'expired' };
+      }
+      if (duel.status !== 'pending') {
+        return { ok: false, reason: 'already_resolved' };
+      }
+      if (duel.expiresAt <= nowMs) {
+        if (this.transitionDuelStatus(duel.id, 'expired', 'pending')) {
+          this.profileRepo.addCoins(duel.guildId, duel.challengerId, duel.bet);
+        }
+        return { ok: false, reason: 'expired' };
+      }
+      if (actorId !== duel.opponentId && actorId !== duel.challengerId) {
+        return { ok: false, reason: 'not_participant' };
+      }
+
+      if (!this.transitionDuelStatus(duel.id, 'declined', 'pending')) {
+        return { ok: false, reason: 'already_resolved' };
+      }
+      this.profileRepo.addCoins(duel.guildId, duel.challengerId, duel.bet);
+
+      return { ok: true, duel: { ...duel, status: 'declined' }, refunded: duel.bet };
+    })();
+  }
+
+  expireDuelIfDue(duelId: string, nowMs = Date.now()): DuelChallenge | null {
+    return this.db.transaction((): DuelChallenge | null => {
+      const duel = this.loadDuelRaw(duelId);
+      if (!duel || duel.status !== 'pending' || duel.expiresAt > nowMs) {
+        return null;
+      }
+      if (!this.transitionDuelStatus(duel.id, 'expired', 'pending')) {
+        return null;
+      }
+      this.profileRepo.addCoins(duel.guildId, duel.challengerId, duel.bet);
+      return { ...duel, status: 'expired' };
+    })();
+  }
+
+  expireDueDuels(nowMs = Date.now()): DuelChallenge[] {
+    const expired: DuelChallenge[] = [];
+    if (this.duelRepo) {
+      const due = this.duelRepo.listDuePending(nowMs);
+      for (const item of due) {
+        const res = this.expireDuelIfDue(item.id, nowMs);
+        if (res) expired.push(res);
+      }
+      return expired;
     }
 
-    duel.status = 'declined';
-    return { ok: true, duel: { ...duel } };
+    for (const duel of this.duels.values()) {
+      if (duel.status === 'pending' && duel.expiresAt <= nowMs) {
+        const res = this.expireDuelIfDue(duel.id, nowMs);
+        if (res) expired.push(res);
+      }
+    }
+    return expired;
   }
 
   getDuel(duelId: string, nowMs = Date.now()): DuelChallenge | null {
-    const duel = this.duels.get(duelId);
+    const duel = this.loadDuelRaw(duelId);
     if (!duel) {
       return null;
     }
     if (duel.status === 'pending' && duel.expiresAt <= nowMs) {
-      duel.status = 'expired';
+      const expired = this.expireDuelIfDue(duel.id, nowMs);
+      if (expired) return expired;
     }
-    return { ...duel };
+    const latest = this.loadDuelRaw(duelId);
+    return latest ? { ...latest } : null;
   }
 
-  private cleanupDuels(nowMs: number): void {
+  private cleanupInMemoryDuels(nowMs: number): void {
+    this.expireDueDuels(nowMs);
     for (const [id, duel] of this.duels) {
-      if (duel.expiresAt <= nowMs) {
+      if (duel.status !== 'pending' && duel.expiresAt <= nowMs) {
         this.duels.delete(id);
       }
     }
@@ -633,13 +791,17 @@ export class MultiplayerService {
       if (oldestKey === undefined) {
         break;
       }
+      const victim = this.duels.get(oldestKey);
+      if (victim && victim.status === 'pending') {
+        this.profileRepo.addCoins(victim.guildId, victim.challengerId, victim.bet);
+      }
       this.duels.delete(oldestKey);
     }
   }
 
   private generateDuelId(): string {
     let id = randomBytes(4).toString('hex');
-    while (this.duels.has(id)) {
+    while (this.duelRepo ? this.duelRepo.getById(id) !== null : this.duels.has(id)) {
       id = randomBytes(4).toString('hex');
     }
     return id;

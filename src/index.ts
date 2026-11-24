@@ -134,7 +134,7 @@ function main(): void {
         chaosRepo,
         creditLoanService,
       ),
-      blackjack: new BlackjackManager(db, profileRepo, creditLoanService),
+      blackjack: new BlackjackManager(db, profileRepo, blackjackRepo, creditLoanService),
       shop: new ShopService(db, profileRepo, shopRepo, {
         guildConfigRepo,
         chaosRepo,
@@ -152,6 +152,7 @@ function main(): void {
         profileRepo,
         redPacketRepo,
         chaosRepo,
+        duelRepo,
         creditLoanService,
       ),
       chaos: new ChaosService(db, guildConfigRepo, profileRepo, chaosRepo, creditLoanService),

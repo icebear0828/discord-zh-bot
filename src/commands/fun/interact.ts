@@ -1,4 +1,9 @@
-import { EmbedBuilder, SlashCommandBuilder, type ChatInputCommandInteraction } from 'discord.js';
+import {
+  EmbedBuilder,
+  MessageFlags,
+  SlashCommandBuilder,
+  type ChatInputCommandInteraction,
+} from 'discord.js';
 import type { InteractionAction } from '../../services/funService.js';
 import {
   COLORS,
@@ -50,6 +55,7 @@ export const interactCommand: CommandDefinition = {
     if (target.id === interaction.user.id) {
       await interaction.reply({
         embeds: [createErrorEmbed('😅 换个人吧', '虽然自爱很好，但还是找一位群友互动吧~')],
+        flags: MessageFlags.Ephemeral,
       });
       return;
     }

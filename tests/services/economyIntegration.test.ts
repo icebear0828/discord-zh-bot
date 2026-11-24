@@ -619,7 +619,7 @@ describe('economy, credit, deadbeat, garnish, gambling & RPG integration', () =>
       }
     }
 
-    // 5. Number bomb explosion (secret = 2 when rng = 0; p1 guesses 50 safe, p2 guesses 2 boom -> p2 -400, p1 +400)
+    // 5. Number bomb explosion (secret = 1 when rng = 0 across [1, 100]; p1 guesses 50 safe, p2 guesses 1 boom -> p2 -400, p1 +400)
     const bomb = chaos.createNumberBomb({
       guildId: 'g1',
       channelId: 'c1',
@@ -631,15 +631,15 @@ describe('economy, credit, deadbeat, garnish, gambling & RPG integration', () =>
     expect(bomb.ok).toBe(true);
     if (bomb.ok) {
       expect(chaos.guessNumberBomb(bomb.game.id, 'p1', 50, BASE_TIME).ok).toBe(true);
-      const boom = chaos.guessNumberBomb(bomb.game.id, 'p2', 2, BASE_TIME);
+      const boom = chaos.guessNumberBomb(bomb.game.id, 'p2', bomb.game.secretNumber, BASE_TIME);
       expect(boom.ok && boom.exploded).toBe(true);
     }
 
-    // 6. Prediction settle (p1 bets 600 on 0, p2 bets 400 on 1 -> option 0 wins -> p1 +400, p2 -400)
+    // 6. Prediction settle (neutral creator host_referee; p1 bets 600 on 0, p2 bets 400 on 1 -> option 0 wins -> p1 +400, p2 -400)
     const pred = worldEvent.createPrediction({
       guildId: 'g1',
       channelId: 'c1',
-      creatorId: 'p1',
+      creatorId: 'host_referee',
       title: '测试胜负',
       options: ['赢', '输'],
       closeMinutes: 30,
@@ -665,9 +665,12 @@ describe('economy, credit, deadbeat, garnish, gambling & RPG integration', () =>
           nowMs: BASE_TIME,
         }).ok,
       ).toBe(true);
+      expect(
+        worldEvent.lockPrediction(pred.summary.prediction.id, 'host_referee', true, BASE_TIME).ok,
+      ).toBe(true);
       const settled = worldEvent.settlePrediction(
         pred.summary.prediction.id,
-        'p1',
+        'host_referee',
         true,
         0,
         BASE_TIME,

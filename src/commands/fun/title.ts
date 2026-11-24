@@ -54,9 +54,37 @@ export const titleCommand: CommandDefinition = {
   async execute(interaction: ChatInputCommandInteraction, ctx: AppContext): Promise<void> {
     const guildCtx = await requireGuildMember(interaction);
     if (!guildCtx) return;
-    if (!(await requireModuleEnabled(interaction, ctx, 'fun', '娱乐互动'))) return;
 
     const sub = interaction.options.getSubcommand();
+
+    if (sub === 'grant') {
+      const adminCtx = await requireBotAdmin(interaction, ctx);
+      if (!adminCtx) return;
+
+      const user = interaction.options.getUser('user', true);
+      if (user.bot) {
+        await interaction.reply({
+          embeds: [createErrorEmbed('❌ 无法授予', '不能给机器人授予专属称号，请选择真实群友。')],
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
+      const name = interaction.options.getString('name', true);
+      const { created } = ctx.services.fun.grantTitle(adminCtx.guildId, user.id, name);
+      await interaction.reply({
+        embeds: [
+          createSuccessEmbed(
+            created ? '✅ 称号授予成功' : 'ℹ️ 成员已拥有该称号',
+            `已为 <@${user.id}> 添加称号 **「${name}」**。`,
+          ),
+        ],
+        allowedMentions: { parse: [] },
+      });
+      return;
+    }
+
+    if (!(await requireModuleEnabled(interaction, ctx, 'fun', '娱乐互动'))) return;
 
     if (sub === 'list') {
       const profile = ctx.repos.profile.getOrCreate(guildCtx.guildId, interaction.user.id);
@@ -86,6 +114,7 @@ export const titleCommand: CommandDefinition = {
       }
       await interaction.reply({
         embeds: [createSuccessEmbed('✅ 称号已佩戴', `你的名片与排行榜已展示称号 **「${res.title}」**！`)],
+        flags: MessageFlags.Ephemeral,
       });
       return;
     }
@@ -95,24 +124,6 @@ export const titleCommand: CommandDefinition = {
       await interaction.reply({
         embeds: [createSuccessEmbed('✅ 已卸下称号', '已清除当前佩戴的展示称号。')],
         flags: MessageFlags.Ephemeral,
-      });
-      return;
-    }
-
-    if (sub === 'grant') {
-      const adminCtx = await requireBotAdmin(interaction, ctx);
-      if (!adminCtx) return;
-
-      const user = interaction.options.getUser('user', true);
-      const name = interaction.options.getString('name', true);
-      const { created } = ctx.services.fun.grantTitle(adminCtx.guildId, user.id, name);
-      await interaction.reply({
-        embeds: [
-          createSuccessEmbed(
-            created ? '✅ 称号授予成功' : 'ℹ️ 成员已拥有该称号',
-            `已为 <@${user.id}> 添加称号 **「${name}」**。`,
-          ),
-        ],
       });
     }
   },

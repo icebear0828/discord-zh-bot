@@ -187,17 +187,10 @@ export function calculateLevelProgress(totalXp: number): LevelProgress {
 }
 
 export function getHeatMultiplier(heatStreak: number, maxMultiplier: number): number {
-  let raw = 1.0;
-  if (heatStreak >= 8) {
-    raw = 2.0;
-  } else if (heatStreak >= 6) {
-    raw = 1.75;
-  } else if (heatStreak >= 4) {
-    raw = 1.5;
-  } else if (heatStreak >= 2) {
-    raw = 1.25;
-  }
-  return Math.min(raw, Math.max(1.0, maxMultiplier));
+  const safeMax = Math.max(1.0, maxMultiplier);
+  const steps = Math.floor(Math.max(0, heatStreak) / 2);
+  const raw = 1.0 + steps * 0.25;
+  return Number(Math.min(raw, safeMax).toFixed(2));
 }
 
 const HOUR_MS = 3_600_000;
@@ -656,21 +649,38 @@ export class LevelingService {
     }
 
     const eligible = rewards.filter((r) => r.level <= newLevel);
-    if (eligible.length === 0) {
-      return { rolesToAdd: [], rolesToRemove: [] };
-    }
+    const higherLost =
+      newLevel < oldLevel
+        ? rewards.filter((r) => r.level > newLevel && r.level <= oldLevel)
+        : [];
 
-    if (stackRoles) {
+    if (eligible.length === 0) {
       return {
-        rolesToAdd: eligible.filter((r) => r.level > oldLevel).map((r) => r.roleId),
-        rolesToRemove: [],
+        rolesToAdd: [],
+        rolesToRemove: [...new Set(higherLost.map((r) => r.roleId))],
       };
     }
 
+    if (stackRoles) {
+      const rolesToAdd =
+        newLevel > oldLevel
+          ? [...new Set(eligible.filter((r) => r.level > oldLevel).map((r) => r.roleId))]
+          : [];
+      const addSet = new Set(rolesToAdd);
+      const rolesToRemove = [
+        ...new Set(higherLost.map((r) => r.roleId).filter((id) => !addSet.has(id))),
+      ];
+      return { rolesToAdd, rolesToRemove };
+    }
+
     const highest = eligible[eligible.length - 1]!;
-    const rolesToRemove = eligible
-      .filter((r) => r.roleId !== highest.roleId)
-      .map((r) => r.roleId);
+    const rolesToRemove = [
+      ...new Set(
+        [...eligible, ...higherLost]
+          .filter((r) => r.roleId !== highest.roleId)
+          .map((r) => r.roleId),
+      ),
+    ];
     return {
       rolesToAdd: [highest.roleId],
       rolesToRemove,

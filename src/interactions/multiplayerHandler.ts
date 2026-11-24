@@ -9,6 +9,7 @@ async function clearStaleDuelButtons(
   duelId: string,
   economyCfg: EconomyConfig,
 ): Promise<void> {
+  ctx.services.multiplayer.expireDuelIfDue(duelId);
   const duel = ctx.services.multiplayer.getDuel(duelId);
   if (duel && (duel.status === 'expired' || duel.status === 'declined')) {
     await interaction.message.edit(buildDuelMessage(duel, economyCfg)).catch(() => undefined);
@@ -48,10 +49,10 @@ export async function handleMultiplayerButton(
       }
 
       const msgMap: Record<typeof res.reason, string> = {
-        not_found: '找不到这场决斗记录（可能已过期或服务器已重启）。',
+        not_found: '找不到这场决斗记录（可能已过期或已被清理）。',
         not_opponent: '只有被挑战者本人才能点击接受决斗！',
         already_resolved: '这场决斗已经结束啦！',
-        expired: '这场决斗已超时过期。',
+        expired: '这场决斗已超时过期，发起人冻结赌注已自动退还。',
         challenger_insufficient_funds: '发起人当前口袋现金不足，无法完成结算。',
         opponent_insufficient_funds: `你的口袋现金不足以支付本次赌注（银行存款不参与决斗，请先从银行取出）。`,
         deadbeat_blocked: '参与方存在逾期未还贷款（失信老赖限制），还清逾期欠款前禁止进行带赌注决斗！',
@@ -80,10 +81,10 @@ export async function handleMultiplayerButton(
       }
 
       const msgMap: Record<typeof res.reason, string> = {
-        not_found: '找不到这场决斗记录（可能已过期或服务器已重启）。',
+        not_found: '找不到这场决斗记录（可能已过期或已被清理）。',
         not_participant: '只有决斗双方才能取消或拒绝本次挑战！',
         already_resolved: '这场决斗已经结束啦！',
-        expired: '这场决斗已超时过期。',
+        expired: '这场决斗已超时过期，发起人冻结赌注已自动退还。',
       };
 
       await interaction.reply({
@@ -138,7 +139,7 @@ export async function handleMultiplayerButton(
     }
 
     if (res.reason === 'expired') {
-      ctx.services.multiplayer.expireDueRedPackets();
+      ctx.services.multiplayer.expireRedPacketIfDue(packetId);
     }
 
     const msgMap: Record<typeof res.reason, string> = {

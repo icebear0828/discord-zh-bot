@@ -1,19 +1,19 @@
-import { SlashCommandBuilder, type ChatInputCommandInteraction } from 'discord.js';
+import { MessageFlags, SlashCommandBuilder, type ChatInputCommandInteraction } from 'discord.js';
+import { MAX_SOLO_GAMBLE_BET } from '../../config/economyConstants.js';
 import type { DiceChoice } from '../../services/economyService.js';
 import {
   createErrorEmbed,
-  createSuccessEmbed,
   type AppContext,
   type CommandDefinition,
 } from '../../ui/embeds.js';
 import { applyZh } from '../../ui/localization.js';
+import {
+  buildDiceHighlightEmbed,
+  buildDiceResultEmbed,
+  formatSoloBetError,
+  sendChannelPublicNotice,
+} from '../../ui/soloFormatters.js';
 import { requireGuildMember, requireModuleEnabled } from '../guards.js';
-
-const CHOICE_LABEL: Record<DiceChoice, string> = {
-  big: '大 (11~17)',
-  small: '小 (4~10)',
-  triple: '豹子 (三同点 10x)',
-};
 
 export const diceCommand: CommandDefinition = {
   name: 'dice',
@@ -23,7 +23,12 @@ export const diceCommand: CommandDefinition = {
       .setDescription('三颗骰子猜大小或豹子')
       .addIntegerOption((opt) =>
         applyZh(
-          opt.setName('bet').setDescription('下注金额').setMinValue(1).setRequired(true),
+          opt
+            .setName('bet')
+            .setDescription(`下注金额（1 ~ ${MAX_SOLO_GAMBLE_BET.toLocaleString()}）`)
+            .setMinValue(1)
+            .setMaxValue(MAX_SOLO_GAMBLE_BET)
+            .setRequired(true),
           '下注',
           '下注的星币数量',
         ),
@@ -57,40 +62,24 @@ export const diceCommand: CommandDefinition = {
 
     const res = ctx.services.economy.playDice(guildCtx.guildId, interaction.user.id, bet, choice);
     if (!res.ok) {
-      const msgMap: Record<typeof res.reason, string> = {
-        invalid_bet: '下注金额无效。',
-        insufficient_funds: `你的 ${cfg.currencyName} 不足以支付 **${bet}** 下注。`,
-        deadbeat_blocked: '你当前有逾期未还贷款，已被列入失信名单，还清逾期欠款前禁止参与博弈！',
-      };
       await interaction.reply({
-        embeds: [createErrorEmbed('❌ 下注失败', msgMap[res.reason])],
+        embeds: [
+          createErrorEmbed('❌ 下注失败', formatSoloBetError(res.reason, bet, cfg.currencyName)),
+        ],
+        flags: MessageFlags.Ephemeral,
       });
       return;
     }
 
-    const diceText = res.dice.map((d) => `🎲 **${d}**`).join('  ');
-    const outcomeText = res.isTriple
-      ? `豹子（${res.sum} 点）`
-      : `${res.sum} 点（${res.sum >= 11 ? '大' : '小'}）`;
+    await interaction.reply({
+      embeds: [buildDiceResultEmbed(choice, bet, res, cfg)],
+      flags: MessageFlags.Ephemeral,
+    });
 
-    const embed = res.won
-      ? createSuccessEmbed(
-          '🎉 猜大小中奖！',
-          [
-            `你的投注：**${CHOICE_LABEL[choice]}** ｜ 下注：**${bet}**`,
-            `开奖结果：${diceText} → **${outcomeText}**`,
-            `净赚：${cfg.currencyEmoji} **+${res.netChange}** ${cfg.currencyName} ｜ 当前余额：**${res.balance}**`,
-          ].join('\n'),
-        )
-      : createErrorEmbed(
-          '💨 差一点就中了',
-          [
-            `你的投注：**${CHOICE_LABEL[choice]}** ｜ 下注：**${bet}**`,
-            `开奖结果：${diceText} → **${outcomeText}**`,
-            `净损：**${res.netChange}** ${cfg.currencyName} ｜ 当前余额：**${res.balance}**`,
-          ].join('\n'),
-        );
-
-    await interaction.reply({ embeds: [embed] });
+    if (res.won && res.isTriple) {
+      await sendChannelPublicNotice(interaction, {
+        embeds: [buildDiceHighlightEmbed(interaction.user.id, res, cfg)],
+      });
+    }
   },
 };

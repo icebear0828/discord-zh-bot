@@ -17,7 +17,6 @@ import {
   editChannelMessage,
   isInteractionAdmin,
   parseIntInRange,
-  sendPublicBroadcast,
 } from './menuHelpers.js';
 
 export function buildBombGuessModal(
@@ -25,10 +24,11 @@ export function buildBombGuessModal(
   minBound: number,
   maxBound: number,
   penalty: number,
+  currencyName = '星币',
 ): ModalBuilder {
   const input = new TextInputBuilder()
     .setCustomId('guess')
-    .setLabel(truncateText(`输入猜测数字 (${minBound} ~ ${maxBound})，踩雷罚 ${penalty}`, 45))
+    .setLabel(truncateText(`猜数字 (${minBound}~${maxBound})，踩雷罚 ${penalty} ${currencyName}`, 45))
     .setStyle(TextInputStyle.Short)
     .setMinLength(1)
     .setMaxLength(4)
@@ -72,7 +72,7 @@ export async function handleChaosButton(
           embeds: [
             createSuccessEmbed(
               '🪑 成功上桌！',
-              `已扣除入场费 ${cfg.economy.currencyEmoji} **${res.game.entryFee}** ${cfg.economy.currencyName}，当前现金 **${res.balance}**。`,
+              `已扣除入场费 ${cfg.economy.currencyEmoji} **${res.game.entryFee}** ${cfg.economy.currencyName}，当前现金 **${res.balance}** ${cfg.economy.currencyName}。`,
             ),
           ],
           flags: MessageFlags.Ephemeral,
@@ -83,9 +83,10 @@ export async function handleChaosButton(
       const msgMap: Record<typeof res.reason, string> = {
         not_found: '找不到这个轮盘房间。',
         not_recruiting: '该轮盘局已经开局或已结束！',
+        expired: '该轮盘招募已超时自动解散，已上桌成员的入场费已原路退回。',
         already_joined: '你已经在这桌牌局里啦！',
         room_full: '桌位已满！',
-        insufficient_funds: '你的口袋现金不足以支付本桌入场费。',
+        insufficient_funds: `你的口袋现金不足以支付本桌入场费（${cfg.economy.currencyName}）。`,
         deadbeat_blocked: '你当前有逾期未还贷款，已被列入失信名单，还清逾期欠款前禁止参加轮盘！',
       };
       await interaction.reply({
@@ -119,12 +120,17 @@ export async function handleChaosButton(
       const msgMap: Record<typeof res.reason, string> = {
         not_found: '找不到这个轮盘房间。',
         not_recruiting: '只有招募中的牌局才能退出。',
+        expired: '该轮盘招募已超时自动解散，入场费已退回。',
         not_joined: '你并不在这桌招募名单中。',
       };
       await interaction.reply({
         embeds: [createErrorEmbed('❌ 无法退出', msgMap[res.reason])],
         flags: MessageFlags.Ephemeral,
       });
+      const latest = ctx.services.chaos.getRoulette(gameId);
+      if (latest && latest.status !== 'recruiting') {
+        await interaction.message.edit(buildRouletteCard(latest, cfg.economy)).catch(() => undefined);
+      }
       return;
     }
 
@@ -133,17 +139,12 @@ export async function handleChaosButton(
       const res = ctx.services.chaos.startRoulette(gameId, interaction.user.id, isAdmin);
       if (res.ok) {
         await interaction.update(buildRouletteCard(res.game, cfg.economy));
-        const firstId = res.game.alivePlayers[0];
-        if (firstId) {
-          await sendPublicBroadcast(interaction, {
-            content: `🔫 俄罗斯轮盘 **#${res.game.id}** 开枪了！首位扣扳机：<@${firstId}>（30秒倒计时）`,
-          });
-        }
         return;
       }
       const msgMap: Record<typeof res.reason, string> = {
         not_found: '找不到这个轮盘房间。',
         not_recruiting: '该轮盘局已经开局或已结束。',
+        expired: '该轮盘招募已超时自动解散，入场费已退回。',
         no_permission: '只有房主或 Bot 管理员才能开局！',
         not_enough_players: '至少需要 2 名玩家上桌才能开局！',
       };
@@ -151,6 +152,10 @@ export async function handleChaosButton(
         embeds: [createErrorEmbed('❌ 无法开局', msgMap[res.reason])],
         flags: MessageFlags.Ephemeral,
       });
+      const latest = ctx.services.chaos.getRoulette(gameId);
+      if (latest && latest.status !== 'recruiting') {
+        await interaction.message.edit(buildRouletteCard(latest, cfg.economy)).catch(() => undefined);
+      }
       return;
     }
 
@@ -164,12 +169,17 @@ export async function handleChaosButton(
       const msgMap: Record<typeof res.reason, string> = {
         not_found: '找不到这个轮盘房间。',
         not_recruiting: '只能取消招募中的房间。',
+        expired: '该轮盘招募已超时自动解散，入场费已退回。',
         no_permission: '只有房主或 Bot 管理员才能散桌！',
       };
       await interaction.reply({
         embeds: [createErrorEmbed('❌ 无法取消', msgMap[res.reason])],
         flags: MessageFlags.Ephemeral,
       });
+      const latest = ctx.services.chaos.getRoulette(gameId);
+      if (latest && latest.status !== 'recruiting') {
+        await interaction.message.edit(buildRouletteCard(latest, cfg.economy)).catch(() => undefined);
+      }
       return;
     }
 
@@ -177,27 +187,6 @@ export async function handleChaosButton(
       const res = ctx.services.chaos.pullTrigger(gameId, interaction.user.id);
       if (res.ok) {
         await interaction.update(buildRouletteCard(res.game, cfg.economy));
-        if (res.game.status === 'finished' && res.winnerId) {
-          await sendPublicBroadcast(interaction, {
-            content: `🏆 轮盘 **#${res.game.id}** 吃鸡诞生！恭喜 <@${res.winnerId}> 独吞 **${res.prizePool}** ${cfg.economy.currencyName}！`,
-            embeds: [
-              createSuccessEmbed(
-                '🏆 俄罗斯轮盘吃鸡结算！',
-                `<@${res.eliminatedUserId}> 中弹倒下，<@${res.winnerId}> 成为最后唯一幸存者，赢得 ${cfg.economy.currencyEmoji} **+${res.prizePool}** ${cfg.economy.currencyName}！`,
-              ),
-            ],
-          });
-        } else if (res.game.status === 'playing') {
-          const nextId =
-            res.game.alivePlayers[res.game.turnIndex % res.game.alivePlayers.length];
-          if (nextId) {
-            await interaction.followUp({
-              content: res.fired
-                ? `💥 <@${res.eliminatedUserId}> 中弹淘汰！重新装弹，请 <@${nextId}> 扣动扳机！`
-                : `😅 咔哒…空枪！请下一位 <@${nextId}> 在 30 秒内扣动扳机！`,
-            });
-          }
-        }
         return;
       }
 
@@ -230,7 +219,7 @@ export async function handleChaosButton(
     const game = ctx.services.chaos.getNumberBomb(gameId);
     if (!game || game.status !== 'open' || game.expiresAt <= Date.now()) {
       if (game && game.status === 'open' && game.expiresAt <= Date.now()) {
-        ctx.services.chaos.expireDueNumberBombs();
+        ctx.services.chaos.expireNumberBombIfDue(gameId);
       }
       await interaction.reply({
         embeds: [createErrorEmbed('⌛ 炸弹已结束', '这颗数字炸弹已经引爆或过期啦！')],
@@ -249,6 +238,7 @@ export async function handleChaosButton(
         game.minBound,
         game.maxBound,
         game.penalty,
+        cfg.economy.currencyName,
       ),
     );
   }
@@ -314,9 +304,23 @@ export async function handleChaosModal(
     return;
   }
 
+  const personalEmbed = res.exploded
+    ? createErrorEmbed(
+        '💥 你踩雷啦！',
+        `数字 **${res.guess}** 正是炸弹！已扣除罚金 **${res.penaltyPaid}** ${cfg.economy.currencyName}！`,
+      )
+    : createSuccessEmbed(
+        '😅 安全过关！',
+        `你猜了 **${res.guess}**，安全区间已缩小至 **[${res.game.minBound} ~ ${res.game.maxBound}]**！`,
+      );
+
   const cardPayload = buildNumberBombCard(res.game, cfg.economy, res.payouts);
   if (interaction.isFromMessage()) {
     await interaction.update(cardPayload);
+    await interaction.followUp({
+      embeds: [personalEmbed],
+      flags: MessageFlags.Ephemeral,
+    });
   } else {
     await editChannelMessage(
       interaction.client,
@@ -326,28 +330,8 @@ export async function handleChaosModal(
       interaction.guild,
     );
     await interaction.reply({
-      embeds: [
-        res.exploded
-          ? createErrorEmbed(
-              '💥 你踩雷啦！',
-              `数字 **${res.guess}** 正是炸弹！已扣除罚金 **${res.penaltyPaid}** ${cfg.economy.currencyName}！`,
-            )
-          : createSuccessEmbed(
-              '😅 安全过关！',
-              `你猜了 **${res.guess}**，安全区间已缩小至 **[${res.game.minBound} ~ ${res.game.maxBound}]**！`,
-            ),
-      ],
+      embeds: [personalEmbed],
       flags: MessageFlags.Ephemeral,
-    });
-  }
-
-  if (res.exploded) {
-    const payoutSummary =
-      res.payouts.length > 0
-        ? res.payouts.map((p) => `<@${p.userId}> +${p.amount}`).join('、')
-        : '无其他存活分红者';
-    await sendPublicBroadcast(interaction, {
-      content: `💥 轰隆！<@${interaction.user.id}> 在数字炸弹 **#${res.game.id}** 踩中了 **${res.guess}**，爆出 **${res.penaltyPaid}** ${cfg.economy.currencyName}！\n💰 分红：${payoutSummary}`,
     });
   }
 }

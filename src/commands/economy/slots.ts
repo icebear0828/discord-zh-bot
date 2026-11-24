@@ -1,11 +1,17 @@
-import { SlashCommandBuilder, type ChatInputCommandInteraction } from 'discord.js';
+import { MessageFlags, SlashCommandBuilder, type ChatInputCommandInteraction } from 'discord.js';
+import { MAX_SOLO_GAMBLE_BET } from '../../config/economyConstants.js';
 import {
   createErrorEmbed,
-  createSuccessEmbed,
   type AppContext,
   type CommandDefinition,
 } from '../../ui/embeds.js';
 import { applyZh } from '../../ui/localization.js';
+import {
+  buildSlotsHighlightEmbed,
+  buildSlotsResultEmbed,
+  formatSoloBetError,
+  sendChannelPublicNotice,
+} from '../../ui/soloFormatters.js';
 import { requireGuildMember, requireModuleEnabled } from '../guards.js';
 
 export const slotsCommand: CommandDefinition = {
@@ -16,7 +22,12 @@ export const slotsCommand: CommandDefinition = {
       .setDescription('拉动幸运老虎机，三连 7️⃣ 赢取 15 倍奖金')
       .addIntegerOption((opt) =>
         applyZh(
-          opt.setName('bet').setDescription('下注金额').setMinValue(1).setRequired(true),
+          opt
+            .setName('bet')
+            .setDescription(`下注金额（1 ~ ${MAX_SOLO_GAMBLE_BET.toLocaleString()}）`)
+            .setMinValue(1)
+            .setMaxValue(MAX_SOLO_GAMBLE_BET)
+            .setRequired(true),
           '下注',
           '下注的星币数量',
         ),
@@ -34,28 +45,24 @@ export const slotsCommand: CommandDefinition = {
     const res = ctx.services.economy.playSlots(guildCtx.guildId, interaction.user.id, bet);
 
     if (!res.ok) {
-      const msgMap: Record<typeof res.reason, string> = {
-        invalid_bet: '下注金额无效。',
-        insufficient_funds: `你的 ${cfg.currencyName} 不足以支付 **${bet}** 下注。`,
-        deadbeat_blocked: '你当前有逾期未还贷款，已被列入失信名单，还清逾期欠款前禁止参与博弈！',
-      };
       await interaction.reply({
-        embeds: [createErrorEmbed('❌ 下注失败', msgMap[res.reason])],
+        embeds: [
+          createErrorEmbed('❌ 下注失败', formatSoloBetError(res.reason, bet, cfg.currencyName)),
+        ],
+        flags: MessageFlags.Ephemeral,
       });
       return;
     }
 
-    const reelDisplay = `【 ${res.reels.join('  |  ')} 】`;
-    const isProfit = res.netChange > 0;
-    const embed = (isProfit ? createSuccessEmbed : createErrorEmbed)(
-      isProfit ? '🎰 老虎机中奖！' : '🎰 再接再厉',
-      [
-        reelDisplay,
-        `倍率：**${res.multiplier}x** ｜ 返还：**${res.payout}** ${cfg.currencyName}`,
-        `净变动：**${res.netChange >= 0 ? `+${res.netChange}` : res.netChange}** ${cfg.currencyName} ｜ 余额：**${res.balance}**`,
-      ].join('\n'),
-    );
+    await interaction.reply({
+      embeds: [buildSlotsResultEmbed(res, cfg)],
+      flags: MessageFlags.Ephemeral,
+    });
 
-    await interaction.reply({ embeds: [embed] });
+    if (res.multiplier >= 4) {
+      await sendChannelPublicNotice(interaction, {
+        embeds: [buildSlotsHighlightEmbed(interaction.user.id, res, cfg)],
+      });
+    }
   },
 };
