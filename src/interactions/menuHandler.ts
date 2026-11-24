@@ -79,7 +79,7 @@ const VALID_SOCIAL_ACTIONS: ReadonlySet<string> = new Set([
   'snowball',
 ]);
 
-const VALID_MODULE_KEYS: ReadonlySet<string> = new Set([
+const VALID_MODULE_KEYS: ReadonlySet<string> = new Set<ModuleKey>([
   'leveling',
   'economy',
   'fun',
@@ -92,6 +92,8 @@ const VALID_MODULE_KEYS: ReadonlySet<string> = new Set([
   'worldEvents',
   'petsAndCp',
   'ai',
+  'creditLoan',
+  'rpg',
 ]);
 
 const ADMIN_DENIED_FEEDBACK: MenuFeedback = {
@@ -1537,7 +1539,12 @@ export async function handleMenuStringSelect(
       }
 
       if (!member) {
-        ctx.services.shop.refundRolePurchase(guildId, actor.id, res.item.id, res.item.price);
+        ctx.services.shop.refundRolePurchase(
+          guildId,
+          actor.id,
+          res.item.id,
+          res.finalPrice ?? res.item.price,
+        );
         await interaction.update(
           buildMenuMessage(
             ctx,
@@ -1553,7 +1560,12 @@ export async function handleMenuStringSelect(
       try {
         await member.roles.add(res.grantRoleId, `购买商店商品 #${res.item.id}`);
       } catch {
-        ctx.services.shop.refundRolePurchase(guildId, actor.id, res.item.id, res.item.price);
+        ctx.services.shop.refundRolePurchase(
+          guildId,
+          actor.id,
+          res.item.id,
+          res.finalPrice ?? res.item.price,
+        );
         await interaction.update(
           buildMenuMessage(
             ctx,

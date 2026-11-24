@@ -2520,4 +2520,70 @@ describe('menu router & multiplayer interaction flows', () => {
 
     ctx.db.close();
   });
+
+  it('toggles creditLoan and rpg modules via admin_toggle_mod and refunds exact credit-adjusted finalPrice on role grant failure', async () => {
+    const ctx = createTestCtx();
+    ctx.repos.guildConfig.updateAdminUsers('g1', ['admin1']);
+
+    // 1. Toggle creditLoan and rpg off then back on via menu:admin_toggle_mod
+    for (const modKey of ['creditLoan', 'rpg'] as const) {
+      expect(ctx.repos.guildConfig.getOrCreate('g1').modules[modKey]).toBe(true);
+
+      const toggleOff = createStringSelectMock({
+        customId: 'menu:admin_toggle_mod',
+        userId: 'admin1',
+        values: [modKey],
+      });
+      await routeInteraction(toggleOff.interaction, ctx);
+      expect(ctx.repos.guildConfig.getOrCreate('g1').modules[modKey]).toBe(false);
+
+      const toggleOn = createStringSelectMock({
+        customId: 'menu:admin_toggle_mod',
+        userId: 'admin1',
+        values: [modKey],
+      });
+      await routeInteraction(toggleOn.interaction, ctx);
+      expect(ctx.repos.guildConfig.getOrCreate('g1').modules[modKey]).toBe(true);
+    }
+
+    // 2. Role purchase failure refunds exact credit-adjusted finalPrice (no coin-minting exploit)
+    const roleItem = ctx.services.shop.createRoleItem({
+      guildId: 'g1',
+      name: '贵族身份组',
+      description: '测试退款防刷币',
+      price: 1000,
+      roleId: 'role_vip',
+      stock: 5,
+    });
+
+    // Noble (score 900 -> 0.8x -> finalPrice 800)
+    ctx.services.creditLoan.adjustCredit('g1', 'u_noble', 300, 'test_noble');
+    ctx.repos.profile.addCoins('g1', 'u_noble', 2000);
+    const nobleFail = createStringSelectMock({
+      customId: 'menu:shop_buy',
+      userId: 'u_noble',
+      values: [String(roleItem.id)],
+      failRoleAdd: true,
+    });
+    await routeInteraction(nobleFail.interaction, ctx);
+    expect(ctx.repos.profile.getOrCreate('g1', 'u_noble').coins).toBe(2000);
+
+    // Deadbeat (score 200 -> 1.25x -> finalPrice 1250)
+    ctx.services.creditLoan.adjustCredit('g1', 'u_deadbeat', -400, 'test_deadbeat');
+    ctx.repos.profile.addCoins('g1', 'u_deadbeat', 2000);
+    const deadbeatFail = createStringSelectMock({
+      customId: 'menu:shop_buy',
+      userId: 'u_deadbeat',
+      values: [String(roleItem.id)],
+      failRoleAdd: true,
+    });
+    await routeInteraction(deadbeatFail.interaction, ctx);
+    expect(ctx.repos.profile.getOrCreate('g1', 'u_deadbeat').coins).toBe(2000);
+
+    // Stock restored intact
+    const reloadedItem = ctx.services.shop.listItems('g1').find((i) => i.id === roleItem.id);
+    expect(reloadedItem?.stock).toBe(5);
+
+    ctx.db.close();
+  });
 });

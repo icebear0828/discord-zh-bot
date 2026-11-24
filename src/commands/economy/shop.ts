@@ -298,7 +298,7 @@ export const shopCommand: CommandDefinition = {
             guildCtx.guildId,
             interaction.user.id,
             res.item.id,
-            res.item.price,
+            res.finalPrice ?? res.item.price,
           );
           await interaction.reply({
             embeds: [
