@@ -1,6 +1,8 @@
 import type Database from 'better-sqlite3';
 import { initAiSchema } from './repositories/aiMemoryRepo.js';
+import { initBlackjackSchema } from './repositories/blackjackRepo.js';
 import { initChaosSchema } from './repositories/chaosRepo.js';
+import { initDuelSchema } from './repositories/duelRepo.js';
 import { initMonitorSchema } from './repositories/monitorRepo.js';
 import { initRedPacketSchema } from './repositories/redPacketRepo.js';
 import { initSocialPetSchema } from './repositories/socialPetRepo.js';
@@ -51,6 +53,9 @@ CREATE TABLE IF NOT EXISTS member_profiles (
   last_xp_at INTEGER NOT NULL DEFAULT 0,
   hour_window_start INTEGER NOT NULL DEFAULT 0,
   hour_xp_earned INTEGER NOT NULL DEFAULT 0,
+  last_pet_work_at INTEGER NOT NULL DEFAULT 0,
+  pet_pvp_xp_date TEXT NOT NULL DEFAULT '',
+  pet_pvp_xp_daily INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (guild_id, user_id)
 );
 
@@ -205,6 +210,18 @@ CREATE INDEX IF NOT EXISTS idx_role_panel_options_panel
   ON role_panel_options (panel_id, sort_order);
 `;
 
+function ensureColumn(
+  db: Database.Database,
+  table: string,
+  column: string,
+  definition: string,
+): void {
+  const cols = db.pragma(`table_info(${table})`) as Array<{ name: string }>;
+  if (!cols.some((col) => col.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition};`);
+  }
+}
+
 export function initSchema(db: Database.Database): void {
   db.exec(SCHEMA_SQL);
   initRedPacketSchema(db);
@@ -213,52 +230,32 @@ export function initSchema(db: Database.Database): void {
   initSocialPetSchema(db);
   initAiSchema(db);
   initMonitorSchema(db);
+  initBlackjackSchema(db);
+  initDuelSchema(db);
 
-  const configCols = db.pragma('table_info(guild_configs)') as Array<{ name: string }>;
-  const configColNames = new Set(configCols.map((col) => col.name));
-  if (!configColNames.has('admin_user_ids_json')) {
-    db.exec("ALTER TABLE guild_configs ADD COLUMN admin_user_ids_json TEXT NOT NULL DEFAULT '[]';");
-  }
-  if (!configColNames.has('games_config_json')) {
-    db.exec("ALTER TABLE guild_configs ADD COLUMN games_config_json TEXT NOT NULL DEFAULT '{}';");
-  }
-  if (!configColNames.has('ai_config_json')) {
-    db.exec("ALTER TABLE guild_configs ADD COLUMN ai_config_json TEXT NOT NULL DEFAULT '{}';");
-  }
+  ensureColumn(db, 'guild_configs', 'admin_user_ids_json', "TEXT NOT NULL DEFAULT '[]'");
+  ensureColumn(db, 'guild_configs', 'games_config_json', "TEXT NOT NULL DEFAULT '{}'");
+  ensureColumn(db, 'guild_configs', 'ai_config_json', "TEXT NOT NULL DEFAULT '{}'");
 
-  const columns = db.pragma('table_info(member_profiles)') as Array<{ name: string }>;
-  const columnNames = new Set(columns.map((col) => col.name));
+  ensureColumn(db, 'member_profiles', 'bank_coins', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn(db, 'member_profiles', 'last_bank_interest_date', 'TEXT');
+  ensureColumn(db, 'member_profiles', 'card_nickname', 'TEXT');
+  ensureColumn(db, 'member_profiles', 'card_tag', 'TEXT');
+  ensureColumn(db, 'member_profiles', 'card_bio', 'TEXT');
+  ensureColumn(db, 'member_profiles', 'card_color', 'TEXT');
+  ensureColumn(db, 'member_profiles', 'level_offset', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn(db, 'member_profiles', 'stat_value', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn(db, 'member_profiles', 'last_stat_boost_date', 'TEXT');
+  ensureColumn(db, 'member_profiles', 'stat_boost_daily_count', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn(db, 'member_profiles', 'last_pet_work_at', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn(db, 'member_profiles', 'pet_pvp_xp_date', "TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, 'member_profiles', 'pet_pvp_xp_daily', 'INTEGER NOT NULL DEFAULT 0');
 
-  if (!columnNames.has('bank_coins')) {
-    db.exec('ALTER TABLE member_profiles ADD COLUMN bank_coins INTEGER NOT NULL DEFAULT 0;');
-  }
-  if (!columnNames.has('last_bank_interest_date')) {
-    db.exec('ALTER TABLE member_profiles ADD COLUMN last_bank_interest_date TEXT;');
-  }
-  if (!columnNames.has('card_nickname')) {
-    db.exec('ALTER TABLE member_profiles ADD COLUMN card_nickname TEXT;');
-  }
-  if (!columnNames.has('card_tag')) {
-    db.exec('ALTER TABLE member_profiles ADD COLUMN card_tag TEXT;');
-  }
-  if (!columnNames.has('card_bio')) {
-    db.exec('ALTER TABLE member_profiles ADD COLUMN card_bio TEXT;');
-  }
-  if (!columnNames.has('card_color')) {
-    db.exec('ALTER TABLE member_profiles ADD COLUMN card_color TEXT;');
-  }
-  if (!columnNames.has('level_offset')) {
-    db.exec('ALTER TABLE member_profiles ADD COLUMN level_offset INTEGER NOT NULL DEFAULT 0;');
-  }
-  if (!columnNames.has('stat_value')) {
-    db.exec('ALTER TABLE member_profiles ADD COLUMN stat_value INTEGER NOT NULL DEFAULT 0;');
-  }
-  if (!columnNames.has('last_stat_boost_date')) {
-    db.exec('ALTER TABLE member_profiles ADD COLUMN last_stat_boost_date TEXT;');
-  }
-  if (!columnNames.has('stat_boost_daily_count')) {
-    db.exec('ALTER TABLE member_profiles ADD COLUMN stat_boost_daily_count INTEGER NOT NULL DEFAULT 0;');
-  }
+  ensureColumn(db, 'red_packets', 'system_funded', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn(db, 'world_event_participants', 'next_attack_at', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn(db, 'world_events', 'rewards_json', "TEXT NOT NULL DEFAULT '[]'");
+  ensureColumn(db, 'number_bomb_games', 'payouts_json', "TEXT NOT NULL DEFAULT '[]'");
+  ensureColumn(db, 'predictions', 'locked_at', 'INTEGER NOT NULL DEFAULT 0');
 
   const shopCols = db.pragma('table_info(shop_items)') as Array<{ name: string }>;
   const shopColNames = new Set(shopCols.map((col) => col.name));

@@ -73,6 +73,9 @@ CREATE INDEX IF NOT EXISTS idx_interaction_logs_guild_id
 
 CREATE INDEX IF NOT EXISTS idx_interaction_logs_guild_status
   ON interaction_logs (guild_id, status, id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_interaction_logs_created_at
+  ON interaction_logs (created_at);
 `;
 
 function mapRow(row: InteractionLogRow): InteractionLogEntry {
@@ -247,6 +250,13 @@ export class MonitorRepo {
     const res = this.db
       .prepare('DELETE FROM interaction_logs WHERE guild_id = ? AND id <= ?')
       .run(guildId, cutoff.id);
+    return res.changes;
+  }
+
+  pruneOlderThan(cutoffMs: number): number {
+    const res = this.db
+      .prepare('DELETE FROM interaction_logs WHERE created_at < ?')
+      .run(cutoffMs);
     return res.changes;
   }
 }

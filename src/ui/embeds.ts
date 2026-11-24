@@ -13,6 +13,8 @@ import type { ChaosRepo } from '../db/repositories/chaosRepo.js';
 import type { WorldEventRepo } from '../db/repositories/worldEventRepo.js';
 import type { SocialPetRepo } from '../db/repositories/socialPetRepo.js';
 import type { AiMemoryRepo } from '../db/repositories/aiMemoryRepo.js';
+import type { BlackjackRepo } from '../db/repositories/blackjackRepo.js';
+import type { DuelRepo } from '../db/repositories/duelRepo.js';
 import type { MonitorRepo } from '../db/repositories/monitorRepo.js';
 import type { LevelingService } from '../services/levelingService.js';
 import type { EconomyService } from '../services/economyService.js';
@@ -46,6 +48,8 @@ export interface AppContext {
     worldEvent: WorldEventRepo;
     socialPet: SocialPetRepo;
     aiMemory: AiMemoryRepo;
+    blackjack?: BlackjackRepo;
+    duel?: DuelRepo;
     monitor?: MonitorRepo;
   };
   services: {

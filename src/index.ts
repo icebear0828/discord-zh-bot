@@ -14,6 +14,8 @@ import { ChaosRepo } from './db/repositories/chaosRepo.js';
 import { WorldEventRepo } from './db/repositories/worldEventRepo.js';
 import { SocialPetRepo } from './db/repositories/socialPetRepo.js';
 import { AiMemoryRepo } from './db/repositories/aiMemoryRepo.js';
+import { BlackjackRepo } from './db/repositories/blackjackRepo.js';
+import { DuelRepo } from './db/repositories/duelRepo.js';
 import { MonitorRepo } from './db/repositories/monitorRepo.js';
 import { LevelingService } from './services/levelingService.js';
 import { EconomyService } from './services/economyService.js';
@@ -55,6 +57,8 @@ function main(): void {
   const worldEventRepo = new WorldEventRepo(db);
   const socialPetRepo = new SocialPetRepo(db);
   const aiMemoryRepo = new AiMemoryRepo(db);
+  const blackjackRepo = new BlackjackRepo(db);
+  const duelRepo = new DuelRepo(db);
   const monitorRepo = new MonitorRepo(db);
   const llmClient = new LlmClient(env.llm);
 
@@ -75,6 +79,8 @@ function main(): void {
       worldEvent: worldEventRepo,
       socialPet: socialPetRepo,
       aiMemory: aiMemoryRepo,
+      blackjack: blackjackRepo,
+      duel: duelRepo,
       monitor: monitorRepo,
     },
     services: {

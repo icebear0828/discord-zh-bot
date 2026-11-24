@@ -74,6 +74,7 @@ CREATE TABLE IF NOT EXISTS number_bomb_games (
   guesses_json TEXT NOT NULL DEFAULT '[]',
   status TEXT NOT NULL CHECK (status IN ('open', 'exploded', 'cancelled')),
   loser_id TEXT,
+  payouts_json TEXT NOT NULL DEFAULT '[]',
   created_at INTEGER NOT NULL,
   expires_at INTEGER NOT NULL
 );
@@ -171,6 +172,7 @@ export interface NumberBombGame {
   guesses: NumberBombGuess[];
   status: NumberBombStatus;
   loserId: string | null;
+  payoutsJson: string;
   createdAt: number;
   expiresAt: number;
 }
@@ -240,6 +242,7 @@ interface NumberBombSqlRow {
   guesses_json: string;
   status: NumberBombStatus;
   loser_id: string | null;
+  payouts_json?: string;
   created_at: number;
   expires_at: number;
 }
@@ -348,6 +351,7 @@ function mapNumberBomb(row: NumberBombSqlRow): NumberBombGame {
     guesses: parseGuessArray(row.guesses_json),
     status: row.status,
     loserId: row.loser_id,
+    payoutsJson: row.payouts_json ?? '[]',
     createdAt: row.created_at,
     expiresAt: row.expires_at,
   };
@@ -645,6 +649,15 @@ export class ChaosRepo {
     return rows.map(mapRoulette);
   }
 
+  expireRouletteById(id: number, nowMs = Date.now()): boolean {
+    const res = this.db
+      .prepare(
+        "UPDATE roulette_games SET status = 'cancelled', updated_at = ? WHERE id = ? AND status IN ('recruiting', 'playing')",
+      )
+      .run(nowMs, id);
+    return res.changes > 0;
+  }
+
   // Number Bomb
   createNumberBomb(input: {
     guildId: string;
@@ -699,7 +712,7 @@ export class ChaosRepo {
       .prepare(
         `UPDATE number_bomb_games SET
           min_bound = ?, max_bound = ?, last_guesser_id = ?,
-          participants_json = ?, guesses_json = ?, status = ?, loser_id = ?
+          participants_json = ?, guesses_json = ?, status = ?, loser_id = ?, payouts_json = ?
          WHERE id = ?`,
       )
       .run(
@@ -710,6 +723,7 @@ export class ChaosRepo {
         JSON.stringify(game.guesses),
         game.status,
         game.loserId,
+        game.payoutsJson,
         game.id,
       );
   }
@@ -730,5 +744,19 @@ export class ChaosRepo {
       )
       .all(nowMs) as NumberBombSqlRow[];
     return rows.map(mapNumberBomb);
+  }
+
+  cancelNumberBombById(id: number): boolean {
+    const res = this.db
+      .prepare("UPDATE number_bomb_games SET status = 'cancelled' WHERE id = ? AND status = 'open'")
+      .run(id);
+    return res.changes > 0;
+  }
+
+  expireNumberBombById(id: number): boolean {
+    const res = this.db
+      .prepare("UPDATE number_bomb_games SET status = 'cancelled' WHERE id = ? AND status = 'open'")
+      .run(id);
+    return res.changes > 0;
   }
 }

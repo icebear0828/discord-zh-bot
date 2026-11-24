@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS red_packets (
   remaining_count INTEGER NOT NULL CHECK (remaining_count >= 0),
   greeting TEXT NOT NULL,
   status TEXT NOT NULL CHECK (status IN ('open', 'finished', 'expired')),
+  system_funded INTEGER NOT NULL DEFAULT 0,
   expires_at INTEGER NOT NULL,
   created_at INTEGER NOT NULL
 );
@@ -48,6 +49,7 @@ export interface RedPacket {
   remainingCount: number;
   greeting: string;
   status: RedPacketStatus;
+  systemFunded: boolean;
   expiresAt: number;
   createdAt: number;
 }
@@ -71,6 +73,7 @@ interface RedPacketRow {
   remaining_count: number;
   greeting: string;
   status: RedPacketStatus;
+  system_funded?: number;
   expires_at: number;
   created_at: number;
 }
@@ -95,6 +98,7 @@ function mapRedPacket(row: RedPacketRow): RedPacket {
     remainingCount: row.remaining_count,
     greeting: row.greeting,
     status: row.status,
+    systemFunded: Boolean(row.system_funded),
     expiresAt: row.expires_at,
     createdAt: row.created_at,
   };
@@ -121,14 +125,15 @@ export class RedPacketRepo {
     greeting: string;
     expiresAt: number;
     createdAt: number;
+    systemFunded?: boolean;
   }): RedPacket {
     const res = this.db
       .prepare(
         `INSERT INTO red_packets (
           guild_id, channel_id, message_id, sender_id,
           total_amount, remaining_amount, total_count, remaining_count,
-          greeting, status, expires_at, created_at
-        ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, 'open', ?, ?)`,
+          greeting, status, system_funded, expires_at, created_at
+        ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)`,
       )
       .run(
         input.guildId,
@@ -139,6 +144,7 @@ export class RedPacketRepo {
         input.totalCount,
         input.totalCount,
         input.greeting,
+        input.systemFunded ? 1 : 0,
         input.expiresAt,
         input.createdAt,
       );

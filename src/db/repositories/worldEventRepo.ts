@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS predictions (
   status TEXT NOT NULL CHECK (status IN ('open', 'locked', 'settled', 'cancelled')),
   winning_option INTEGER,
   closes_at INTEGER NOT NULL,
+  locked_at INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
   resolved_at INTEGER
 );
@@ -48,6 +49,7 @@ CREATE TABLE IF NOT EXISTS world_events (
   remaining_shares INTEGER NOT NULL DEFAULT 0,
   remaining_amount INTEGER NOT NULL DEFAULT 0,
   killer_id TEXT,
+  rewards_json TEXT NOT NULL DEFAULT '[]',
   created_at INTEGER NOT NULL,
   expires_at INTEGER NOT NULL
 );
@@ -61,6 +63,7 @@ CREATE TABLE IF NOT EXISTS world_event_participants (
   damage_or_reward INTEGER NOT NULL DEFAULT 0,
   hits INTEGER NOT NULL DEFAULT 0,
   last_action_at INTEGER NOT NULL DEFAULT 0,
+  next_attack_at INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (event_id, user_id),
   FOREIGN KEY (event_id) REFERENCES world_events(id) ON DELETE CASCADE
 );
@@ -85,6 +88,7 @@ export interface Prediction {
   status: PredictionStatus;
   winningOption: number | null;
   closesAt: number;
+  lockedAt: number;
   createdAt: number;
   resolvedAt: number | null;
 }
@@ -114,6 +118,7 @@ export interface WorldEvent {
   remainingShares: number;
   remainingAmount: number;
   killerId: string | null;
+  rewardsJson: string;
   createdAt: number;
   expiresAt: number;
 }
@@ -124,6 +129,7 @@ export interface WorldEventParticipant {
   damageOrReward: number;
   hits: number;
   lastActionAt: number;
+  nextAttackAt: number;
 }
 
 interface PredictionSqlRow {
@@ -137,6 +143,7 @@ interface PredictionSqlRow {
   status: PredictionStatus;
   winning_option: number | null;
   closes_at: number;
+  locked_at?: number;
   created_at: number;
   resolved_at: number | null;
 }
@@ -166,6 +173,7 @@ interface WorldEventSqlRow {
   remaining_shares: number;
   remaining_amount: number;
   killer_id: string | null;
+  rewards_json?: string;
   created_at: number;
   expires_at: number;
 }
@@ -176,6 +184,7 @@ interface WorldEventParticipantSqlRow {
   damage_or_reward: number;
   hits: number;
   last_action_at: number;
+  next_attack_at?: number;
 }
 
 function parseStringArray(raw: string): string[] {
@@ -196,6 +205,7 @@ function mapPrediction(row: PredictionSqlRow): Prediction {
     status: row.status,
     winningOption: row.winning_option,
     closesAt: row.closes_at,
+    lockedAt: row.locked_at ?? 0,
     createdAt: row.created_at,
     resolvedAt: row.resolved_at,
   };
@@ -229,6 +239,7 @@ function mapWorldEvent(row: WorldEventSqlRow): WorldEvent {
     remainingShares: row.remaining_shares,
     remainingAmount: row.remaining_amount,
     killerId: row.killer_id,
+    rewardsJson: row.rewards_json ?? '[]',
     createdAt: row.created_at,
     expiresAt: row.expires_at,
   };
@@ -241,6 +252,7 @@ function mapParticipant(row: WorldEventParticipantSqlRow): WorldEventParticipant
     damageOrReward: row.damage_or_reward,
     hits: row.hits,
     lastActionAt: row.last_action_at,
+    nextAttackAt: row.next_attack_at ?? 0,
   };
 }
 
@@ -278,10 +290,20 @@ export class WorldEventRepo {
     return created;
   }
 
-  bindPredictionMessageId(predictionId: number, messageId: string): void {
+  bindPredictionMessage(predictionId: number, messageId: string, channelId?: string): void {
+    if (channelId !== undefined) {
+      this.db
+        .prepare('UPDATE predictions SET message_id = ?, channel_id = ? WHERE id = ?')
+        .run(messageId, channelId, predictionId);
+      return;
+    }
     this.db
       .prepare('UPDATE predictions SET message_id = ? WHERE id = ?')
       .run(messageId, predictionId);
+  }
+
+  bindPredictionMessageId(predictionId: number, messageId: string, channelId?: string): void {
+    this.bindPredictionMessage(predictionId, messageId, channelId);
   }
 
   getPredictionById(predictionId: number): Prediction | null {
@@ -306,10 +328,47 @@ export class WorldEventRepo {
     return rows.map(mapPrediction);
   }
 
+  listPredictionsPaginated(
+    guildId: string,
+    offset: number,
+    limit: number,
+    statuses: readonly PredictionStatus[] = ['open', 'locked'],
+  ): { items: Prediction[]; total: number } {
+    if (statuses.length === 0) {
+      return { items: [], total: 0 };
+    }
+    const safeOffset = Math.max(0, Math.floor(offset));
+    const safeLimit = Math.max(1, Math.floor(limit));
+    const placeholders = statuses.map(() => '?').join(',');
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM predictions WHERE guild_id = ? AND status IN (${placeholders}) ORDER BY id DESC LIMIT ? OFFSET ?`,
+      )
+      .all(guildId, ...statuses, safeLimit, safeOffset) as PredictionSqlRow[];
+    const totalRow = this.db
+      .prepare(
+        `SELECT COUNT(*) AS cnt FROM predictions WHERE guild_id = ? AND status IN (${placeholders})`,
+      )
+      .get(guildId, ...statuses) as { cnt: number };
+    return { items: rows.map(mapPrediction), total: totalRow.cnt };
+  }
+
   listDueOpenPredictions(nowMs: number): Prediction[] {
     const rows = this.db
       .prepare("SELECT * FROM predictions WHERE status = 'open' AND closes_at <= ? ORDER BY closes_at ASC")
       .all(nowMs) as PredictionSqlRow[];
+    return rows.map(mapPrediction);
+  }
+
+  listDueLockedPredictions(lockedBeforeMs: number): Prediction[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM predictions
+         WHERE status = 'locked'
+           AND ((locked_at > 0 AND locked_at <= ?) OR (locked_at = 0 AND closes_at <= ?))
+         ORDER BY CASE WHEN locked_at > 0 THEN locked_at ELSE closes_at END ASC`,
+      )
+      .all(lockedBeforeMs, lockedBeforeMs) as PredictionSqlRow[];
     return rows.map(mapPrediction);
   }
 
@@ -318,7 +377,27 @@ export class WorldEventRepo {
     status: PredictionStatus,
     winningOption: number | null,
     resolvedAt: number | null,
+    lockedAt?: number,
   ): void {
+    if (lockedAt !== undefined) {
+      this.db
+        .prepare(
+          'UPDATE predictions SET status = ?, winning_option = ?, resolved_at = ?, locked_at = ? WHERE id = ?',
+        )
+        .run(status, winningOption, resolvedAt, lockedAt, predictionId);
+      return;
+    }
+    if (status === 'locked') {
+      this.db
+        .prepare(
+          `UPDATE predictions
+           SET status = ?, winning_option = ?, resolved_at = ?,
+               locked_at = CASE WHEN locked_at > 0 THEN locked_at ELSE ? END
+           WHERE id = ?`,
+        )
+        .run(status, winningOption, resolvedAt, Date.now(), predictionId);
+      return;
+    }
     this.db
       .prepare(
         'UPDATE predictions SET status = ?, winning_option = ?, resolved_at = ? WHERE id = ?',
@@ -402,10 +481,20 @@ export class WorldEventRepo {
     return created;
   }
 
-  bindWorldEventMessageId(eventId: number, messageId: string): void {
+  bindWorldEventMessage(eventId: number, messageId: string, channelId?: string): void {
+    if (channelId !== undefined) {
+      this.db
+        .prepare('UPDATE world_events SET message_id = ?, channel_id = ? WHERE id = ?')
+        .run(messageId, channelId, eventId);
+      return;
+    }
     this.db
       .prepare('UPDATE world_events SET message_id = ? WHERE id = ?')
       .run(messageId, eventId);
+  }
+
+  bindWorldEventMessageId(eventId: number, messageId: string, channelId?: string): void {
+    this.bindWorldEventMessage(eventId, messageId, channelId);
   }
 
   getWorldEventById(eventId: number): WorldEvent | null {
@@ -422,7 +511,16 @@ export class WorldEventRepo {
     return row ? mapWorldEvent(row) : null;
   }
 
-  listActiveWorldEvents(guildId: string): WorldEvent[] {
+  listActiveWorldEvents(guildId: string, limit?: number): WorldEvent[] {
+    if (limit !== undefined) {
+      const safeLimit = Math.max(1, Math.floor(limit));
+      const rows = this.db
+        .prepare(
+          "SELECT * FROM world_events WHERE guild_id = ? AND status = 'active' ORDER BY id DESC LIMIT ?",
+        )
+        .all(guildId, safeLimit) as WorldEventSqlRow[];
+      return rows.map(mapWorldEvent);
+    }
     const rows = this.db
       .prepare("SELECT * FROM world_events WHERE guild_id = ? AND status = 'active' ORDER BY id DESC")
       .all(guildId) as WorldEventSqlRow[];
@@ -447,7 +545,8 @@ export class WorldEventRepo {
     this.db
       .prepare(
         `UPDATE world_events SET
-          status = ?, current_hp = ?, remaining_shares = ?, remaining_amount = ?, killer_id = ?
+          status = ?, current_hp = ?, remaining_shares = ?, remaining_amount = ?,
+          killer_id = ?, rewards_json = ?
          WHERE id = ?`,
       )
       .run(
@@ -456,6 +555,7 @@ export class WorldEventRepo {
         event.remainingShares,
         event.remainingAmount,
         event.killerId,
+        event.rewardsJson,
         event.id,
       );
   }
@@ -482,16 +582,30 @@ export class WorldEventRepo {
     delta: number;
     hitsDelta: number;
     actionAt: number;
+    nextAttackAt?: number;
   }): void {
+    const hasNextAttackAt = input.nextAttackAt !== undefined;
+    const nextAttackAtVal = input.nextAttackAt ?? 0;
     this.db
       .prepare(
-        `INSERT INTO world_event_participants (event_id, user_id, damage_or_reward, hits, last_action_at)
-         VALUES (?, ?, ?, ?, ?)
+        `INSERT INTO world_event_participants (
+          event_id, user_id, damage_or_reward, hits, last_action_at, next_attack_at
+        )
+         VALUES (?, ?, ?, ?, ?, ?)
          ON CONFLICT(event_id, user_id) DO UPDATE SET
            damage_or_reward = damage_or_reward + excluded.damage_or_reward,
            hits = hits + excluded.hits,
-           last_action_at = excluded.last_action_at`,
+           last_action_at = excluded.last_action_at,
+           next_attack_at = CASE WHEN ? = 1 THEN excluded.next_attack_at ELSE world_event_participants.next_attack_at END`,
       )
-      .run(input.eventId, input.userId, input.delta, input.hitsDelta, input.actionAt);
+      .run(
+        input.eventId,
+        input.userId,
+        input.delta,
+        input.hitsDelta,
+        input.actionAt,
+        nextAttackAtVal,
+        hasNextAttackAt ? 1 : 0,
+      );
   }
 }

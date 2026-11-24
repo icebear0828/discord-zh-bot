@@ -30,6 +30,9 @@ export interface MemberProfile {
   lastXpAt: number;
   hourWindowStart: number;
   hourXpEarned: number;
+  lastPetWorkAt: number;
+  petPvpXpDate: string;
+  petPvpXpDaily: number;
 }
 
 export interface LevelRoleReward {
@@ -68,6 +71,9 @@ interface MemberProfileRow {
   last_xp_at: number;
   hour_window_start: number;
   hour_xp_earned: number;
+  last_pet_work_at?: number;
+  pet_pvp_xp_date?: string;
+  pet_pvp_xp_daily?: number;
 }
 
 interface LevelRoleRewardRow {
@@ -107,6 +113,9 @@ function mapProfile(row: MemberProfileRow): MemberProfile {
     lastXpAt: row.last_xp_at,
     hourWindowStart: row.hour_window_start,
     hourXpEarned: row.hour_xp_earned,
+    lastPetWorkAt: row.last_pet_work_at ?? 0,
+    petPvpXpDate: row.pet_pvp_xp_date ?? '',
+    petPvpXpDaily: row.pet_pvp_xp_daily ?? 0,
   };
 }
 
@@ -143,7 +152,8 @@ export class ProfileRepo {
           equipped_title = ?, card_nickname = ?, card_tag = ?, card_bio = ?, card_color = ?,
           last_stat_boost_date = ?, stat_boost_daily_count = ?,
           xp_boost_multiplier = ?, xp_boost_expires_at = ?,
-          heat_streak = ?, last_xp_at = ?, hour_window_start = ?, hour_xp_earned = ?
+          heat_streak = ?, last_xp_at = ?, hour_window_start = ?, hour_xp_earned = ?,
+          last_pet_work_at = ?, pet_pvp_xp_date = ?, pet_pvp_xp_daily = ?
          WHERE guild_id = ? AND user_id = ?`,
       )
       .run(
@@ -174,6 +184,9 @@ export class ProfileRepo {
         profile.lastXpAt,
         profile.hourWindowStart,
         profile.hourXpEarned,
+        profile.lastPetWorkAt,
+        profile.petPvpXpDate,
+        profile.petPvpXpDaily,
         profile.guildId,
         profile.userId,
       );
