@@ -180,6 +180,7 @@ describe('env & database schema', () => {
     expect(colNames).toContain('card_tag');
     expect(colNames).toContain('card_bio');
     expect(colNames).toContain('card_color');
+    expect(colNames).toContain('level_offset');
 
     const row = db
       .prepare('SELECT coins, bank_coins, last_bank_interest_date FROM member_profiles WHERE guild_id = ? AND user_id = ?')

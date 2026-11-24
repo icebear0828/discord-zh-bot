@@ -135,6 +135,15 @@ export function xpRequiredForLevel(level: number): number {
   return 40 + safeLevel * 20 + safeLevel * safeLevel * 10 + safeLevel * safeLevel * safeLevel * 2;
 }
 
+export function totalXpForLevel(targetLevel: number): number {
+  const safeTarget = Math.max(0, Math.floor(targetLevel));
+  let total = 0;
+  for (let i = 0; i < safeTarget; i++) {
+    total += xpRequiredForLevel(i);
+  }
+  return total;
+}
+
 export function calculateLevelProgress(totalXp: number): LevelProgress {
   let remaining = Math.max(0, Math.floor(totalXp));
   let level = 0;
@@ -286,6 +295,7 @@ export class LevelingService {
       ...profile,
       xp: clampedXp,
       level: newLevel,
+      levelOffset: 0,
     });
 
     const roleChanges = this.computeRoleRewards(guildId, oldLevel, newLevel, cfg.leveling.stackRoles);
@@ -308,7 +318,11 @@ export class LevelingService {
   getRankCardData(guildId: string, userId: string, nowMs = Date.now()): RankCardData {
     const cfg = this.configRepo.getOrCreate(guildId);
     const profile = this.profileRepo.getOrCreate(guildId, userId);
-    const progress = calculateLevelProgress(profile.xp);
+    const rawProgress = calculateLevelProgress(profile.xp);
+    const progress: LevelProgress = {
+      ...rawProgress,
+      level: Math.max(0, rawProgress.level + profile.levelOffset),
+    };
     const { rank, total } = this.profileRepo.getXpRank(guildId, userId);
     const heatWindowMs = cfg.leveling.heatWindowSec * 1000;
     const heatActive = profile.lastXpAt > 0 && nowMs - profile.lastXpAt <= heatWindowMs;
@@ -420,8 +434,8 @@ export class LevelingService {
   ): AwardXpResult {
     const oldLevel = profile.level;
     const totalXp = profile.xp + grantedXp;
-    const progress = calculateLevelProgress(totalXp);
-    const newLevel = progress.level;
+    const rawProgress = calculateLevelProgress(totalXp);
+    const newLevel = Math.max(0, rawProgress.level + profile.levelOffset);
     const levelsGained = Math.max(0, newLevel - oldLevel);
     const coinsAwarded = levelsGained * Math.max(0, levelUpCoinReward);
 

@@ -5,6 +5,7 @@ export interface MemberProfile {
   userId: string;
   xp: number;
   level: number;
+  levelOffset: number;
   messageCount: number;
   voiceMinutes: number;
   coins: number;
@@ -39,6 +40,7 @@ interface MemberProfileRow {
   user_id: string;
   xp: number;
   level: number;
+  level_offset?: number;
   message_count: number;
   voice_minutes: number;
   coins: number;
@@ -74,6 +76,7 @@ function mapProfile(row: MemberProfileRow): MemberProfile {
     userId: row.user_id,
     xp: row.xp,
     level: row.level,
+    levelOffset: row.level_offset ?? 0,
     messageCount: row.message_count,
     voiceMinutes: row.voice_minutes,
     coins: row.coins,
@@ -125,7 +128,7 @@ export class ProfileRepo {
     this.db
       .prepare(
         `UPDATE member_profiles SET
-          xp = ?, level = ?, message_count = ?, voice_minutes = ?,
+          xp = ?, level = ?, level_offset = ?, message_count = ?, voice_minutes = ?,
           coins = ?, bank_coins = ?, daily_streak = ?, last_daily_date = ?,
           last_bank_interest_date = ?, last_work_at = ?, last_rob_at = ?, rob_shield_until = ?,
           equipped_title = ?, card_nickname = ?, card_tag = ?, card_bio = ?, card_color = ?,
@@ -136,6 +139,7 @@ export class ProfileRepo {
       .run(
         profile.xp,
         profile.level,
+        profile.levelOffset,
         profile.messageCount,
         profile.voiceMinutes,
         profile.coins,
@@ -209,9 +213,9 @@ export class ProfileRepo {
     const profile = this.getOrCreate(guildId, userId);
     const ahead = this.db
       .prepare(
-        'SELECT COUNT(*) AS cnt FROM member_profiles WHERE guild_id = ? AND xp > ?',
+        'SELECT COUNT(*) AS cnt FROM member_profiles WHERE guild_id = ? AND (level > ? OR (level = ? AND xp > ?))',
       )
-      .get(guildId, profile.xp) as { cnt: number };
+      .get(guildId, profile.level, profile.level, profile.xp) as { cnt: number };
     const total = this.db
       .prepare('SELECT COUNT(*) AS cnt FROM member_profiles WHERE guild_id = ?')
       .get(guildId) as { cnt: number };
@@ -225,7 +229,7 @@ export class ProfileRepo {
   ): { items: MemberProfile[]; total: number } {
     const rows = this.db
       .prepare(
-        'SELECT * FROM member_profiles WHERE guild_id = ? ORDER BY xp DESC, message_count DESC LIMIT ? OFFSET ?',
+        'SELECT * FROM member_profiles WHERE guild_id = ? ORDER BY level DESC, xp DESC, message_count DESC LIMIT ? OFFSET ?',
       )
       .all(guildId, limit, offset) as MemberProfileRow[];
     const total = this.db

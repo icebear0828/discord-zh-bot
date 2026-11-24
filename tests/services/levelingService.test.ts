@@ -9,6 +9,7 @@ import {
   LevelingService,
   parseCardColor,
   renderLevelUpTemplate,
+  totalXpForLevel,
   xpRequiredForLevel,
 } from '../../src/services/levelingService.js';
 import { buildLevelUpEmbed } from '../../src/events/ready.js';
@@ -204,6 +205,55 @@ describe('levelingService', () => {
     expect(parseCardColor('ff6b8b')).toEqual({ ok: true, normalized: '#FF6B8B', colorInt: 0xff6b8b });
     expect(parseCardColor('#12AB34')).toEqual({ ok: true, normalized: '#12AB34', colorInt: 0x12ab34 });
     expect(parseCardColor('invalid-color')).toEqual({ ok: false });
+
+    db.close();
+  });
+
+  it('supports levelOffset for arbitrary high levels across rank cards, XP awards, and leaderboards', () => {
+    expect(totalXpForLevel(30)).toBe(473900);
+    expect(totalXpForLevel(50)).toBe(3432000);
+
+    const db = createDatabase(':memory:');
+    const configRepo = new GuildConfigRepo(db);
+    const profileRepo = new ProfileRepo(db);
+    const inviteRepo = new InviteRepo(db);
+    const svc = new LevelingService(configRepo, profileRepo, inviteRepo);
+
+    const pIce = profileRepo.getOrCreate('g1', 'u-ice');
+    profileRepo.save({
+      ...pIce,
+      xp: totalXpForLevel(30),
+      level: 30,
+      levelOffset: 0,
+    });
+
+    const pStraw = profileRepo.getOrCreate('g1', 'u-straw');
+    profileRepo.save({
+      ...pStraw,
+      xp: totalXpForLevel(50),
+      level: 114514,
+      levelOffset: 114464,
+    });
+
+    const strawCard = svc.getRankCardData('g1', 'u-straw');
+    expect(strawCard.progress.level).toBe(114514);
+    expect(strawCard.rank).toBe(1);
+
+    const iceCard = svc.getRankCardData('g1', 'u-ice');
+    expect(iceCard.progress.level).toBe(30);
+    expect(iceCard.rank).toBe(2);
+
+    const msgRes = svc.awardMessageXp('g1', 'u-straw', 'c1', 2_000_000, () => 0.5);
+    expect(msgRes.awarded).toBe(true);
+    expect(msgRes.newLevel).toBe(114514);
+    expect(msgRes.leveledUp).toBe(false);
+    expect(profileRepo.getOrCreate('g1', 'u-straw').level).toBe(114514);
+
+    const lb = svc.getLeaderboard('g1', 'xp', 1, 10);
+    expect(lb.items[0]?.userId).toBe('u-straw');
+    expect(lb.items[0]?.secondaryValue).toBe(114514);
+    expect(lb.items[1]?.userId).toBe('u-ice');
+    expect(lb.items[1]?.secondaryValue).toBe(30);
 
     db.close();
   });
