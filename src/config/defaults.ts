@@ -26,6 +26,8 @@ export interface LevelingConfig {
   levelUpCoinReward: number;
   announceChannelId: string | null;
   announceEnabled: boolean;
+  levelUpTitle: string;
+  levelUpTemplate: string;
   ignoredChannelIds: string[];
   channelMultipliers: Record<string, number>;
   stackRoles: boolean;
@@ -130,6 +132,8 @@ export const DEFAULT_LEVELING_CONFIG: LevelingConfig = {
   levelUpCoinReward: 100,
   announceChannelId: null,
   announceEnabled: true,
+  levelUpTitle: '🎉 等级提升！',
+  levelUpTemplate: '恭喜 {user} 升到 **Lv.{level}**！',
   ignoredChannelIds: [],
   channelMultipliers: {},
   stackRoles: true,

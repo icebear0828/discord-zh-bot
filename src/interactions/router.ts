@@ -10,6 +10,7 @@ import { handleRolePanelButton, handleRolePanelSelect } from './rolePanelHandler
 import {
   handleMenuButton,
   handleMenuModal,
+  handleMenuRoleSelect,
   handleMenuStringSelect,
   handleMenuUserSelect,
 } from './menuHandler.js';
@@ -91,6 +92,14 @@ export async function routeInteraction(
       const prefix = interaction.customId.split(':')[0];
       if (prefix === 'menu') {
         await handleMenuUserSelect(interaction, ctx);
+      }
+      return;
+    }
+
+    if (interaction.isRoleSelectMenu()) {
+      const prefix = interaction.customId.split(':')[0];
+      if (prefix === 'menu') {
+        await handleMenuRoleSelect(interaction, ctx);
       }
       return;
     }

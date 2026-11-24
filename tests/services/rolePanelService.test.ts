@@ -69,6 +69,10 @@ describe('rolePanelService', () => {
       svc.addOption('g1', panel.id, { roleId: 'r26', label: '超限', emoji: null, description: null }).ok,
     ).toBe(false);
 
+    const updatedModes = svc.updatePanelModes('g1', panel.id, 'button', 'multi');
+    expect(updatedModes?.displayMode).toBe('button');
+    expect(updatedModes?.selectionMode).toBe('multi');
+
     db.close();
   });
 });

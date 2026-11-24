@@ -7,8 +7,11 @@ import {
   calculateLevelProgress,
   getHeatMultiplier,
   LevelingService,
+  parseCardColor,
+  renderLevelUpTemplate,
   xpRequiredForLevel,
 } from '../../src/services/levelingService.js';
+import { buildLevelUpEmbed } from '../../src/events/ready.js';
 
 describe('levelingService', () => {
   it('computes XP curve and heat multiplier brackets accurately', () => {
@@ -117,6 +120,86 @@ describe('levelingService', () => {
     const voiceRes = svc.awardVoiceXp('g1', 'u1', 1_060_000);
     expect(voiceRes.awarded).toBe(true);
     expect(voiceRes.xpGained).toBe(20); // 10 * 2.0 boost
+
+    db.close();
+  });
+
+  it('renders custom level-up templates, avoids duplicate reward lines, and parses card colors', () => {
+    const rendered = renderLevelUpTemplate(
+      '{user} ({username}) 从 {oldLevel} 升到 Lv.{level}，奖 {coins} {currency}，身份组 {roles}',
+      {
+        user: '<@u1>',
+        username: '小熊',
+        level: 5,
+        oldLevel: 4,
+        coins: 200,
+        currency: '星币',
+        roles: '<@&r1>',
+      },
+    );
+    expect(rendered).toBe('<@u1> (小熊) 从 4 升到 Lv.5，奖 200 星币，身份组 <@&r1>');
+
+    // Guard against double-substitution if username contains a placeholder token
+    const safeRendered = renderLevelUpTemplate('{username} -> Lv.{level}', {
+      user: '<@u1>',
+      username: '{level}',
+      level: 9,
+      oldLevel: 8,
+      coins: 0,
+      currency: '星币',
+      roles: '无',
+    });
+    expect(safeRendered).toBe('{level} -> Lv.9');
+
+    const db = createDatabase(':memory:');
+    const configRepo = new GuildConfigRepo(db);
+    const cfg = configRepo.getOrCreate('g1');
+    const fakeMember = {
+      id: 'u1',
+      displayName: '小熊',
+      displayAvatarURL: () => 'https://cdn.discordapp.com/embed/avatars/0.png',
+    };
+    const fakeRes = {
+      awarded: true,
+      xpGained: 50,
+      totalXp: 300,
+      heatStreak: 1,
+      heatMultiplier: 1,
+      boostMultiplier: 1,
+      leveledUp: true,
+      oldLevel: 1,
+      newLevel: 2,
+      coinsAwarded: 100,
+      rolesToAdd: ['r2'],
+      rolesToRemove: [],
+    };
+
+    // Default template auto-appends coins & roles
+    const defaultEmbed = buildLevelUpEmbed(cfg, fakeMember, fakeRes).toJSON();
+    expect(defaultEmbed.title).toBe('🎉 等级提升！');
+    expect(defaultEmbed.description).toContain('恭喜 <@u1> 升到 **Lv.2**！');
+    expect(defaultEmbed.description).toContain('获得升级奖励');
+    expect(defaultEmbed.description).toContain('<@&r2>');
+
+    // Custom template already mentioning {coins} and {roles} does not duplicate lines
+    const customCfg = {
+      ...cfg,
+      leveling: {
+        ...cfg.leveling,
+        levelUpTitle: '🚀 晋升 Lv.{level}',
+        levelUpTemplate: '太强了 {user}！送你 {coins} {currency} 和 {roles}',
+      },
+    };
+    const customEmbed = buildLevelUpEmbed(customCfg, fakeMember, fakeRes).toJSON();
+    expect(customEmbed.title).toBe('🚀 晋升 Lv.2');
+    expect(customEmbed.description).toBe('太强了 <@u1>！送你 100 星币 和 <@&r2>');
+
+    // Card color parsing
+    expect(parseCardColor('')).toEqual({ ok: true, normalized: null, colorInt: null });
+    expect(parseCardColor('紫')).toEqual({ ok: true, normalized: '#9B59B6', colorInt: 0x9b59b6 });
+    expect(parseCardColor('ff6b8b')).toEqual({ ok: true, normalized: '#FF6B8B', colorInt: 0xff6b8b });
+    expect(parseCardColor('#12AB34')).toEqual({ ok: true, normalized: '#12AB34', colorInt: 0x12ab34 });
+    expect(parseCardColor('invalid-color')).toEqual({ ok: false });
 
     db.close();
   });

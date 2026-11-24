@@ -4,6 +4,7 @@ import {
   SlashCommandBuilder,
   type ChatInputCommandInteraction,
 } from 'discord.js';
+import { DEFAULT_LEVELING_CONFIG } from '../../config/defaults.js';
 import {
   createInfoEmbed,
   createSuccessEmbed,
@@ -86,9 +87,29 @@ export const levelAdminCommand: CommandDefinition = {
                 '频道',
                 '指定统一播报频道',
               ),
+            )
+            .addStringOption((opt) =>
+              applyZh(
+                opt
+                  .setName('title')
+                  .setDescription('自定义升级播报标题（支持 {level} 等变量，可选）')
+                  .setMaxLength(60),
+                '标题',
+                '自定义升级播报标题',
+              ),
+            )
+            .addStringOption((opt) =>
+              applyZh(
+                opt
+                  .setName('message')
+                  .setDescription('自定义升级提示语（支持 {user} {level} {coins} {currency} {roles}）')
+                  .setMaxLength(400),
+                '提示语',
+                '自定义升级提示语模板',
+              ),
             ),
           '升级播报设置',
-          '设置升级播报开关与指定播报频道',
+          '设置升级播报开关、频道与提示语模板',
         ),
       )
       .addSubcommand((sub) =>
@@ -236,16 +257,34 @@ export const levelAdminCommand: CommandDefinition = {
     if (sub === 'set-announce') {
       const enabled = interaction.options.getBoolean('enabled', true);
       const channel = interaction.options.getChannel('channel');
+      const rawTitle = interaction.options.getString('title');
+      const rawMessage = interaction.options.getString('message');
+      const levelUpTitle =
+        rawTitle === null
+          ? cfg.leveling.levelUpTitle
+          : rawTitle.trim() || DEFAULT_LEVELING_CONFIG.levelUpTitle;
+      const levelUpTemplate =
+        rawMessage === null
+          ? cfg.leveling.levelUpTemplate
+          : rawMessage.trim() || DEFAULT_LEVELING_CONFIG.levelUpTemplate;
+
       ctx.repos.guildConfig.updateLeveling(guildId, {
         ...cfg.leveling,
         announceEnabled: enabled,
         announceChannelId: channel ? channel.id : null,
+        levelUpTitle,
+        levelUpTemplate,
       });
       await interaction.reply({
         embeds: [
           createSuccessEmbed(
             '✅ 升级播报已更新',
-            `升级播报：**${enabled ? '开启' : '关闭'}**${channel ? `\n播报频道：<#${channel.id}>` : '\n播报频道：原发言频道'}`,
+            [
+              `升级播报：**${enabled ? '开启' : '关闭'}**`,
+              channel ? `播报频道：<#${channel.id}>` : '播报频道：原发言频道',
+              `播报标题：**${levelUpTitle}**`,
+              `提示语模板：${levelUpTemplate}`,
+            ].join('\n'),
           ),
         ],
         flags: MessageFlags.Ephemeral,

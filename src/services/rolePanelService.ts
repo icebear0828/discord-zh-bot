@@ -153,6 +153,15 @@ export class RolePanelService {
     this.rolePanelRepo.setMessage(panelId, channelId, messageId);
   }
 
+  updatePanelModes(
+    guildId: string,
+    panelId: number,
+    displayMode: RolePanelDisplayMode,
+    selectionMode: RolePanelSelectionMode,
+  ): RolePanel | null {
+    return this.rolePanelRepo.updateModes(panelId, guildId, displayMode, selectionMode);
+  }
+
   deletePanel(guildId: string, panelId: number): boolean {
     return this.rolePanelRepo.delete(panelId, guildId);
   }

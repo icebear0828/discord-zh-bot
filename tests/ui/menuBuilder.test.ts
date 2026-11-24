@@ -32,6 +32,7 @@ import {
   buildDuelMessage,
   buildLobbyMessage,
   buildMenuMessage,
+  buildPublicRankEmbed,
   buildRedPacketMessage,
   type MenuActor,
   type MenuView,
@@ -150,8 +151,8 @@ function assertDiscordMessageLimits(
             expect(opt.description.length, `${label}: option desc max`).toBeLessThanOrEqual(100);
           }
         }
-      } else if (comp.type === ComponentType.UserSelect) {
-        expect(row.components.length, `${label}: user select must be alone in row`).toBe(1);
+      } else if (comp.type === ComponentType.UserSelect || comp.type === ComponentType.RoleSelect) {
+        expect(row.components.length, `${label}: entity select must be alone in row`).toBe(1);
       }
     }
   }
@@ -252,6 +253,36 @@ describe('menuBuilder Discord component constraints & schema integration', () =>
     }
     ctx.services.socialPet.pullPetGacha('g1', 'u1');
 
+    ctx.repos.profile.setLevelReward('g1', 5, 'role-lv5');
+    ctx.repos.profile.setLevelReward('g1', 10, 'role-lv10');
+
+    const rp1 = ctx.services.rolePanel.createPanel({
+      guildId: 'g1',
+      title: '身份标签面板1',
+      description: '选你喜欢的身份标签',
+      displayMode: 'button',
+      selectionMode: 'multi',
+    });
+    ctx.services.rolePanel.addOption('g1', rp1.id, {
+      roleId: 'role-a',
+      label: '夜猫子',
+      emoji: '🌙',
+      description: '凌晨在线',
+    });
+    const rp2 = ctx.services.rolePanel.createPanel({
+      guildId: 'g1',
+      title: '游戏分组面板2',
+      description: '单选互斥测试',
+      displayMode: 'select',
+      selectionMode: 'single',
+    });
+    ctx.services.rolePanel.addOption('g1', rp2.id, {
+      roleId: 'role-b',
+      label: '瓦罗兰特',
+      emoji: '🎯',
+      description: null,
+    });
+
     const views: MenuView[] = [
       { page: 'home' },
       { page: 'solo' },
@@ -283,12 +314,17 @@ describe('menuBuilder Discord component constraints & schema integration', () =>
       { page: 'shop' },
       { page: 'bag' },
       { page: 'rank' },
+      { page: 'self_roles' },
+      { page: 'self_roles', panelId: rp2.id },
       { page: 'leaderboard', lbType: 'xp', lbPage: 1 },
       { page: 'leaderboard', lbType: 'coins', lbPage: 1 },
       { page: 'leaderboard', lbType: 'invites', lbPage: 1 },
       { page: 'admin' },
       { page: 'admin_econ' },
       { page: 'admin_lvl' },
+      { page: 'admin_lvl_rewards' },
+      { page: 'admin_roles' },
+      { page: 'admin_roles', panelId: rp2.id },
       { page: 'admin_games' },
       { page: 'admin_mod' },
       { page: 'admin_ops' },
@@ -336,6 +372,31 @@ describe('menuBuilder Discord component constraints & schema integration', () =>
       'custom_id' in c ? c.custom_id : '',
     );
     expect(rankShareIds).toContain('menu:share:rank');
+    expect(rankShareIds).toContain('menu:modal:edit_card');
+
+    // Empty role panels edge case + custom ID card fields rendering
+    ctx.services.rolePanel.deletePanel('g1', rp1.id);
+    ctx.services.rolePanel.deletePanel('g1', rp2.id);
+    assertDiscordMessageLimits(
+      buildMenuMessage(ctx, 'g1', { ...ACTOR, isAdmin: true }, { page: 'admin_roles' }),
+      'view:admin_roles:empty',
+    );
+    assertDiscordMessageLimits(
+      buildMenuMessage(ctx, 'g1', { ...ACTOR, isAdmin: true }, { page: 'self_roles' }),
+      'view:self_roles:empty',
+    );
+
+    ctx.repos.profile.updateCard('g1', 'u1', {
+      cardNickname: '黑吊国王',
+      cardTag: '深夜代码仙人',
+      cardBio: '写代码不如睡觉',
+      cardColor: '#9B59B6',
+    });
+    const publicCardJson = buildPublicRankEmbed(ctx, 'g1', ACTOR).toJSON();
+    expect(publicCardJson.author?.name).toContain('黑吊国王');
+    expect(publicCardJson.description).toContain('深夜代码仙人');
+    expect(publicCardJson.description).toContain('写代码不如睡觉');
+    expect(publicCardJson.color).toBe(0x9b59b6);
 
     const lbMsg = buildMenuMessage(ctx, 'g1', ACTOR, {
       page: 'leaderboard',

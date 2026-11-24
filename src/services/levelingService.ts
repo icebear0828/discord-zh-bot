@@ -59,6 +59,77 @@ export interface LeaderboardPage {
   items: LeaderboardEntry[];
 }
 
+export interface LevelUpTemplateVars {
+  user: string;
+  username: string;
+  level: number;
+  oldLevel: number;
+  coins: number;
+  currency: string;
+  roles: string;
+}
+
+export function renderLevelUpTemplate(template: string, vars: LevelUpTemplateVars): string {
+  const tokenMap: Record<string, string> = {
+    '{user}': vars.user,
+    '{username}': vars.username,
+    '{level}': String(vars.level),
+    '{oldLevel}': String(vars.oldLevel),
+    '{coins}': String(vars.coins),
+    '{currency}': vars.currency,
+    '{roles}': vars.roles,
+  };
+
+  return template.replace(
+    /\{(user|username|level|oldLevel|coins|currency|roles)\}/g,
+    (match) => tokenMap[match] ?? match,
+  );
+}
+
+export const CARD_COLOR_PRESETS: Readonly<Record<string, string>> = {
+  红: '#ED4245',
+  红色: '#ED4245',
+  橙: '#E67E22',
+  橙色: '#E67E22',
+  黄: '#FEE75C',
+  黄色: '#FEE75C',
+  绿: '#57F287',
+  绿色: '#57F287',
+  青: '#1ABC9C',
+  青色: '#1ABC9C',
+  蓝: '#5865F2',
+  蓝色: '#5865F2',
+  紫: '#9B59B6',
+  紫色: '#9B59B6',
+  粉: '#EB459E',
+  粉色: '#EB459E',
+  金: '#F1C40F',
+  金色: '#F1C40F',
+  黑: '#23272A',
+  黑色: '#23272A',
+  白: '#FFFFFF',
+  白色: '#FFFFFF',
+};
+
+export function parseCardColor(
+  raw: string | null | undefined,
+): { ok: true; normalized: string | null; colorInt: number | null } | { ok: false } {
+  const trimmed = raw?.trim() ?? '';
+  if (trimmed.length === 0) {
+    return { ok: true, normalized: null, colorInt: null };
+  }
+
+  const preset = CARD_COLOR_PRESETS[trimmed];
+  const hexCandidate = preset ?? (trimmed.startsWith('#') ? trimmed : `#${trimmed}`);
+  if (!/^#[0-9a-fA-F]{6}$/.test(hexCandidate)) {
+    return { ok: false };
+  }
+
+  const normalized = hexCandidate.toUpperCase();
+  const colorInt = Number.parseInt(normalized.slice(1), 16);
+  return { ok: true, normalized, colorInt };
+}
+
 export function xpRequiredForLevel(level: number): number {
   return 100 + level * 75 + level * level * 15;
 }

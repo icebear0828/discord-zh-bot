@@ -14,9 +14,14 @@ import {
 } from '../services/blackjackService.js';
 import { getDateKey, type DiceChoice } from '../services/economyService.js';
 import type { InteractionAction } from '../services/funService.js';
-import type { LeaderboardType } from '../services/levelingService.js';
+import { parseCardColor, type LeaderboardType } from '../services/levelingService.js';
 import type { AcceptDuelResult, DuelChallenge } from '../services/multiplayerService.js';
 import { PET_SPECIES_MAP } from '../services/socialPetService.js';
+import {
+  buildAdminLvlRewardsView,
+  buildAdminRolesView,
+  buildSelfRolesView,
+} from './adminConfigMenuBuilder.js';
 import {
   buildBountyView,
   buildBombView,
@@ -198,6 +203,7 @@ function buildHomeView(
   const extraRow = buttonRow(
     makeButton('menu:nav:shop', '🛒 商店与黑市', ButtonStyle.Secondary),
     makeButton('menu:nav:rank', '🏆 排行名片', ButtonStyle.Secondary),
+    makeButton('menu:nav:self_roles', '🎭 自助身份组', ButtonStyle.Secondary),
   );
 
   return { embeds: [embed], components: [navRow, quickRow, extraRow] };
@@ -1004,19 +1010,30 @@ function createRankEmbed(
     ? `${activeSp?.emoji ?? '🐾'} **${activePet.nickname}** [${activePet.rarity} Lv.${activePet.level}]`
     : '暂无出战宠';
 
+  const parsedColor = parseCardColor(data.profile.cardColor);
+  const customColor = parsedColor.ok ? parsedColor.colorInt : null;
+  const displayCardName = data.profile.cardNickname || actor.displayName;
+  const cardHeaderLines: string[] = [];
+  if (data.profile.cardTag) {
+    cardHeaderLines.push(`🏷️ **${data.profile.cardTag}**`);
+  }
+  if (data.profile.cardBio) {
+    cardHeaderLines.push(`💬 *${data.profile.cardBio}*`);
+  }
+  const rankDescription = [
+    ...cardHeaderLines,
+    `🏅 **Lv.${data.progress.level}** ｜ 全服第 **#${data.rank}** / ${data.totalMembers} 名`,
+    `\`${bar}\` **${pct}%**（${data.progress.currentLevelXp} / ${data.progress.nextLevelXp} XP，累计 ${data.profile.xp} XP）`,
+  ].join('\n');
+
   return new EmbedBuilder()
-    .setColor(resolveColor(COLORS.PRIMARY, feedback))
+    .setColor(resolveColor(customColor ?? COLORS.PRIMARY, feedback))
     .setAuthor({
-      name: `${titleBadge}${actor.displayName} 的等级名片`,
+      name: `${titleBadge}${displayCardName} 的身份证名片`,
       iconURL: actor.avatarUrl,
     })
     .setThumbnail(actor.avatarUrl)
-    .setDescription(
-      withFeedback(
-        `🏅 **Lv.${data.progress.level}** ｜ 全服第 **#${data.rank}** / ${data.totalMembers} 名\n\`${bar}\` **${pct}%**（${data.progress.currentLevelXp} / ${data.progress.nextLevelXp} XP，累计 ${data.profile.xp} XP）`,
-        feedback,
-      ),
-    )
+    .setDescription(withFeedback(rankDescription, feedback))
     .addFields(
       {
         name: `${cfg.currencyEmoji} 总资产`,
@@ -1069,7 +1086,10 @@ function buildRankView(
   );
 
   const shareRow = buttonRow(
+    makeButton('menu:modal:edit_card', '✏️ 编辑身份证', ButtonStyle.Primary),
+    makeButton('menu:nav:self_roles', '🎭 自助身份组', ButtonStyle.Secondary),
     makeButton('menu:share:rank', '📢 晒出我的名片', ButtonStyle.Success),
+    makeButton('menu:nav:bag', '🎒 背包称号', ButtonStyle.Secondary),
   );
 
   return { embeds: [embed], components: [row, shareRow] };
@@ -1248,6 +1268,7 @@ function buildAdminOverviewView(
         makeButton('menu:nav:admin_ops', '👥 发币与管理员', ButtonStyle.Secondary),
       ),
       buttonRow(
+        makeButton('menu:nav:admin_roles', '🎭 自助身份组', ButtonStyle.Primary),
         makeButton('menu:admin:send_lobby', '📌 发送频道大厅入口', ButtonStyle.Success),
         makeButton('menu:nav:admin', '🔄 刷新配置', ButtonStyle.Secondary),
         makeButton('menu:nav:home', '🏠 主菜单', ButtonStyle.Secondary),
@@ -1305,16 +1326,25 @@ function buildAdminLvlView(
   actor: MenuActor,
   feedback: MenuFeedback | undefined,
 ): BuiltMenuMessage {
-  const l = ctx.repos.guildConfig.getOrCreate(guildId).leveling;
-  const currencyName = ctx.repos.guildConfig.getOrCreate(guildId).economy.currencyName;
+  const cfg = ctx.repos.guildConfig.getOrCreate(guildId);
+  const l = cfg.leveling;
+  const currencyName = cfg.economy.currencyName;
+  const rewards = ctx.repos.profile.listLevelRewards(guildId);
+  const rewardsSummary =
+    rewards.length > 0
+      ? rewards.slice(0, 6).map((r) => `Lv.${r.level}→<@&${r.roleId}>`).join('、') +
+        (rewards.length > 6 ? ` 等共 ${rewards.length} 项` : '')
+      : '未配置';
 
   const description = [
-    '点击下方按钮修改聊天经验、冷却、热度连击、语音挂机或升级奖励：',
+    '点击下方按钮修改聊天经验、冷却、热度、升级奖励身份组及升级提示语：',
     '',
     `💬 **发言经验与冷却**：每次基础 **${l.baseMinXp} ~ ${l.baseMaxXp}** XP ｜ 发言冷却 **${l.cooldownSec}** 秒 ｜ 每小时经验上限 **${l.hourlyXpCap === 0 ? '不限' : l.hourlyXpCap}** XP`,
     `🔥 **热度连击与奖励**：连击窗口 **${l.heatWindowSec}** 秒 ｜ 热度倍率上限 **${l.heatMaxMultiplier}x** ｜ 升级币奖 **${l.levelUpCoinReward}** ${currencyName}`,
+    `🎖️ **升级身份组奖励**：${rewardsSummary}（${l.stackRoles ? '保留旧组' : '仅留最高'}）`,
     `🎙️ **语音挂机经验**：${l.voiceEnabled ? `✅ 已开启（每分钟 **${l.voiceXpPerMin}** XP）` : `⛔ 已关闭（预设 ${l.voiceXpPerMin} XP/分）`}`,
     `📢 **升级公告播报**：${l.announceEnabled ? '✅ 已开启' : '⛔ 已关闭'}${l.announceChannelId ? `（固定频道 <#${l.announceChannelId}>）` : '（当前发言频道）'}`,
+    `📝 **升级提示语**：标题「${truncateText(l.levelUpTitle, 24)}」｜ 内容「${truncateText(l.levelUpTemplate, 48)}」`,
   ].join('\n');
 
   const embed = new EmbedBuilder()
@@ -1322,7 +1352,7 @@ function buildAdminLvlView(
     .setAuthor({ name: `${actor.displayName} · 等级参数调校`, iconURL: actor.avatarUrl })
     .setTitle('📈 等级 / 热度 / 语音参数管理')
     .setDescription(withFeedback(description, feedback))
-    .setFooter({ text: '🔒 忽略频道/频道倍率/等级身份组可通过 /设置 与 /等级管理 精细配置' })
+    .setFooter({ text: '🔒 支持直接配置升级提示语模板、升级身份组奖励与固定播报频道' })
     .setTimestamp();
 
   return {
@@ -1331,6 +1361,10 @@ function buildAdminLvlView(
       buttonRow(
         makeButton('menu:modal:admin_xp', '💬 经验与冷却', ButtonStyle.Primary),
         makeButton('menu:modal:admin_heat', '🔥 热度与奖励', ButtonStyle.Primary),
+        makeButton('menu:modal:admin_lvl_msg', '📝 升级提示语', ButtonStyle.Primary),
+        makeButton('menu:nav:admin_lvl_rewards', '🎖️ 升级奖励身份组', ButtonStyle.Primary),
+      ),
+      buttonRow(
         makeButton(
           'menu:admin:toggle_voice',
           `🎙️ 语音经验: ${l.voiceEnabled ? '开' : '关'}`,
@@ -1340,6 +1374,16 @@ function buildAdminLvlView(
           'menu:admin:toggle_announce',
           `📢 升级播报: ${l.announceEnabled ? '开' : '关'}`,
           l.announceEnabled ? ButtonStyle.Success : ButtonStyle.Secondary,
+        ),
+        makeButton(
+          'menu:admin:toggle_announce_channel',
+          l.announceChannelId ? '📌 解绑播报频道' : '📌 设当前为播报频道',
+          ButtonStyle.Secondary,
+        ),
+        makeButton(
+          'menu:admin:toggle_stack_roles',
+          `🏷️ 叠加身份组: ${l.stackRoles ? '保留旧组' : '仅留最高'}`,
+          l.stackRoles ? ButtonStyle.Success : ButtonStyle.Secondary,
         ),
       ),
       buttonRow(
@@ -1585,6 +1629,8 @@ export function buildMenuMessage(
       return buildBagView(ctx, guildId, actor, feedback, nowMs);
     case 'rank':
       return buildRankView(ctx, guildId, actor, feedback, nowMs);
+    case 'self_roles':
+      return buildSelfRolesView(ctx, guildId, actor, view.panelId, feedback);
     case 'leaderboard':
       return buildLeaderboardView(ctx, guildId, view.lbType, view.lbPage, feedback);
     case 'admin':
@@ -1593,6 +1639,10 @@ export function buildMenuMessage(
       return buildAdminEconView(ctx, guildId, actor, feedback);
     case 'admin_lvl':
       return buildAdminLvlView(ctx, guildId, actor, feedback);
+    case 'admin_lvl_rewards':
+      return buildAdminLvlRewardsView(ctx, guildId, actor, feedback);
+    case 'admin_roles':
+      return buildAdminRolesView(ctx, guildId, actor, view.panelId, feedback);
     case 'admin_games':
       return buildAdminGamesView(ctx, guildId, actor, feedback);
     case 'admin_mod':

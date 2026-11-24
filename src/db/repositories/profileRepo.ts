@@ -16,6 +16,10 @@ export interface MemberProfile {
   lastRobAt: number;
   robShieldUntil: number;
   equippedTitle: string | null;
+  cardNickname: string | null;
+  cardTag: string | null;
+  cardBio: string | null;
+  cardColor: string | null;
   xpBoostMultiplier: number;
   xpBoostExpiresAt: number;
   heatStreak: number;
@@ -46,6 +50,10 @@ interface MemberProfileRow {
   last_rob_at: number;
   rob_shield_until: number;
   equipped_title: string | null;
+  card_nickname: string | null;
+  card_tag: string | null;
+  card_bio: string | null;
+  card_color: string | null;
   xp_boost_multiplier: number;
   xp_boost_expires_at: number;
   heat_streak: number;
@@ -77,6 +85,10 @@ function mapProfile(row: MemberProfileRow): MemberProfile {
     lastRobAt: row.last_rob_at,
     robShieldUntil: row.rob_shield_until,
     equippedTitle: row.equipped_title,
+    cardNickname: row.card_nickname ?? null,
+    cardTag: row.card_tag ?? null,
+    cardBio: row.card_bio ?? null,
+    cardColor: row.card_color ?? null,
     xpBoostMultiplier: row.xp_boost_multiplier,
     xpBoostExpiresAt: row.xp_boost_expires_at,
     heatStreak: row.heat_streak,
@@ -116,7 +128,8 @@ export class ProfileRepo {
           xp = ?, level = ?, message_count = ?, voice_minutes = ?,
           coins = ?, bank_coins = ?, daily_streak = ?, last_daily_date = ?,
           last_bank_interest_date = ?, last_work_at = ?, last_rob_at = ?, rob_shield_until = ?,
-          equipped_title = ?, xp_boost_multiplier = ?, xp_boost_expires_at = ?,
+          equipped_title = ?, card_nickname = ?, card_tag = ?, card_bio = ?, card_color = ?,
+          xp_boost_multiplier = ?, xp_boost_expires_at = ?,
           heat_streak = ?, last_xp_at = ?, hour_window_start = ?, hour_xp_earned = ?
          WHERE guild_id = ? AND user_id = ?`,
       )
@@ -134,6 +147,10 @@ export class ProfileRepo {
         profile.lastRobAt,
         profile.robShieldUntil,
         profile.equippedTitle,
+        profile.cardNickname,
+        profile.cardTag,
+        profile.cardBio,
+        profile.cardColor,
         profile.xpBoostMultiplier,
         profile.xpBoostExpiresAt,
         profile.heatStreak,
@@ -143,6 +160,40 @@ export class ProfileRepo {
         profile.guildId,
         profile.userId,
       );
+  }
+
+  updateCard(
+    guildId: string,
+    userId: string,
+    card: {
+      cardNickname: string | null;
+      cardTag: string | null;
+      cardBio: string | null;
+      cardColor: string | null;
+    },
+  ): MemberProfile {
+    const profile = this.getOrCreate(guildId, userId);
+    this.db
+      .prepare(
+        `UPDATE member_profiles
+         SET card_nickname = ?, card_tag = ?, card_bio = ?, card_color = ?
+         WHERE guild_id = ? AND user_id = ?`,
+      )
+      .run(
+        card.cardNickname,
+        card.cardTag,
+        card.cardBio,
+        card.cardColor,
+        guildId,
+        userId,
+      );
+    return {
+      ...profile,
+      cardNickname: card.cardNickname,
+      cardTag: card.cardTag,
+      cardBio: card.cardBio,
+      cardColor: card.cardColor,
+    };
   }
 
   addCoins(guildId: string, userId: string, delta: number): MemberProfile {

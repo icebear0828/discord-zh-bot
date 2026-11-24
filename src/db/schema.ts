@@ -34,6 +34,10 @@ CREATE TABLE IF NOT EXISTS member_profiles (
   last_rob_at INTEGER NOT NULL DEFAULT 0,
   rob_shield_until INTEGER NOT NULL DEFAULT 0,
   equipped_title TEXT,
+  card_nickname TEXT,
+  card_tag TEXT,
+  card_bio TEXT,
+  card_color TEXT,
   xp_boost_multiplier REAL NOT NULL DEFAULT 1.0,
   xp_boost_expires_at INTEGER NOT NULL DEFAULT 0,
   heat_streak INTEGER NOT NULL DEFAULT 0,
@@ -217,5 +221,17 @@ export function initSchema(db: Database.Database): void {
   }
   if (!columnNames.has('last_bank_interest_date')) {
     db.exec('ALTER TABLE member_profiles ADD COLUMN last_bank_interest_date TEXT;');
+  }
+  if (!columnNames.has('card_nickname')) {
+    db.exec('ALTER TABLE member_profiles ADD COLUMN card_nickname TEXT;');
+  }
+  if (!columnNames.has('card_tag')) {
+    db.exec('ALTER TABLE member_profiles ADD COLUMN card_tag TEXT;');
+  }
+  if (!columnNames.has('card_bio')) {
+    db.exec('ALTER TABLE member_profiles ADD COLUMN card_bio TEXT;');
+  }
+  if (!columnNames.has('card_color')) {
+    db.exec('ALTER TABLE member_profiles ADD COLUMN card_color TEXT;');
   }
 }

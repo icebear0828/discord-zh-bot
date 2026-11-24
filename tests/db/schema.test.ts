@@ -176,6 +176,10 @@ describe('env & database schema', () => {
     const colNames = cols.map((c) => c.name);
     expect(colNames).toContain('bank_coins');
     expect(colNames).toContain('last_bank_interest_date');
+    expect(colNames).toContain('card_nickname');
+    expect(colNames).toContain('card_tag');
+    expect(colNames).toContain('card_bio');
+    expect(colNames).toContain('card_color');
 
     const row = db
       .prepare('SELECT coins, bank_coins, last_bank_interest_date FROM member_profiles WHERE guild_id = ? AND user_id = ?')
@@ -193,6 +197,31 @@ describe('env & database schema', () => {
     expect(profile.coins).toBe(500);
     expect(profile.bankCoins).toBe(0);
     expect(profile.lastBankInterestDate).toBeNull();
+    expect(profile.cardNickname).toBeNull();
+
+    const updatedCard = profileRepo.updateCard('g1', 'u1', {
+      cardNickname: '测试大佬',
+      cardTag: '深夜巡逻员',
+      cardBio: '摸鱼第一名',
+      cardColor: '#9B59B6',
+    });
+    expect(updatedCard.cardNickname).toBe('测试大佬');
+    expect(updatedCard.cardTag).toBe('深夜巡逻员');
+    expect(updatedCard.cardBio).toBe('摸鱼第一名');
+    expect(updatedCard.cardColor).toBe('#9B59B6');
+
+    const reloaded = profileRepo.getOrCreate('g1', 'u1');
+    expect(reloaded.cardNickname).toBe('测试大佬');
+    expect(reloaded.cardColor).toBe('#9B59B6');
+
+    const cleared = profileRepo.updateCard('g1', 'u1', {
+      cardNickname: null,
+      cardTag: null,
+      cardBio: null,
+      cardColor: null,
+    });
+    expect(cleared.cardNickname).toBeNull();
+    expect(profileRepo.getOrCreate('g1', 'u1').cardBio).toBeNull();
 
     db.close();
   });

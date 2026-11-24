@@ -129,6 +129,20 @@ export class RolePanelRepo {
       .run(channelId, messageId, panelId);
   }
 
+  updateModes(
+    panelId: number,
+    guildId: string,
+    displayMode: RolePanelDisplayMode,
+    selectionMode: RolePanelSelectionMode,
+  ): RolePanel | null {
+    this.db
+      .prepare(
+        'UPDATE role_panels SET display_mode = ?, selection_mode = ? WHERE id = ? AND guild_id = ?',
+      )
+      .run(displayMode, selectionMode, panelId, guildId);
+    return this.getByGuildAndId(guildId, panelId);
+  }
+
   delete(panelId: number, guildId: string): boolean {
     const res = this.db
       .prepare('DELETE FROM role_panels WHERE id = ? AND guild_id = ?')

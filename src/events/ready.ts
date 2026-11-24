@@ -3,16 +3,19 @@ import {
   ChannelType,
   Events,
   type Client,
+  type EmbedBuilder,
   type Guild,
   type GuildMember,
   type TextChannel,
 } from 'discord.js';
+import { DEFAULT_LEVELING_CONFIG, type GuildConfig } from '../config/defaults.js';
 import { buildGiveawayMessage } from '../commands/giveaways/giveaway.js';
 import { editChannelMessage, sendToChannel } from '../interactions/menuHelpers.js';
-import type { AwardXpResult } from '../services/levelingService.js';
+import { renderLevelUpTemplate, type AwardXpResult } from '../services/levelingService.js';
 import { buildNumberBombCard, buildRouletteCard } from '../ui/chaosMenuBuilder.js';
 import { createInfoEmbed, createSuccessEmbed, type AppContext } from '../ui/embeds.js';
 import { buildRedPacketMessage } from '../ui/menuBuilder.js';
+import { truncateText } from '../ui/menuShared.js';
 import { buildPetBattleCard, buildProposalCard } from '../ui/socialPetMenuBuilder.js';
 import {
   buildPredictionCard,
@@ -30,6 +33,45 @@ export async function syncLevelRewardRoles(
   if (res.rolesToAdd.length > 0) {
     await member.roles.add(res.rolesToAdd, `升级至 Lv.${res.newLevel}`).catch(() => undefined);
   }
+}
+
+export function buildLevelUpEmbed(
+  cfg: GuildConfig,
+  member: { id: string; displayName: string; displayAvatarURL(): string },
+  res: AwardXpResult,
+): EmbedBuilder {
+  const rolesText =
+    res.rolesToAdd.length > 0 ? res.rolesToAdd.map((r) => `<@&${r}>`).join('、') : '无';
+  const vars = {
+    user: `<@${member.id}>`,
+    username: member.displayName,
+    level: res.newLevel,
+    oldLevel: res.oldLevel,
+    coins: res.coinsAwarded,
+    currency: cfg.economy.currencyName,
+    roles: rolesText,
+  };
+
+  const rawTitle = cfg.leveling.levelUpTitle.trim() || DEFAULT_LEVELING_CONFIG.levelUpTitle;
+  const rawTemplate = cfg.leveling.levelUpTemplate.trim() || DEFAULT_LEVELING_CONFIG.levelUpTemplate;
+
+  const title = truncateText(renderLevelUpTemplate(rawTitle, vars), 256);
+  const mainLine = renderLevelUpTemplate(rawTemplate, vars);
+
+  const rewardLines: string[] = [];
+  if (res.coinsAwarded > 0 && !rawTemplate.includes('{coins}')) {
+    rewardLines.push(
+      `获得升级奖励：${cfg.economy.currencyEmoji} **+${res.coinsAwarded}** ${cfg.economy.currencyName}`,
+    );
+  }
+  if (res.rolesToAdd.length > 0 && !rawTemplate.includes('{roles}')) {
+    rewardLines.push(`解锁新身份组：${rolesText}`);
+  }
+
+  return createSuccessEmbed(
+    title,
+    truncateText([mainLine, ...rewardLines].join('\n'), 4096),
+  ).setThumbnail(member.displayAvatarURL());
 }
 
 export async function sendLevelUpNotice(
@@ -50,21 +92,7 @@ export async function sendLevelUpNotice(
   const ch = guild.channels.cache.get(targetChannelId);
   if (!ch || ch.type !== ChannelType.GuildText) return;
 
-  const rewardLines: string[] = [];
-  if (res.coinsAwarded > 0) {
-    rewardLines.push(`获得升级奖励：${cfg.economy.currencyEmoji} **+${res.coinsAwarded}** ${cfg.economy.currencyName}`);
-  }
-  if (res.rolesToAdd.length > 0) {
-    rewardLines.push(`解锁新身份组：${res.rolesToAdd.map((r) => `<@&${r}>`).join('、')}`);
-  }
-
-  const embed = createSuccessEmbed(
-    '🎉 等级提升！',
-    [
-      `恭喜 <@${member.id}> 升到 **Lv.${res.newLevel}**！`,
-      ...rewardLines,
-    ].join('\n'),
-  ).setThumbnail(member.displayAvatarURL());
+  const embed = buildLevelUpEmbed(cfg, member, res);
 
   await (ch as TextChannel).send({ embeds: [embed] }).catch(() => undefined);
 }

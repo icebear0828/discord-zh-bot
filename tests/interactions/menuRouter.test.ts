@@ -9,6 +9,7 @@ import {
   type ChatInputCommandInteraction,
   type Interaction,
   type ModalSubmitInteraction,
+  type RoleSelectMenuInteraction,
   type StringSelectMenuInteraction,
   type UserSelectMenuInteraction,
 } from 'discord.js';
@@ -132,12 +133,23 @@ function makeMockChannel(sendable = true, nextMsgId = 'pub-msg-1'): MockChannel 
   };
 }
 
-function makeMockMember(userId: string, isAdmin = false, failRoleAdd = false) {
+function makeMockMember(
+  userId: string,
+  isAdmin = false,
+  failRoleAdd = false,
+  initialRoles: string[] = [],
+) {
   const rolesAdd = failRoleAdd
     ? vi.fn(async () => {
         throw new Error('50013 Missing Permissions');
       })
     : vi.fn(async () => undefined);
+  const rolesRemove = failRoleAdd
+    ? vi.fn(async () => {
+        throw new Error('50013 Missing Permissions');
+      })
+    : vi.fn(async () => undefined);
+  const cache = new Map<string, { id: string }>(initialRoles.map((id) => [id, { id }]));
 
   return {
     id: userId,
@@ -145,8 +157,9 @@ function makeMockMember(userId: string, isAdmin = false, failRoleAdd = false) {
       has: (perm: bigint) => isAdmin && perm === PermissionFlagsBits.Administrator,
     },
     roles: {
-      cache: new Map<string, { id: string }>(),
+      cache,
       add: rolesAdd,
+      remove: rolesRemove,
     },
   };
 }
@@ -181,6 +194,7 @@ function createChatCommandMock(opts: {
     isButton: () => false,
     isStringSelectMenu: () => false,
     isUserSelectMenu: () => false,
+    isRoleSelectMenu: () => false,
     isModalSubmit: () => false,
     isRepliable: () => true,
     reply,
@@ -245,6 +259,7 @@ function createButtonMock(opts: {
     isButton: () => true,
     isStringSelectMenu: () => false,
     isUserSelectMenu: () => false,
+    isRoleSelectMenu: () => false,
     isModalSubmit: () => false,
     isRepliable: () => true,
     reply,
@@ -272,11 +287,17 @@ function createStringSelectMock(opts: {
   userId: string;
   values: string[];
   failRoleAdd?: boolean;
+  initialRoles?: string[];
 }) {
   const reply = vi.fn(async (_payload: MockPayload) => undefined);
   const update = vi.fn(async (_payload: MockPayload) => undefined);
   const followUp = vi.fn(async (_payload: MockPayload) => undefined);
-  const member = makeMockMember(opts.userId, false, opts.failRoleAdd ?? false);
+  const member = makeMockMember(
+    opts.userId,
+    false,
+    opts.failRoleAdd ?? false,
+    opts.initialRoles ?? [],
+  );
   const channel = makeMockChannel(true);
 
   const mock = {
@@ -300,6 +321,7 @@ function createStringSelectMock(opts: {
     isButton: () => false,
     isStringSelectMenu: () => true,
     isUserSelectMenu: () => false,
+    isRoleSelectMenu: () => false,
     isModalSubmit: () => false,
     isRepliable: () => true,
     reply,
@@ -358,6 +380,7 @@ function createUserSelectMock(opts: {
     isButton: () => false,
     isStringSelectMenu: () => false,
     isUserSelectMenu: () => true,
+    isRoleSelectMenu: () => false,
     isModalSubmit: () => false,
     isRepliable: () => true,
     reply,
@@ -425,6 +448,7 @@ function createModalMock(opts: {
     isButton: () => false,
     isStringSelectMenu: () => false,
     isUserSelectMenu: () => false,
+    isRoleSelectMenu: () => false,
     isModalSubmit: () => true,
     isRepliable: () => true,
     reply,
@@ -443,6 +467,66 @@ function createModalMock(opts: {
     deferReply,
     editReply,
     channel,
+  };
+}
+
+function createRoleSelectMock(opts: {
+  customId: string;
+  userId: string;
+  role: { id: string; name?: string; managed?: boolean };
+}) {
+  const reply = vi.fn(async (_payload: MockPayload) => undefined);
+  const update = vi.fn(async (_payload: MockPayload) => undefined);
+  const showModal = vi.fn(async (_modal: { toJSON(): { custom_id: string } }) => undefined);
+  const channel = makeMockChannel(true);
+  const rolesMap = new Map([
+    [
+      opts.role.id,
+      {
+        id: opts.role.id,
+        name: opts.role.name ?? `Role-${opts.role.id}`,
+        managed: opts.role.managed ?? false,
+      },
+    ],
+  ]);
+
+  const mock = {
+    customId: opts.customId,
+    guildId: 'g1',
+    guild: { id: 'g1', name: '测试服务器' },
+    channelId: channel.id,
+    channel,
+    client: {
+      channels: {
+        fetch: vi.fn(async () => null),
+      },
+    },
+    values: [opts.role.id],
+    roles: {
+      get: (id: string) => rolesMap.get(id),
+    },
+    user: makeMockUser({ id: opts.userId }),
+    member: makeMockMember(opts.userId),
+    replied: false,
+    deferred: false,
+    inCachedGuild: () => true,
+    isChatInputCommand: () => false,
+    isButton: () => false,
+    isStringSelectMenu: () => false,
+    isUserSelectMenu: () => false,
+    isRoleSelectMenu: () => true,
+    isModalSubmit: () => false,
+    isRepliable: () => true,
+    reply,
+    update,
+    showModal,
+  };
+
+  return {
+    interaction: mock as unknown as RoleSelectMenuInteraction & Interaction,
+    reply,
+    update,
+    showModal,
   };
 }
 
@@ -1610,6 +1694,244 @@ describe('menu router & multiplayer interaction flows', () => {
     });
     await routeInteraction(toggleAutoEv.interaction, ctx);
     expect(ctx.repos.guildConfig.getOrCreate('g1').games.eventAutoEnabled).toBe(false);
+
+    ctx.db.close();
+  });
+
+  it('routes level-up rewards, custom level-up messages, self-role panels, and personal ID card editing', async () => {
+    const ctx = createTestCtx();
+    ctx.repos.guildConfig.updateAdminUsers('g1', ['admin1']);
+
+    // 1. Non-admin blocked from admin_lvl_rewards, admin_roles, and admin modals
+    const nonAdminRewards = createButtonMock({
+      customId: 'menu:nav:admin_lvl_rewards',
+      userId: 'member1',
+    });
+    await routeInteraction(nonAdminRewards.interaction, ctx);
+    expect(nonAdminRewards.update.mock.calls[0]![0].embeds?.[0]?.toJSON().description).toContain('权限不足');
+
+    const nonAdminRoleSelect = createRoleSelectMock({
+      customId: 'menu:role:admin_lvl_reward_add',
+      userId: 'member1',
+      role: { id: 'r1', name: 'VIP' },
+    });
+    await routeInteraction(nonAdminRoleSelect.interaction, ctx);
+    expect(nonAdminRoleSelect.showModal).not.toHaveBeenCalled();
+
+    // 2. Admin customizes level-up title/template, announce channel, and stackRoles
+    const openMsgModal = createButtonMock({
+      customId: 'menu:modal:admin_lvl_msg',
+      userId: 'admin1',
+    });
+    await routeInteraction(openMsgModal.interaction, ctx);
+    expect(openMsgModal.showModal).toHaveBeenCalledTimes(1);
+
+    const submitMsgModal = createModalMock({
+      customId: 'menu:modal_sub:admin_lvl_msg',
+      userId: 'admin1',
+      fields: {
+        levelUpTitle: '🌟 境界突破 Lv.{level}',
+        levelUpTemplate: '恭喜 {user} 晋升至 Lv.{level}，领取 {coins} {currency}！',
+      },
+    });
+    await routeInteraction(submitMsgModal.interaction, ctx);
+    const lvlCfg = ctx.repos.guildConfig.getOrCreate('g1').leveling;
+    expect(lvlCfg.levelUpTitle).toBe('🌟 境界突破 Lv.{level}');
+    expect(lvlCfg.levelUpTemplate).toBe('恭喜 {user} 晋升至 Lv.{level}，领取 {coins} {currency}！');
+
+    const toggleAnnCh = createButtonMock({
+      customId: 'menu:admin:toggle_announce_channel',
+      userId: 'admin1',
+    });
+    await routeInteraction(toggleAnnCh.interaction, ctx);
+    expect(ctx.repos.guildConfig.getOrCreate('g1').leveling.announceChannelId).toBe('c1');
+
+    const toggleStack = createButtonMock({
+      customId: 'menu:admin:toggle_stack_roles',
+      userId: 'admin1',
+    });
+    await routeInteraction(toggleStack.interaction, ctx);
+    expect(ctx.repos.guildConfig.getOrCreate('g1').leveling.stackRoles).toBe(false);
+
+    // 3. Admin configures level-up reward roles via RoleSelect -> Modal -> StringSelect delete
+    const everyonePick = createRoleSelectMock({
+      customId: 'menu:role:admin_lvl_reward_add',
+      userId: 'admin1',
+      role: { id: 'g1', name: '@everyone' },
+    });
+    await routeInteraction(everyonePick.interaction, ctx);
+    expect(everyonePick.showModal).not.toHaveBeenCalled();
+
+    const rewardPick = createRoleSelectMock({
+      customId: 'menu:role:admin_lvl_reward_add',
+      userId: 'admin1',
+      role: { id: 'role-lv5', name: '五级精英' },
+    });
+    await routeInteraction(rewardPick.interaction, ctx);
+    expect(rewardPick.showModal).toHaveBeenCalledTimes(1);
+
+    const rewardLevelModal = createModalMock({
+      customId: 'menu:modal_sub:admin_lvl_reward_add:role-lv5',
+      userId: 'admin1',
+      fields: { level: '5' },
+    });
+    await routeInteraction(rewardLevelModal.interaction, ctx);
+    expect(ctx.repos.profile.listLevelRewards('g1')).toEqual([
+      { guildId: 'g1', level: 5, roleId: 'role-lv5' },
+    ]);
+
+    const rewardDel = createStringSelectMock({
+      customId: 'menu:admin_lvl_reward_del',
+      userId: 'admin1',
+      values: ['5'],
+    });
+    await routeInteraction(rewardDel.interaction, ctx);
+    expect(ctx.repos.profile.listLevelRewards('g1')).toHaveLength(0);
+
+    // 4. Admin creates & populates self-role panel in menu, publishes to channel, and toggles modes
+    const createPanelModal = createModalMock({
+      customId: 'menu:modal_sub:admin_rp_create',
+      userId: 'admin1',
+      fields: {
+        title: '身份标签',
+        description: '自由挑选喜欢的身份组',
+        selectionMode: '多选',
+        displayMode: '按钮',
+      },
+    });
+    await routeInteraction(createPanelModal.interaction, ctx);
+    const panels = ctx.services.rolePanel.listPanels('g1');
+    expect(panels).toHaveLength(1);
+    const panelId = panels[0]!.id;
+
+    const addRolePick = createRoleSelectMock({
+      customId: `menu:role:admin_rp_add:${panelId}`,
+      userId: 'admin1',
+      role: { id: 'role-gamer', name: '游戏搭子' },
+    });
+    await routeInteraction(addRolePick.interaction, ctx);
+    expect(addRolePick.showModal).toHaveBeenCalledTimes(1);
+
+    const addRoleModal = createModalMock({
+      customId: `menu:modal_sub:admin_rp_add:${panelId}:role-gamer`,
+      userId: 'admin1',
+      fields: { label: '游戏搭子', emoji: '🎮', description: '随时开黑' },
+    });
+    await routeInteraction(addRoleModal.interaction, ctx);
+
+    const addRole2Modal = createModalMock({
+      customId: `menu:modal_sub:admin_rp_add:${panelId}:role-owl`,
+      userId: 'admin1',
+      fields: { label: '夜猫子', emoji: '🌙', description: '' },
+    });
+    await routeInteraction(addRole2Modal.interaction, ctx);
+    expect(ctx.services.rolePanel.getPanelWithOptions('g1', panelId)?.options).toHaveLength(2);
+
+    const toggleMode = createButtonMock({
+      customId: `menu:admin:rp_toggle_mode:${panelId}`,
+      userId: 'admin1',
+    });
+    await routeInteraction(toggleMode.interaction, ctx);
+    expect(ctx.services.rolePanel.getPanelWithOptions('g1', panelId)?.panel.selectionMode).toBe('single');
+
+    const toggleModeBack = createButtonMock({
+      customId: `menu:admin:rp_toggle_mode:${panelId}`,
+      userId: 'admin1',
+    });
+    await routeInteraction(toggleModeBack.interaction, ctx);
+    expect(ctx.services.rolePanel.getPanelWithOptions('g1', panelId)?.panel.selectionMode).toBe('multi');
+
+    const sendPanel = createButtonMock({
+      customId: `menu:admin:rp_send:${panelId}`,
+      userId: 'admin1',
+    });
+    await routeInteraction(sendPanel.interaction, ctx);
+    expect(sendPanel.channel.send).toHaveBeenCalledTimes(1);
+    expect(ctx.services.rolePanel.getPanelWithOptions('g1', panelId)?.panel.messageId).toBe('pub-msg-1');
+
+    // 5. Member picks self-service roles directly in /menu
+    const navSelfRoles = createButtonMock({
+      customId: 'menu:nav:self_roles',
+      userId: 'member1',
+    });
+    await routeInteraction(navSelfRoles.interaction, ctx);
+    expect(navSelfRoles.update.mock.calls[0]![0].embeds?.[0]?.toJSON().title).toContain('自助身份组');
+
+    const pickRoles = createStringSelectMock({
+      customId: `menu:self_role_pick:${panelId}`,
+      userId: 'member1',
+      values: ['role-owl'],
+      initialRoles: ['role-gamer'],
+    });
+    await routeInteraction(pickRoles.interaction, ctx);
+    expect(pickRoles.member.roles.remove).toHaveBeenCalledWith(['role-gamer'], expect.any(String));
+    expect(pickRoles.member.roles.add).toHaveBeenCalledWith(['role-owl'], expect.any(String));
+
+    const failPickRoles = createStringSelectMock({
+      customId: `menu:self_role_pick:${panelId}`,
+      userId: 'member1',
+      values: ['role-owl'],
+      failRoleAdd: true,
+    });
+    await routeInteraction(failPickRoles.interaction, ctx);
+    expect(failPickRoles.update.mock.calls[0]![0].embeds?.[0]?.toJSON().description).toContain('身份组更新失败');
+
+    // Admin removes an option & deletes panel
+    const delOpt = createStringSelectMock({
+      customId: `menu:admin_rp_del_opt:${panelId}`,
+      userId: 'admin1',
+      values: ['role-owl'],
+    });
+    await routeInteraction(delOpt.interaction, ctx);
+    expect(ctx.services.rolePanel.getPanelWithOptions('g1', panelId)?.options).toHaveLength(1);
+
+    const delPanel = createButtonMock({
+      customId: `menu:admin:rp_delete:${panelId}`,
+      userId: 'admin1',
+    });
+    await routeInteraction(delPanel.interaction, ctx);
+    expect(ctx.services.rolePanel.listPanels('g1')).toHaveLength(0);
+
+    // 6. Member edits personal ID card via modal (rejects invalid color, saves valid card)
+    const openCardModal = createButtonMock({
+      customId: 'menu:modal:edit_card',
+      userId: 'member1',
+    });
+    await routeInteraction(openCardModal.interaction, ctx);
+    expect(openCardModal.showModal).toHaveBeenCalledTimes(1);
+
+    const badColorModal = createModalMock({
+      customId: 'menu:modal_sub:edit_card',
+      userId: 'member1',
+      fields: {
+        cardNickname: '测试昵称',
+        cardTag: '夜猫',
+        cardBio: '签名',
+        cardColor: '彩虹渐变',
+      },
+    });
+    await routeInteraction(badColorModal.interaction, ctx);
+    expect(ctx.repos.profile.getOrCreate('g1', 'member1').cardNickname).toBeNull();
+
+    const goodCardModal = createModalMock({
+      customId: 'menu:modal_sub:edit_card',
+      userId: 'member1',
+      fields: {
+        cardNickname: '冰熊骑士',
+        cardTag: '深夜代码仙人',
+        cardBio: '写代码不如睡觉',
+        cardColor: '紫',
+      },
+    });
+    await routeInteraction(goodCardModal.interaction, ctx);
+    const savedProfile = ctx.repos.profile.getOrCreate('g1', 'member1');
+    expect(savedProfile.cardNickname).toBe('冰熊骑士');
+    expect(savedProfile.cardTag).toBe('深夜代码仙人');
+    expect(savedProfile.cardBio).toBe('写代码不如睡觉');
+    expect(savedProfile.cardColor).toBe('#9B59B6');
+    const updatedEmbed = goodCardModal.update.mock.calls[0]![0].embeds?.[0]?.toJSON();
+    expect(updatedEmbed?.author?.name).toContain('冰熊骑士');
+    expect(updatedEmbed?.description).toContain('深夜代码仙人');
 
     ctx.db.close();
   });

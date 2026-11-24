@@ -3,6 +3,7 @@ import {
   ButtonBuilder,
   ButtonStyle,
   type EmbedBuilder,
+  RoleSelectMenuBuilder,
   StringSelectMenuBuilder,
   UserSelectMenuBuilder,
 } from 'discord.js';
@@ -17,6 +18,7 @@ export interface MenuActor {
   displayName: string;
   avatarUrl: string;
   isAdmin?: boolean;
+  roleIds?: readonly string[];
 }
 
 export interface MenuFeedback {
@@ -52,16 +54,20 @@ export type MenuView =
   | { page: 'shop' }
   | { page: 'bag' }
   | { page: 'rank' }
+  | { page: 'self_roles'; panelId?: number }
   | { page: 'leaderboard'; lbType: LeaderboardType; lbPage: number }
   | { page: 'admin' }
   | { page: 'admin_econ' }
   | { page: 'admin_lvl' }
+  | { page: 'admin_lvl_rewards' }
+  | { page: 'admin_roles'; panelId?: number }
   | { page: 'admin_games' }
   | { page: 'admin_mod' }
   | { page: 'admin_ops' };
 
 export type MenuComponentRow =
   | ActionRowBuilder<ButtonBuilder>
+  | ActionRowBuilder<RoleSelectMenuBuilder>
   | ActionRowBuilder<StringSelectMenuBuilder>
   | ActionRowBuilder<UserSelectMenuBuilder>;
 

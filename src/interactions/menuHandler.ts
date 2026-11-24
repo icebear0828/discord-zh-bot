@@ -11,6 +11,7 @@ import {
   type GuildMember,
   type MessageCreateOptions,
   type ModalSubmitInteraction,
+  type RoleSelectMenuInteraction,
   type StringSelectMenuInteraction,
   type UserSelectMenuInteraction,
 } from 'discord.js';
@@ -19,7 +20,6 @@ import {
   DEFAULT_LEVELING_CONFIG,
   type ModuleKey,
 } from '../config/defaults.js';
-import { checkMemberIsBotAdmin } from '../commands/guards.js';
 import type { BlackjackActionResult, BlackjackGame } from '../services/blackjackService.js';
 import type { DiceChoice } from '../services/economyService.js';
 import type { InteractionAction } from '../services/funService.js';
@@ -44,11 +44,18 @@ import {
   type MenuView,
 } from '../ui/menuBuilder.js';
 import {
+  tryHandleConfigMenuButton,
+  tryHandleConfigMenuModal,
+  tryHandleConfigMenuRoleSelect,
+  tryHandleConfigMenuStringSelect,
+} from './configMenuHandler.js';
+import {
   tryHandleGamesMenuButton,
   tryHandleGamesMenuModal,
   tryHandleGamesMenuStringSelect,
   tryHandleGamesMenuUserSelect,
 } from './gamesMenuHandler.js';
+import { getActor } from './menuHelpers.js';
 
 const VALID_SOCIAL_ACTIONS: ReadonlySet<string> = new Set([
   'pat',
@@ -77,23 +84,6 @@ const ADMIN_DENIED_FEEDBACK: MenuFeedback = {
   type: 'error',
   text: '🔒 权限不足：仅服务器管理员或已授权的 Bot 管理员可进入管理后台。',
 };
-
-function getActor(
-  interaction: MenuSupportedInteraction,
-  ctx: AppContext,
-  guildId: string,
-): MenuActor {
-  const cfg = ctx.repos.guildConfig.getOrCreate(guildId);
-  const isAdmin = interaction.inCachedGuild()
-    ? checkMemberIsBotAdmin(interaction.member, cfg)
-    : cfg.adminUserIds.includes(interaction.user.id);
-  return {
-    id: interaction.user.id,
-    displayName: interaction.user.displayName,
-    avatarUrl: interaction.user.displayAvatarURL(),
-    isAdmin,
-  };
-}
 
 function parsePositiveInt(raw: string): number | null {
   const trimmed = raw.trim();
@@ -545,6 +535,10 @@ export async function handleMenuButton(
   }
 
   if (await tryHandleGamesMenuButton(interaction, ctx, guildId, actor, parts)) {
+    return;
+  }
+
+  if (await tryHandleConfigMenuButton(interaction, ctx, guildId, actor, parts)) {
     return;
   }
 
@@ -1215,6 +1209,10 @@ export async function handleMenuStringSelect(
     return;
   }
 
+  if (await tryHandleConfigMenuStringSelect(interaction, ctx, guildId, actor, parts)) {
+    return;
+  }
+
   if (section === 'admin_toggle_mod') {
     if (!actor.isAdmin) {
       await interaction.update(
@@ -1776,6 +1774,10 @@ export async function handleMenuModal(
   const modalType = parts[2];
 
   if (await tryHandleGamesMenuModal(interaction, ctx, guildId, actor, parts)) {
+    return;
+  }
+
+  if (await tryHandleConfigMenuModal(interaction, ctx, guildId, actor, parts)) {
     return;
   }
 
@@ -2499,4 +2501,15 @@ export async function handleMenuModal(
       ),
     );
   }
+}
+
+export async function handleMenuRoleSelect(
+  interaction: RoleSelectMenuInteraction,
+  ctx: AppContext,
+): Promise<void> {
+  if (!interaction.guildId) return;
+  const guildId = interaction.guildId;
+  const actor = getActor(interaction, ctx, guildId);
+  const parts = interaction.customId.split(':');
+  await tryHandleConfigMenuRoleSelect(interaction, ctx, guildId, actor, parts);
 }

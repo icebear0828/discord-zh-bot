@@ -1,4 +1,5 @@
 import { EmbedBuilder, SlashCommandBuilder, type ChatInputCommandInteraction } from 'discord.js';
+import { parseCardColor } from '../../services/levelingService.js';
 import {
   COLORS,
   formatDurationZh,
@@ -35,6 +36,9 @@ export const rankCommand: CommandDefinition = {
     const data = ctx.services.leveling.getRankCardData(guildCtx.guildId, target.id);
 
     const titleBadge = data.profile.equippedTitle ? `「${data.profile.equippedTitle}」 ` : '';
+    const displayCardName = data.profile.cardNickname || target.displayName;
+    const parsedColor = parseCardColor(data.profile.cardColor);
+    const embedColor = (parsedColor.ok ? parsedColor.colorInt : null) ?? COLORS.PRIMARY;
     const bar = renderProgressBar(data.progress.progressRatio, 14);
     const pct = Math.round(data.progress.progressRatio * 100);
 
@@ -43,13 +47,25 @@ export const rankCommand: CommandDefinition = {
         ? `⚡ **${data.activeBoostMultiplier}x** 生效中（剩余 ${formatDurationZh(data.boostExpiresAt - Date.now())}）`
         : '未启用';
 
+    const cardHeaderLines: string[] = [];
+    if (data.profile.cardTag) {
+      cardHeaderLines.push(`🏷️ **${data.profile.cardTag}**`);
+    }
+    if (data.profile.cardBio) {
+      cardHeaderLines.push(`💬 *${data.profile.cardBio}*`);
+    }
+
     const embed = new EmbedBuilder()
-      .setColor(COLORS.PRIMARY)
+      .setColor(embedColor)
       .setAuthor({
-        name: `${titleBadge}${target.displayName} 的等级名片`,
+        name: `${titleBadge}${displayCardName} 的身份证名片`,
         iconURL: target.displayAvatarURL(),
       })
-      .setThumbnail(target.displayAvatarURL())
+      .setThumbnail(target.displayAvatarURL());
+    if (cardHeaderLines.length > 0) {
+      embed.setDescription(cardHeaderLines.join('\n'));
+    }
+    embed
       .addFields(
         {
           name: '🏅 当前等级与排名',

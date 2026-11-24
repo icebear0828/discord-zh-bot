@@ -9,6 +9,7 @@ import {
   type MessageCreateOptions,
   type MessageEditOptions,
   type ModalSubmitInteraction,
+  type RoleSelectMenuInteraction,
   type StringSelectMenuInteraction,
   type UserSelectMenuInteraction,
 } from 'discord.js';
@@ -19,6 +20,7 @@ import type { BuiltMenuMessage, MenuActor, MenuFeedback } from '../ui/menuShared
 
 export type MenuSupportedInteraction =
   | ButtonInteraction
+  | RoleSelectMenuInteraction
   | StringSelectMenuInteraction
   | UserSelectMenuInteraction
   | ModalSubmitInteraction;
@@ -37,11 +39,15 @@ export function getActor(
   const isAdmin = interaction.inCachedGuild()
     ? checkMemberIsBotAdmin(interaction.member, cfg)
     : cfg.adminUserIds.includes(interaction.user.id);
+  const roleIds = interaction.inCachedGuild()
+    ? [...interaction.member.roles.cache.keys()]
+    : undefined;
   return {
     id: interaction.user.id,
     displayName: interaction.user.displayName,
     avatarUrl: interaction.user.displayAvatarURL(),
     isAdmin,
+    roleIds,
   };
 }
 
