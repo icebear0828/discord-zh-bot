@@ -1,6 +1,7 @@
 import {
   ActionRowBuilder,
   EmbedBuilder,
+  MessageFlags,
   StringSelectMenuBuilder,
   SlashCommandBuilder,
   type ChatInputCommandInteraction,
@@ -23,7 +24,7 @@ export const HELP_CATEGORIES: ReadonlyArray<{
     description: '查看机器人所有模块概览与核心指令',
     lines: [
       '• **✨ 一站式互动入口**：`/菜单`（推荐！点点按钮即可玩转签到、打工、小游戏、银行、红包、决斗、黑市道具、悬赏、轮盘、数字炸弹、吃瓜开盘、宝箱/Boss、CP与宠物！）',
-      '• **等级热度**：`/等级` `/排行榜` `/等级管理`（聊天频率连击最高 2.0x + 语音挂机经验）',
+      '• **等级热度**：`/等级` `/排行榜` `/等级管理`（聊天频率连击倍率加速 + 语音挂机经验）',
       '• **经济与多人**：`/菜单` `/签到` `/打工` `/打劫` `/钱包` `/转账` `/猜大小` `/老虎机` `/二十一点`（含银行、红包、决斗、整蛊与吃瓜）',
       '• **商店与趣味**：`/商店` `/背包` `/运势` `/互动` `/称号`',
       '• **AI 陪聊与记忆**：`@机器人` 或直接回复即可对话（支持识图与长期记忆），`/ai 重置` `/ai 记忆`',
@@ -37,7 +38,7 @@ export const HELP_CATEGORIES: ReadonlyArray<{
     description: '聊天连击倍率、语音经验、排行榜与升级奖励',
     lines: [
       '`/等级 [用户]` — 查看当前等级、经验进度条、排名、活跃热度倍率与经验卡状态',
-      '`/排行榜 [类型]` — 查看经验榜 / 星币榜 / 邀请榜（支持按钮翻页）',
+      '`/排行榜 [类型]` — 查看经验榜 / 富豪榜 / 成长榜 / 邀请榜（默认私密展示，支持翻页与晒到公屏）',
       '`/等级管理` — 管理员设置升级奖励身份组、升级播报频道、频道倍率、忽略频道、语音经验等',
     ],
   },
@@ -49,7 +50,7 @@ export const HELP_CATEGORIES: ReadonlyArray<{
     lines: [
       '**✨ 推荐统一入口：`/菜单`** — 可视化交互面板直达全部经济、银行与多人玩法！',
       '`/签到` `/打工` `/打劫 <目标>` `/钱包 [用户]` `/转账 <用户> <金额>`',
-      '**🏦 银行保险柜**（`/菜单` → 银行存钱）：存钱防偷安全，存款满额每日可领利息',
+      '**🏦 银行金库**（`/菜单` → 银行存钱）：风险远低于口袋现金，存款满额每日可领利息（仍需防范低概率金库劫案）',
       '**⚔️ 骰子决斗 & 🧧 拼手气红包**（`/菜单` → 多人互动）：群聊发起 3 骰押注决斗、派发随机拼手气红包',
       '`/猜大小 <金额> <选项>` — 押大 / 押小 / 豹子（豹子 10 倍赔率）',
       '`/老虎机 <金额>` — 三连 7️⃣ 最高 15 倍奖金',
@@ -168,7 +169,10 @@ export const HELP_CATEGORIES: ReadonlyArray<{
   },
 ];
 
-export function buildHelpMessage(categoryKey: string): {
+export function buildHelpMessage(
+  categoryKey: string,
+  ownerId?: string,
+): {
   embeds: EmbedBuilder[];
   components: ActionRowBuilder<StringSelectMenuBuilder>[];
 } {
@@ -183,7 +187,7 @@ export function buildHelpMessage(categoryKey: string): {
     .setTimestamp();
 
   const select = new StringSelectMenuBuilder()
-    .setCustomId('help:category')
+    .setCustomId(ownerId ? `help:category:${ownerId}` : 'help:category')
     .setPlaceholder('选择要查看的功能模块...')
     .addOptions(
       HELP_CATEGORIES.map((c) => ({
@@ -207,6 +211,9 @@ export const helpCommand: CommandDefinition = {
     '查看全部功能说明与指令菜单',
   ),
   async execute(interaction: ChatInputCommandInteraction, _ctx: AppContext): Promise<void> {
-    await interaction.reply(buildHelpMessage('overview'));
+    await interaction.reply({
+      ...buildHelpMessage('overview', interaction.user.id),
+      flags: MessageFlags.Ephemeral,
+    });
   },
 };

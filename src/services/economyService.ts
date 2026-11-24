@@ -1,4 +1,35 @@
 import type Database from 'better-sqlite3';
+import {
+  BANK_ROB_ATTACKER_MIN_ASSETS,
+  BANK_ROB_FINE_MAX,
+  BANK_ROB_FINE_MIN,
+  BANK_ROB_FINE_RATE,
+  BANK_ROB_LOCKPICK_BONUS,
+  BANK_ROB_LOCKPICK_CAP,
+  BANK_ROB_STEAL_MAX,
+  BANK_ROB_STEAL_MAX_RATE,
+  BANK_ROB_STEAL_MIN,
+  BANK_ROB_STEAL_MIN_RATE,
+  BANK_ROB_TARGET_MIN,
+  BANK_ROB_TRAP_FINE_MAX,
+  BANK_ROB_TRAP_FINE_MIN,
+  BANK_ROB_TRAP_FINE_RATE,
+  MAX_SOLO_GAMBLE_BET,
+  ROB_ATTACKER_MIN_ASSETS,
+  ROB_FINE_MAX,
+  ROB_FINE_MIN,
+  ROB_FINE_RATE,
+  ROB_LOCKPICK_BONUS,
+  ROB_LOCKPICK_CAP,
+  ROB_STEAL_MAX_AMOUNT,
+  ROB_STEAL_MAX_RATE,
+  ROB_STEAL_MIN_AMOUNT,
+  ROB_STEAL_MIN_RATE,
+  ROB_TARGET_MIN_COINS,
+  ROB_TRAP_FINE_MAX,
+  ROB_TRAP_FINE_MIN,
+  ROB_TRAP_FINE_RATE,
+} from '../config/economyConstants.js';
 import type { ChaosRepo } from '../db/repositories/chaosRepo.js';
 import type { GuildConfigRepo } from '../db/repositories/guildConfigRepo.js';
 import type { ProfileRepo } from '../db/repositories/profileRepo.js';
@@ -30,14 +61,22 @@ export type RobResult =
       success: boolean;
       amount: number;
       attackerBalance: number;
+      attackerBankBalance?: number;
       targetBalance: number;
+      fineFromPocket?: number;
+      fineFromBank?: number;
       trapped?: boolean;
       usedLockpick?: boolean;
       bountyClaimed?: number;
     }
   | {
       ok: false;
-      reason: 'self_target' | 'cooldown' | 'target_shielded' | 'target_too_poor';
+      reason:
+        | 'self_target'
+        | 'cooldown'
+        | 'target_shielded'
+        | 'target_too_poor'
+        | 'attacker_too_poor';
       retryAfterSec?: number;
     };
 
@@ -90,7 +129,7 @@ export type DiceResult =
       netChange: number;
       balance: number;
     }
-  | { ok: false; reason: 'invalid_bet' | 'insufficient_funds' };
+  | { ok: false; reason: 'invalid_bet' | 'bet_too_large' | 'insufficient_funds' };
 
 export type SlotsResult =
   | {
@@ -101,7 +140,7 @@ export type SlotsResult =
       netChange: number;
       balance: number;
     }
-  | { ok: false; reason: 'invalid_bet' | 'insufficient_funds' };
+  | { ok: false; reason: 'invalid_bet' | 'bet_too_large' | 'insufficient_funds' };
 
 const WORK_STORIES = [
   '帮管理员整理频道归档',
@@ -256,8 +295,13 @@ export class EconomyService {
         };
       }
 
-      if (target.coins < 100) {
+      if (target.coins < ROB_TARGET_MIN_COINS) {
         return { ok: false, reason: 'target_too_poor' };
+      }
+
+      const attackerTotal = attacker.coins + attacker.bankCoins;
+      if (attackerTotal < ROB_ATTACKER_MIN_ASSETS) {
+        return { ok: false, reason: 'attacker_too_poor' };
       }
 
       const usedLockpick = Boolean(
@@ -265,15 +309,37 @@ export class EconomyService {
       );
       const trappedEffect = this.chaosRepo?.consumeEffect(guildId, targetId, 'trap_armed', nowMs);
 
+      const applyFine = (rawFine: number): {
+        actualFine: number;
+        fineFromPocket: number;
+        fineFromBank: number;
+        nextAttackerCoins: number;
+        nextAttackerBank: number;
+      } => {
+        const actualFine = Math.min(rawFine, attackerTotal);
+        const fineFromPocket = Math.min(attacker.coins, actualFine);
+        const fineFromBank = actualFine - fineFromPocket;
+        return {
+          actualFine,
+          fineFromPocket,
+          fineFromBank,
+          nextAttackerCoins: attacker.coins - fineFromPocket,
+          nextAttackerBank: attacker.bankCoins - fineFromBank,
+        };
+      };
+
       if (trappedEffect) {
-        const rawTrapFine = Math.max(100, Math.min(1000, Math.floor(attacker.coins * 0.3)));
-        const actualFine = Math.min(rawTrapFine, attacker.coins);
-        const nextAttacker = attacker.coins - actualFine;
-        const nextTarget = target.coins + actualFine;
+        const rawTrapFine = Math.max(
+          ROB_TRAP_FINE_MIN,
+          Math.min(ROB_TRAP_FINE_MAX, Math.floor(attackerTotal * ROB_TRAP_FINE_RATE)),
+        );
+        const fine = applyFine(rawTrapFine);
+        const nextTarget = target.coins + fine.actualFine;
 
         this.profileRepo.save({
           ...attacker,
-          coins: nextAttacker,
+          coins: fine.nextAttackerCoins,
+          bankCoins: fine.nextAttackerBank,
           lastRobAt: nowMs,
         });
         this.profileRepo.save({
@@ -284,8 +350,11 @@ export class EconomyService {
         return {
           ok: true,
           success: false,
-          amount: actualFine,
-          attackerBalance: nextAttacker,
+          amount: fine.actualFine,
+          fineFromPocket: fine.fineFromPocket,
+          fineFromBank: fine.fineFromBank,
+          attackerBalance: fine.nextAttackerCoins,
+          attackerBankBalance: fine.nextAttackerBank,
           targetBalance: nextTarget,
           trapped: true,
           ...(usedLockpick ? { usedLockpick: true } : {}),
@@ -293,12 +362,15 @@ export class EconomyService {
       }
 
       const effectiveRate = usedLockpick
-        ? Math.min(0.85, cfg.robSuccessRate + 0.25)
+        ? Math.min(ROB_LOCKPICK_CAP, cfg.robSuccessRate + ROB_LOCKPICK_BONUS)
         : cfg.robSuccessRate;
       const succeeded = rng() < effectiveRate;
       if (succeeded) {
-        const pct = 0.15 + rng() * 0.2;
-        const stolen = Math.max(15, Math.min(1000, Math.floor(target.coins * pct)));
+        const pct = ROB_STEAL_MIN_RATE + rng() * (ROB_STEAL_MAX_RATE - ROB_STEAL_MIN_RATE);
+        const stolen = Math.max(
+          ROB_STEAL_MIN_AMOUNT,
+          Math.min(ROB_STEAL_MAX_AMOUNT, Math.floor(target.coins * pct)),
+        );
         const actualStolen = Math.min(stolen, target.coins);
         const bountyClaimed =
           this.chaosRepo?.claimOpenBounties(guildId, targetId, attackerId, nowMs) ?? 0;
@@ -320,21 +392,27 @@ export class EconomyService {
           ok: true,
           success: true,
           amount: actualStolen,
+          fineFromPocket: 0,
+          fineFromBank: 0,
           attackerBalance: nextAttacker,
+          attackerBankBalance: attacker.bankCoins,
           targetBalance: nextTarget,
           ...(usedLockpick ? { usedLockpick: true } : {}),
           ...(bountyClaimed > 0 ? { bountyClaimed } : {}),
         };
       }
 
-      const rawFine = Math.max(50, Math.min(500, Math.floor(attacker.coins * 0.15)));
-      const actualFine = Math.min(rawFine, attacker.coins);
-      const nextAttacker = attacker.coins - actualFine;
-      const nextTarget = target.coins + actualFine;
+      const rawFine = Math.max(
+        ROB_FINE_MIN,
+        Math.min(ROB_FINE_MAX, Math.floor(attackerTotal * ROB_FINE_RATE)),
+      );
+      const fine = applyFine(rawFine);
+      const nextTarget = target.coins + fine.actualFine;
 
       this.profileRepo.save({
         ...attacker,
-        coins: nextAttacker,
+        coins: fine.nextAttackerCoins,
+        bankCoins: fine.nextAttackerBank,
         lastRobAt: nowMs,
       });
       this.profileRepo.save({
@@ -345,8 +423,11 @@ export class EconomyService {
       return {
         ok: true,
         success: false,
-        amount: actualFine,
-        attackerBalance: nextAttacker,
+        amount: fine.actualFine,
+        fineFromPocket: fine.fineFromPocket,
+        fineFromBank: fine.fineFromBank,
+        attackerBalance: fine.nextAttackerCoins,
+        attackerBankBalance: fine.nextAttackerBank,
         targetBalance: nextTarget,
         ...(usedLockpick ? { usedLockpick: true } : {}),
       };
@@ -387,12 +468,12 @@ export class EconomyService {
         };
       }
 
-      if (target.bankCoins < 100) {
+      if (target.bankCoins < BANK_ROB_TARGET_MIN) {
         return { ok: false, reason: 'target_bank_too_poor' };
       }
 
       const attackerTotal = attacker.coins + attacker.bankCoins;
-      if (attackerTotal < 100) {
+      if (attackerTotal < BANK_ROB_ATTACKER_MIN_ASSETS) {
         return { ok: false, reason: 'attacker_too_poor' };
       }
 
@@ -421,7 +502,10 @@ export class EconomyService {
       };
 
       if (trappedEffect) {
-        const rawTrapFine = Math.max(300, Math.min(4000, Math.floor(attackerTotal * 0.5)));
+        const rawTrapFine = Math.max(
+          BANK_ROB_TRAP_FINE_MIN,
+          Math.min(BANK_ROB_TRAP_FINE_MAX, Math.floor(attackerTotal * BANK_ROB_TRAP_FINE_RATE)),
+        );
         const fine = applyFine(rawTrapFine);
         const nextTargetBank = target.bankCoins + fine.actualFine;
 
@@ -454,13 +538,18 @@ export class EconomyService {
         ? cfg.robBankSuccessRate
         : 0.2;
       const effectiveRate = usedLockpick
-        ? Math.min(0.5, baseBankRate + 0.1)
+        ? Math.min(BANK_ROB_LOCKPICK_CAP, baseBankRate + BANK_ROB_LOCKPICK_BONUS)
         : baseBankRate;
       const succeeded = rng() < effectiveRate;
 
       if (succeeded) {
-        const pct = 0.05 + rng() * 0.07;
-        const stolen = Math.max(10, Math.min(500, Math.floor(target.bankCoins * pct)));
+        const pct =
+          BANK_ROB_STEAL_MIN_RATE +
+          rng() * (BANK_ROB_STEAL_MAX_RATE - BANK_ROB_STEAL_MIN_RATE);
+        const stolen = Math.max(
+          BANK_ROB_STEAL_MIN,
+          Math.min(BANK_ROB_STEAL_MAX, Math.floor(target.bankCoins * pct)),
+        );
         const actualStolen = Math.min(stolen, target.bankCoins);
         const bountyClaimed =
           this.chaosRepo?.claimOpenBounties(guildId, targetId, attackerId, nowMs) ?? 0;
@@ -492,7 +581,10 @@ export class EconomyService {
         };
       }
 
-      const rawFine = Math.max(200, Math.min(2000, Math.floor(attackerTotal * 0.3)));
+      const rawFine = Math.max(
+        BANK_ROB_FINE_MIN,
+        Math.min(BANK_ROB_FINE_MAX, Math.floor(attackerTotal * BANK_ROB_FINE_RATE)),
+      );
       const fine = applyFine(rawFine);
       const nextTargetBank = target.bankCoins + fine.actualFine;
 
@@ -562,6 +654,9 @@ export class EconomyService {
     if (!Number.isFinite(cleanBet) || cleanBet <= 0) {
       return { ok: false, reason: 'invalid_bet' };
     }
+    if (cleanBet > MAX_SOLO_GAMBLE_BET) {
+      return { ok: false, reason: 'bet_too_large' };
+    }
 
     return this.db.transaction((): DiceResult => {
       const profile = this.profileRepo.getOrCreate(guildId, userId);
@@ -607,6 +702,9 @@ export class EconomyService {
     const cleanBet = Math.floor(bet);
     if (!Number.isFinite(cleanBet) || cleanBet <= 0) {
       return { ok: false, reason: 'invalid_bet' };
+    }
+    if (cleanBet > MAX_SOLO_GAMBLE_BET) {
+      return { ok: false, reason: 'bet_too_large' };
     }
 
     return this.db.transaction((): SlotsResult => {

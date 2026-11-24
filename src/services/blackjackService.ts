@@ -1,4 +1,6 @@
 import type Database from 'better-sqlite3';
+import { BLACKJACK_TTL_MS, MAX_SOLO_GAMBLE_BET } from '../config/economyConstants.js';
+import type { BlackjackRepo } from '../db/repositories/blackjackRepo.js';
 import type { ProfileRepo } from '../db/repositories/profileRepo.js';
 
 export type Suit = '♠' | '♥' | '♦' | '♣';
@@ -35,6 +37,18 @@ export interface BlackjackGame {
   status: BlackjackStatus;
   payout: number;
   canDouble: boolean;
+  createdAt: number;
+  expiresAt: number;
+}
+
+export interface ExpiredBlackjackResult {
+  guildId: string;
+  userId: string;
+  bet: number;
+  refunded: number;
+  balance: number;
+  createdAt: number;
+  expiresAt: number;
 }
 
 export type BlackjackActionResult =
@@ -43,6 +57,7 @@ export type BlackjackActionResult =
       ok: false;
       reason:
         | 'invalid_bet'
+        | 'bet_too_large'
         | 'insufficient_funds'
         | 'game_already_active'
         | 'no_active_game'
@@ -106,14 +121,94 @@ export class BlackjackManager {
   constructor(
     private readonly db: Database.Database,
     private readonly profileRepo: ProfileRepo,
+    private readonly blackjackRepo?: BlackjackRepo,
   ) {}
 
   private key(guildId: string, userId: string): string {
     return `${guildId}:${userId}`;
   }
 
-  getActiveGame(guildId: string, userId: string): BlackjackGame | null {
+  private loadRawGame(guildId: string, userId: string): BlackjackGame | null {
+    if (this.blackjackRepo) {
+      return this.blackjackRepo.get(guildId, userId);
+    }
     return this.games.get(this.key(guildId, userId)) ?? null;
+  }
+
+  private persistGame(game: BlackjackGame): void {
+    const k = this.key(game.guildId, game.userId);
+    this.games.set(k, game);
+    this.blackjackRepo?.upsert(game);
+  }
+
+  private removeGame(guildId: string, userId: string): boolean {
+    const k = this.key(guildId, userId);
+    const removedMem = this.games.delete(k);
+    if (this.blackjackRepo) {
+      return this.blackjackRepo.delete(guildId, userId);
+    }
+    return removedMem;
+  }
+
+  private expireSingleIfDue(
+    guildId: string,
+    userId: string,
+    nowMs: number,
+  ): ExpiredBlackjackResult | null {
+    const game = this.loadRawGame(guildId, userId);
+    if (!game) return null;
+    if (game.status !== 'playing') {
+      this.removeGame(guildId, userId);
+      return null;
+    }
+    if (game.expiresAt > nowMs) {
+      return null;
+    }
+    const deleted = this.removeGame(guildId, userId);
+    if (!deleted) return null;
+    const refunded = Math.max(0, game.bet);
+    const updated =
+      refunded > 0
+        ? this.profileRepo.addCoins(guildId, userId, refunded)
+        : this.profileRepo.getOrCreate(guildId, userId);
+    return {
+      guildId,
+      userId,
+      bet: game.bet,
+      refunded,
+      balance: updated.coins,
+      createdAt: game.createdAt,
+      expiresAt: game.expiresAt,
+    };
+  }
+
+  getActiveGame(guildId: string, userId: string, nowMs = Date.now()): BlackjackGame | null {
+    return this.db.transaction((): BlackjackGame | null => {
+      const game = this.loadRawGame(guildId, userId);
+      if (!game) return null;
+      if (game.status !== 'playing' || game.expiresAt <= nowMs) {
+        this.expireSingleIfDue(guildId, userId, nowMs);
+        return null;
+      }
+      return game;
+    })();
+  }
+
+  expireDueGames(nowMs = Date.now()): ExpiredBlackjackResult[] {
+    return this.db.transaction((): ExpiredBlackjackResult[] => {
+      const dueGames: BlackjackGame[] = this.blackjackRepo
+        ? this.blackjackRepo.listExpired(nowMs)
+        : [...this.games.values()].filter((g) => g.expiresAt <= nowMs);
+
+      const results: ExpiredBlackjackResult[] = [];
+      for (const game of dueGames) {
+        const res = this.expireSingleIfDue(game.guildId, game.userId, nowMs);
+        if (res) {
+          results.push(res);
+        }
+      }
+      return results;
+    })();
   }
 
   startGame(
@@ -121,17 +216,23 @@ export class BlackjackManager {
     userId: string,
     bet: number,
     deckFactory: () => Card[] = () => createShuffledDeck(),
+    nowMs = Date.now(),
   ): BlackjackActionResult {
     const cleanBet = Math.floor(bet);
     if (!Number.isFinite(cleanBet) || cleanBet <= 0) {
       return { ok: false, reason: 'invalid_bet' };
     }
-    const k = this.key(guildId, userId);
-    if (this.games.has(k)) {
-      return { ok: false, reason: 'game_already_active' };
+    if (cleanBet > MAX_SOLO_GAMBLE_BET) {
+      return { ok: false, reason: 'bet_too_large' };
     }
 
     return this.db.transaction((): BlackjackActionResult => {
+      this.expireSingleIfDue(guildId, userId, nowMs);
+      const existing = this.loadRawGame(guildId, userId);
+      if (existing && existing.status === 'playing' && existing.expiresAt > nowMs) {
+        return { ok: false, reason: 'game_already_active' };
+      }
+
       const profile = this.profileRepo.getOrCreate(guildId, userId);
       if (profile.coins < cleanBet) {
         return { ok: false, reason: 'insufficient_funds' };
@@ -161,6 +262,8 @@ export class BlackjackManager {
         status: 'playing',
         payout: 0,
         canDouble: remainingCoins >= cleanBet,
+        createdAt: nowMs,
+        expiresAt: nowMs + BLACKJACK_TTL_MS,
       };
 
       if (playerEval.isBlackjack || dealerEval.isBlackjack) {
@@ -169,7 +272,7 @@ export class BlackjackManager {
           game.payout = cleanBet;
         } else if (playerEval.isBlackjack) {
           game.status = 'player_blackjack';
-          game.payout = Math.floor(cleanBet * 2.5);
+          game.payout = Math.ceil(cleanBet * 2.5);
         } else {
           game.status = 'dealer_win';
           game.payout = 0;
@@ -181,91 +284,12 @@ export class BlackjackManager {
         return { ok: true, game, balance: finalBalance };
       }
 
-      this.games.set(k, game);
+      this.persistGame(game);
       return { ok: true, game, balance: remainingCoins };
     })();
   }
 
-  hit(guildId: string, userId: string): BlackjackActionResult {
-    const k = this.key(guildId, userId);
-    const game = this.games.get(k);
-    if (!game) {
-      return { ok: false, reason: 'no_active_game' };
-    }
-
-    const card = game.deck.pop();
-    if (!card) {
-      return this.stand(guildId, userId);
-    }
-    game.playerHand.push(card);
-    game.canDouble = false;
-
-    const playerEval = evaluateHand(game.playerHand);
-    if (playerEval.isBust) {
-      game.status = 'player_bust';
-      game.payout = 0;
-      this.games.delete(k);
-      const balance = this.profileRepo.getOrCreate(guildId, userId).coins;
-      return { ok: true, game, balance };
-    }
-
-    if (playerEval.total === 21) {
-      return this.stand(guildId, userId);
-    }
-
-    const balance = this.profileRepo.getOrCreate(guildId, userId).coins;
-    return { ok: true, game, balance };
-  }
-
-  doubleDown(guildId: string, userId: string): BlackjackActionResult {
-    const k = this.key(guildId, userId);
-    const game = this.games.get(k);
-    if (!game) {
-      return { ok: false, reason: 'no_active_game' };
-    }
-    if (game.playerHand.length !== 2) {
-      return { ok: false, reason: 'cannot_double' };
-    }
-
-    const deductResult = this.db.transaction((): boolean => {
-      const profile = this.profileRepo.getOrCreate(guildId, userId);
-      if (profile.coins < game.bet) {
-        return false;
-      }
-      this.profileRepo.save({ ...profile, coins: profile.coins - game.bet });
-      return true;
-    })();
-
-    if (!deductResult) {
-      return { ok: false, reason: 'insufficient_funds' };
-    }
-
-    game.bet *= 2;
-    game.canDouble = false;
-    const card = game.deck.pop();
-    if (card) {
-      game.playerHand.push(card);
-    }
-
-    const playerEval = evaluateHand(game.playerHand);
-    if (playerEval.isBust) {
-      game.status = 'player_bust';
-      game.payout = 0;
-      this.games.delete(k);
-      const balance = this.profileRepo.getOrCreate(guildId, userId).coins;
-      return { ok: true, game, balance };
-    }
-
-    return this.stand(guildId, userId);
-  }
-
-  stand(guildId: string, userId: string): BlackjackActionResult {
-    const k = this.key(guildId, userId);
-    const game = this.games.get(k);
-    if (!game) {
-      return { ok: false, reason: 'no_active_game' };
-    }
-
+  private settleStandInTx(game: BlackjackGame): BlackjackActionResult {
     while (evaluateHand(game.dealerHand).total < 17) {
       const next = game.deck.pop();
       if (!next) break;
@@ -289,16 +313,104 @@ export class BlackjackManager {
       game.payout = game.bet;
     }
 
-    this.games.delete(k);
+    this.removeGame(game.guildId, game.userId);
 
-    const balance = this.db.transaction((): number => {
-      if (game.payout > 0) {
-        const updated = this.profileRepo.addCoins(guildId, userId, game.payout);
-        return updated.coins;
-      }
-      return this.profileRepo.getOrCreate(guildId, userId).coins;
-    })();
+    const balance =
+      game.payout > 0
+        ? this.profileRepo.addCoins(game.guildId, game.userId, game.payout).coins
+        : this.profileRepo.getOrCreate(game.guildId, game.userId).coins;
 
     return { ok: true, game, balance };
+  }
+
+  hit(guildId: string, userId: string, nowMs = Date.now()): BlackjackActionResult {
+    return this.db.transaction((): BlackjackActionResult => {
+      const game = this.loadRawGame(guildId, userId);
+      if (!game || game.status !== 'playing') {
+        return { ok: false, reason: 'no_active_game' };
+      }
+      if (game.expiresAt <= nowMs) {
+        this.expireSingleIfDue(guildId, userId, nowMs);
+        return { ok: false, reason: 'no_active_game' };
+      }
+
+      const card = game.deck.pop();
+      if (!card) {
+        return this.settleStandInTx(game);
+      }
+      game.playerHand.push(card);
+      game.canDouble = false;
+
+      const playerEval = evaluateHand(game.playerHand);
+      if (playerEval.isBust) {
+        game.status = 'player_bust';
+        game.payout = 0;
+        this.removeGame(guildId, userId);
+        const balance = this.profileRepo.getOrCreate(guildId, userId).coins;
+        return { ok: true, game, balance };
+      }
+
+      if (playerEval.total === 21) {
+        return this.settleStandInTx(game);
+      }
+
+      this.persistGame(game);
+      const balance = this.profileRepo.getOrCreate(guildId, userId).coins;
+      return { ok: true, game, balance };
+    })();
+  }
+
+  doubleDown(guildId: string, userId: string, nowMs = Date.now()): BlackjackActionResult {
+    return this.db.transaction((): BlackjackActionResult => {
+      const game = this.loadRawGame(guildId, userId);
+      if (!game || game.status !== 'playing') {
+        return { ok: false, reason: 'no_active_game' };
+      }
+      if (game.expiresAt <= nowMs) {
+        this.expireSingleIfDue(guildId, userId, nowMs);
+        return { ok: false, reason: 'no_active_game' };
+      }
+      if (game.playerHand.length !== 2) {
+        return { ok: false, reason: 'cannot_double' };
+      }
+
+      const profile = this.profileRepo.getOrCreate(guildId, userId);
+      if (profile.coins < game.bet) {
+        return { ok: false, reason: 'insufficient_funds' };
+      }
+      this.profileRepo.save({ ...profile, coins: profile.coins - game.bet });
+
+      game.bet *= 2;
+      game.canDouble = false;
+      const card = game.deck.pop();
+      if (card) {
+        game.playerHand.push(card);
+      }
+
+      const playerEval = evaluateHand(game.playerHand);
+      if (playerEval.isBust) {
+        game.status = 'player_bust';
+        game.payout = 0;
+        this.removeGame(guildId, userId);
+        const balance = this.profileRepo.getOrCreate(guildId, userId).coins;
+        return { ok: true, game, balance };
+      }
+
+      return this.settleStandInTx(game);
+    })();
+  }
+
+  stand(guildId: string, userId: string, nowMs = Date.now()): BlackjackActionResult {
+    return this.db.transaction((): BlackjackActionResult => {
+      const game = this.loadRawGame(guildId, userId);
+      if (!game || game.status !== 'playing') {
+        return { ok: false, reason: 'no_active_game' };
+      }
+      if (game.expiresAt <= nowMs) {
+        this.expireSingleIfDue(guildId, userId, nowMs);
+        return { ok: false, reason: 'no_active_game' };
+      }
+      return this.settleStandInTx(game);
+    })();
   }
 }

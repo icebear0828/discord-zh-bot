@@ -1,4 +1,5 @@
 import { MessageFlags, SlashCommandBuilder, type ChatInputCommandInteraction } from 'discord.js';
+import { SHOP_MYSTERY_BOX_MIN_PRICE } from '../../config/economyConstants.js';
 import {
   createErrorEmbed,
   createInfoEmbed,
@@ -8,6 +9,7 @@ import {
 } from '../../ui/embeds.js';
 import { applyZh } from '../../ui/localization.js';
 import { formatShopBuyError, formatShopItemTag } from '../../ui/menuShared.js';
+import { truncateDescriptionLines } from '../../ui/soloFormatters.js';
 import { requireBotAdmin, requireGuildMember, requireModuleEnabled } from '../guards.js';
 
 export const shopCommand: CommandDefinition = {
@@ -211,7 +213,15 @@ export const shopCommand: CommandDefinition = {
               applyZh(opt.setName('name').setDescription('商品名称').setRequired(true), '名称', '商品名称'),
             )
             .addIntegerOption((opt) =>
-              applyZh(opt.setName('price').setDescription('售价').setMinValue(0).setRequired(true), '价格', '购买所需星币'),
+              applyZh(
+                opt
+                  .setName('price')
+                  .setDescription(`售价（最低 ${SHOP_MYSTERY_BOX_MIN_PRICE}）`)
+                  .setMinValue(SHOP_MYSTERY_BOX_MIN_PRICE)
+                  .setRequired(true),
+                '价格',
+                `购买所需星币（最低 ${SHOP_MYSTERY_BOX_MIN_PRICE}）`,
+              ),
             )
             .addStringOption((opt) =>
               applyZh(opt.setName('description').setDescription('商品简介'), '简介', '商品描述'),
@@ -241,12 +251,15 @@ export const shopCommand: CommandDefinition = {
   async execute(interaction: ChatInputCommandInteraction, ctx: AppContext): Promise<void> {
     const guildCtx = await requireGuildMember(interaction);
     if (!guildCtx) return;
-    if (!(await requireModuleEnabled(interaction, ctx, 'economy', '经济系统'))) return;
 
     const sub = interaction.options.getSubcommand();
     const guildCfg = ctx.repos.guildConfig.getOrCreate(guildCtx.guildId);
     const cfg = guildCfg.economy;
     const lvlCfg = guildCfg.leveling;
+
+    if (sub === 'list' || sub === 'buy') {
+      if (!(await requireModuleEnabled(interaction, ctx, 'economy', '经济系统'))) return;
+    }
 
     if (sub === 'list') {
       const items = ctx.services.shop.listItems(guildCtx.guildId);
@@ -258,6 +271,7 @@ export const shopCommand: CommandDefinition = {
               '商店目前空空如也，管理员可使用 `/菜单` → 管理后台「🛒 商店管理」或 `/商店 上架*` 添加商品。',
             ),
           ],
+          flags: MessageFlags.Ephemeral,
         });
         return;
       }
@@ -267,18 +281,49 @@ export const shopCommand: CommandDefinition = {
         const typeTag = formatShopItemTag(item, lvlCfg.statName, lvlCfg.statUnit);
         return `**#${item.id} ${item.name}** — ${cfg.currencyEmoji} **${item.price}** ${cfg.currencyName}（${stockText}）\n> ${typeTag}${item.description ? ` · ${item.description}` : ''}`;
       });
+      const desc = truncateDescriptionLines(
+        lines,
+        '\n\n',
+        '\n\n使用 `/商店 购买 编号` 或前往 `/菜单` →「🛒 商店」购买。',
+      );
 
       await interaction.reply({
-        embeds: [
-          createInfoEmbed('🛒 服务器商店', `${lines.join('\n\n')}\n\n使用 \`/商店 购买 编号\` 或前往 \`/菜单\` →「🛒 商店」购买。`),
-        ],
+        embeds: [createInfoEmbed('🛒 服务器商店', desc)],
+        flags: MessageFlags.Ephemeral,
       });
       return;
     }
 
     if (sub === 'buy') {
       const itemId = interaction.options.getInteger('id', true);
-      const res = ctx.services.shop.buyItem(guildCtx.guildId, interaction.user.id, itemId);
+      const targetItem = ctx.repos.shop.getItemById(guildCtx.guildId, itemId);
+      if (
+        targetItem?.type === 'role' &&
+        targetItem.roleId &&
+        guildCtx.member.roles.cache.has(targetItem.roleId)
+      ) {
+        await interaction.reply({
+          embeds: [
+            createErrorEmbed(
+              '❌ 无需重复购买',
+              `你已经拥有身份组 <@&${targetItem.roleId}> 了（本次未扣款、未扣库存）。`,
+            ),
+          ],
+          allowedMentions: { parse: [] },
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
+      const ownedRoleIds = new Set<string>(guildCtx.member.roles.cache.keys());
+      const res = ctx.services.shop.buyItem(
+        guildCtx.guildId,
+        interaction.user.id,
+        itemId,
+        Date.now(),
+        Math.random,
+        ownedRoleIds,
+      );
 
       if (!res.ok) {
         await interaction.reply({
@@ -518,6 +563,19 @@ export const shopCommand: CommandDefinition = {
       const description = interaction.options.getString('description') ?? '';
       const stock = interaction.options.getInteger('stock');
 
+      if (price < SHOP_MYSTERY_BOX_MIN_PRICE) {
+        await interaction.reply({
+          embeds: [
+            createErrorEmbed(
+              '❌ 价格过低',
+              `神秘盲盒最低售价为 **${SHOP_MYSTERY_BOX_MIN_PRICE}** ${cfg.currencyName}，防止低价刷币套利。`,
+            ),
+          ],
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
       const created = ctx.services.shop.createMysteryBoxItem({
         guildId: adminCtx.guildId,
         name,
@@ -529,7 +587,7 @@ export const shopCommand: CommandDefinition = {
         embeds: [
           createSuccessEmbed(
             '✅ 已上架神秘盲盒',
-            `编号 **#${created.id}** · **${created.name}**（${price} ${cfg.currencyName}）`,
+            `编号 **#${created.id}** · **${created.name}**（${created.price} ${cfg.currencyName}）`,
           ),
         ],
         flags: MessageFlags.Ephemeral,

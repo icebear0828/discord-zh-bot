@@ -306,4 +306,46 @@ describe('levelingService', () => {
 
     db.close();
   });
+
+  it('scales heat multiplier up to configured max > 2.0 and removes higher-tier reward roles on XP downgrade', () => {
+    expect(getHeatMultiplier(10, 3.0)).toBe(2.25);
+    expect(getHeatMultiplier(12, 3.0)).toBe(2.5);
+    expect(getHeatMultiplier(16, 3.0)).toBe(3.0);
+    expect(getHeatMultiplier(32, 5.0)).toBe(5.0);
+    expect(getHeatMultiplier(40, 5.0)).toBe(5.0);
+
+    const db = createDatabase(':memory:');
+    const configRepo = new GuildConfigRepo(db);
+    const profileRepo = new ProfileRepo(db);
+    const inviteRepo = new InviteRepo(db);
+    const svc = new LevelingService(configRepo, profileRepo, inviteRepo);
+
+    profileRepo.setLevelReward('g1', 1, 'role-lv1');
+    profileRepo.setLevelReward('g1', 5, 'role-lv5');
+    profileRepo.setLevelReward('g1', 10, 'role-lv10');
+
+    // stackRoles = true: downgrade Lv.10 -> Lv.2 removes Lv.5 and Lv.10 roles
+    const cfg = configRepo.getOrCreate('g1');
+    configRepo.updateLeveling('g1', { ...cfg.leveling, stackRoles: true });
+    svc.setUserXp('g1', 'u1', totalXpForLevel(10));
+    const downStack = svc.setUserXp('g1', 'u1', totalXpForLevel(2));
+    expect(downStack.oldLevel).toBe(10);
+    expect(downStack.newLevel).toBe(2);
+    expect(downStack.rolesToAdd).toEqual([]);
+    expect(downStack.rolesToRemove).toEqual(['role-lv5', 'role-lv10']);
+
+    // Downgrade to Lv.0 removes remaining Lv.1 role
+    const downZero = svc.setUserXp('g1', 'u1', 0);
+    expect(downZero.rolesToAdd).toEqual([]);
+    expect(downZero.rolesToRemove).toEqual(['role-lv1']);
+
+    // stackRoles = false: downgrade Lv.10 -> Lv.5 re-grants Lv.5 and removes Lv.1 & Lv.10
+    configRepo.updateLeveling('g1', { ...cfg.leveling, stackRoles: false });
+    svc.setUserXp('g1', 'u2', totalXpForLevel(10));
+    const downReplace = svc.setUserXp('g1', 'u2', totalXpForLevel(5));
+    expect(downReplace.rolesToAdd).toEqual(['role-lv5']);
+    expect(downReplace.rolesToRemove).toEqual(['role-lv1', 'role-lv10']);
+
+    db.close();
+  });
 });

@@ -3,19 +3,32 @@ import {
   ButtonBuilder,
   ButtonStyle,
   EmbedBuilder,
+  MessageFlags,
   SlashCommandBuilder,
   type ChatInputCommandInteraction,
 } from 'discord.js';
+import type { ModuleKey } from '../../config/defaults.js';
 import type { LeaderboardType } from '../../services/levelingService.js';
 import { COLORS, type AppContext, type CommandDefinition } from '../../ui/embeds.js';
 import { applyZh } from '../../ui/localization.js';
-import { requireGuildMember } from '../guards.js';
+import { requireGuildMember, requireModuleEnabled } from '../guards.js';
+
+export const LEADERBOARD_MODULE_MAP: Readonly<
+  Record<LeaderboardType, { key: ModuleKey; name: string }>
+> = {
+  xp: { key: 'leveling', name: '等级与热度' },
+  stat: { key: 'leveling', name: '等级与热度' },
+  coins: { key: 'economy', name: '经济系统' },
+  invites: { key: 'invites', name: '邀请追踪' },
+};
 
 export function buildLeaderboardMessage(
   ctx: AppContext,
   guildId: string,
   type: LeaderboardType,
   page: number,
+  ownerId?: string,
+  options?: { includeComponents?: boolean },
 ): {
   embeds: EmbedBuilder[];
   components: ActionRowBuilder<ButtonBuilder>[];
@@ -53,36 +66,53 @@ export function buildLeaderboardMessage(
     .setFooter({ text: `第 ${res.page} / ${res.totalPages} 页 · 共 ${res.totalItems} 名成员` })
     .setTimestamp();
 
+  if (options?.includeComponents === false) {
+    return { embeds: [embed], components: [] };
+  }
+
+  const ownerSuffix = ownerId ? `:${ownerId}` : '';
+  const prevId = `lb:${type}:${Math.max(1, res.page - 1)}:prev${ownerSuffix}`;
+  const nextId = `lb:${type}:${Math.min(res.totalPages, res.page + 1)}:next${ownerSuffix}`;
+  const tabId = (t: LeaderboardType): string =>
+    ownerId ? `lb:${t}:1:tab:${ownerId}` : `lb:${t}:1`;
+  const shareId = ownerId
+    ? `lb:share:${type}:${res.page}:${ownerId}`
+    : `lb:share:${type}:${res.page}`;
+
   const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
-      .setCustomId(`lb:${type}:${Math.max(1, res.page - 1)}:prev`)
+      .setCustomId(prevId)
       .setLabel('上一页')
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(res.page <= 1),
     new ButtonBuilder()
-      .setCustomId(`lb:${type}:${Math.min(res.totalPages, res.page + 1)}:next`)
+      .setCustomId(nextId)
       .setLabel('下一页')
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(res.page >= res.totalPages),
     new ButtonBuilder()
-      .setCustomId('lb:xp:1')
+      .setCustomId(tabId('xp'))
       .setLabel('经验榜')
       .setStyle(type === 'xp' ? ButtonStyle.Primary : ButtonStyle.Secondary),
     new ButtonBuilder()
-      .setCustomId('lb:coins:1')
+      .setCustomId(tabId('coins'))
       .setLabel('富豪榜')
       .setStyle(type === 'coins' ? ButtonStyle.Primary : ButtonStyle.Secondary),
     new ButtonBuilder()
-      .setCustomId('lb:invites:1')
+      .setCustomId(tabId('invites'))
       .setLabel('邀请榜')
       .setStyle(type === 'invites' ? ButtonStyle.Primary : ButtonStyle.Secondary),
   );
 
   const statRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
-      .setCustomId('lb:stat:1')
+      .setCustomId(tabId('stat'))
       .setLabel(`📏 ${cfg.leveling.statName}榜`)
       .setStyle(type === 'stat' ? ButtonStyle.Primary : ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId(shareId)
+      .setLabel('📢 晒到公屏')
+      .setStyle(ButtonStyle.Success),
   );
 
   return { embeds: [embed], components: [row, statRow] };
@@ -120,6 +150,12 @@ export const leaderboardCommand: CommandDefinition = {
     const type: LeaderboardType =
       rawType === 'coins' || rawType === 'invites' || rawType === 'stat' ? rawType : 'xp';
 
-    await interaction.reply(buildLeaderboardMessage(ctx, guildCtx.guildId, type, 1));
+    const modInfo = LEADERBOARD_MODULE_MAP[type];
+    if (!(await requireModuleEnabled(interaction, ctx, modInfo.key, modInfo.name))) return;
+
+    await interaction.reply({
+      ...buildLeaderboardMessage(ctx, guildCtx.guildId, type, 1, interaction.user.id),
+      flags: MessageFlags.Ephemeral,
+    });
   },
 };

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { SHOP_MYSTERY_BOX_MIN_PRICE } from '../../src/config/economyConstants.js';
 import { createDatabase } from '../../src/db/database.js';
 import { ChaosRepo } from '../../src/db/repositories/chaosRepo.js';
 import { GuildConfigRepo } from '../../src/db/repositories/guildConfigRepo.js';
@@ -223,6 +224,117 @@ describe('shopService & inventory', () => {
 
     const boxRefund = svc.buyItem('g1', 'u1', box.id, day2, seqRng([0.85, 0.5]));
     expect(boxRefund.ok && boxRefund.mysteryBoxResult?.kind === 'coins_refund').toBe(true);
+
+    db.close();
+  });
+
+  it('enforces mystery box min price & zero-price no-floor, rejects boost multiplier conflict, and blocks already-owned role purchase', () => {
+    const db = createDatabase(':memory:');
+    const profileRepo = new ProfileRepo(db);
+    const shopRepo = new ShopRepo(db);
+    const svc = new ShopService(db, profileRepo, shopRepo);
+
+    profileRepo.addCoins('g1', 'u1', 5000);
+
+    // 1. Mystery box min price enforced at creation
+    const clampedBox = svc.createMysteryBoxItem({
+      guildId: 'g1',
+      name: '廉价盲盒',
+      description: '尝试 0 价',
+      price: 0,
+      stock: null,
+    });
+    expect(clampedBox.price).toBe(SHOP_MYSTERY_BOX_MIN_PRICE);
+
+    // Legacy 0-price mystery box in DB prints 0 coins (no unconditional floor > price)
+    const legacyZeroBox = shopRepo.createItem({
+      guildId: 'g1',
+      name: '遗留零价盲盒',
+      description: '',
+      type: 'mystery_box',
+      price: 0,
+      roleId: null,
+      titleText: null,
+      boostMultiplier: null,
+      boostDurationSec: null,
+      stock: null,
+      payloadJson: '{}',
+    });
+    const coinsBeforeZero = profileRepo.getOrCreate('g1', 'u1').coins;
+    const zeroJackpot = svc.buyItem('g1', 'u1', legacyZeroBox.id, 1_000_000, () => 0.01);
+    expect(zeroJackpot.ok).toBe(true);
+    if (zeroJackpot.ok && zeroJackpot.mysteryBoxResult?.kind === 'coins_jackpot') {
+      expect(zeroJackpot.mysteryBoxResult.coinsDelta).toBe(0);
+    }
+    expect(profileRepo.getOrCreate('g1', 'u1').coins).toBe(coinsBeforeZero);
+
+    // 2. XP boost card multiplier conflict rejected without consuming card
+    const boost3x = svc.createBoostItem({
+      guildId: 'g1',
+      name: '三倍经验卡',
+      description: '',
+      price: 300,
+      boostMultiplier: 3.0,
+      boostDurationSec: 600,
+      stock: null,
+    });
+    const boost15x = svc.createBoostItem({
+      guildId: 'g1',
+      name: '一点五倍经验卡',
+      description: '',
+      price: 100,
+      boostMultiplier: 1.5,
+      boostDurationSec: 3600,
+      stock: null,
+    });
+    const b1 = svc.buyItem('g1', 'u1', boost3x.id, 1_000_000);
+    const b2 = svc.buyItem('g1', 'u1', boost3x.id, 1_000_000);
+    const b3 = svc.buyItem('g1', 'u1', boost15x.id, 1_000_000);
+    expect(b1.ok && b2.ok && b3.ok).toBe(true);
+    if (!b1.ok || !b2.ok || !b3.ok) return;
+
+    const now = 2_000_000;
+    const u3x = svc.useInventoryItem('g1', 'u1', b1.addedInventory!.id, now);
+    expect(u3x.ok).toBe(true);
+
+    // Different multiplier conflicts and preserves card in inventory
+    const conflict = svc.useInventoryItem('g1', 'u1', b3.addedInventory!.id, now + 1000);
+    expect(conflict).toMatchObject({
+      ok: false,
+      reason: 'boost_multiplier_conflict',
+      activeBoostMultiplier: 3.0,
+    });
+    expect(shopRepo.getInventoryItem('g1', 'u1', b3.addedInventory!.id)?.quantity).toBe(1);
+
+    // Same multiplier stacks duration cleanly
+    const stacked = svc.useInventoryItem('g1', 'u1', b2.addedInventory!.id, now + 2000);
+    expect(stacked.ok).toBe(true);
+    if (stacked.ok) {
+      expect(stacked.boostMultiplier).toBe(3.0);
+      expect(stacked.boostExpiresAt).toBe(now + 1_200_000);
+    }
+
+    // 3. Duplicate role ownership blocked without deducting coins or stock
+    const roleItem = svc.createRoleItem({
+      guildId: 'g1',
+      name: '贵族身份组',
+      description: '',
+      price: 500,
+      roleId: 'role-noble',
+      stock: 3,
+    });
+    const coinsBeforeRole = profileRepo.getOrCreate('g1', 'u1').coins;
+    const dupRoleRes = svc.buyItem(
+      'g1',
+      'u1',
+      roleItem.id,
+      now,
+      Math.random,
+      new Set(['role-noble']),
+    );
+    expect(dupRoleRes).toEqual({ ok: false, reason: 'already_owned' });
+    expect(profileRepo.getOrCreate('g1', 'u1').coins).toBe(coinsBeforeRole);
+    expect(shopRepo.getItemById('g1', roleItem.id)?.stock).toBe(3);
 
     db.close();
   });

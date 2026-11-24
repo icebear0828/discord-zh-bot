@@ -1,12 +1,16 @@
-import { SlashCommandBuilder, type ChatInputCommandInteraction } from 'discord.js';
+import { MessageFlags, SlashCommandBuilder, type ChatInputCommandInteraction } from 'discord.js';
 import {
   createErrorEmbed,
-  createSuccessEmbed,
-  formatDurationZh,
   type AppContext,
   type CommandDefinition,
 } from '../../ui/embeds.js';
 import { applyZh } from '../../ui/localization.js';
+import {
+  formatBankRobError,
+  formatBankRobResultEmbed,
+  formatPocketRobError,
+  formatPocketRobResultEmbed,
+} from '../../ui/soloFormatters.js';
 import { requireGuildMember, requireModuleEnabled } from '../guards.js';
 
 export const robCommand: CommandDefinition = {
@@ -49,6 +53,7 @@ export const robCommand: CommandDefinition = {
     if (target.bot) {
       await interaction.reply({
         embeds: [createErrorEmbed('❌ 无法打劫', '机器人没有钱包或银行金库，换个活人试试吧！')],
+        flags: MessageFlags.Ephemeral,
       });
       return;
     }
@@ -58,51 +63,22 @@ export const robCommand: CommandDefinition = {
     if (mode === 'bank') {
       const bankRes = ctx.services.economy.robBank(guildCtx.guildId, interaction.user.id, target.id);
       if (!bankRes.ok) {
-        const msgMap: Record<typeof bankRes.reason, string> = {
-          self_target: '不能抢自己的银行金库！',
-          cooldown: `打劫冷却中，请等待 **${formatDurationZh((bankRes.retryAfterSec ?? 0) * 1000)}**。`,
-          target_shielded: `<@${target.id}> 刚被光顾过，护盾剩余 **${formatDurationZh((bankRes.retryAfterSec ?? 0) * 1000)}**。`,
-          target_bank_too_poor: `<@${target.id}> 银行金库存款不足 100 ${cfg.currencyName}，不值得动手。`,
-          attacker_too_poor: `你的总资产（现金+银行）不足 **100** ${cfg.currencyName}，不够支付劫金库翻车保底罚金！`,
-        };
-        await interaction.reply({
-          allowedMentions: { parse: [] },
-          embeds: [createErrorEmbed('❌ 劫金库未执行', msgMap[bankRes.reason])],
-        });
-        return;
-      }
-
-      if (bankRes.success) {
         await interaction.reply({
           allowedMentions: { parse: [] },
           embeds: [
-            createSuccessEmbed(
-              '🏦 银行金库劫案得手！',
-              [
-                `你突破安保从 <@${target.id}> 的银行金库撬走了 ${cfg.currencyEmoji} **${bankRes.amount}** ${cfg.currencyName}！`,
-                `你的现金：**${bankRes.attackerBalance}**（银行 **${bankRes.attackerBankBalance}**）｜ 对方金库已触发最高护盾。`,
-              ].join('\n'),
+            createErrorEmbed(
+              '❌ 劫金库未执行',
+              formatBankRobError(bankRes.reason, target.id, cfg, bankRes.retryAfterSec),
             ),
           ],
+          flags: MessageFlags.Ephemeral,
         });
         return;
       }
 
-      const fineDetail =
-        (bankRes.fineFromBank ?? 0) > 0
-          ? `（扣口袋现金 **${bankRes.fineFromPocket ?? 0}** + 划扣银行存款 **${bankRes.fineFromBank ?? 0}**）`
-          : '';
       await interaction.reply({
         allowedMentions: { parse: [] },
-        embeds: [
-          createErrorEmbed(
-            bankRes.trapped ? '🪤 金库捕兽夹重创劫匪！' : '🚨 抢银行金库翻车被捕！',
-            [
-              `潜入金库失手！你向 <@${target.id}> 重罚赔偿了 ${cfg.currencyEmoji} **${bankRes.amount}** ${cfg.currencyName}${fineDetail}。`,
-              `你的当前现金：**${bankRes.attackerBalance}**（银行 **${bankRes.attackerBankBalance}**）`,
-            ].join('\n'),
-          ),
-        ],
+        embeds: [formatBankRobResultEmbed(bankRes, target.id, cfg)],
       });
       return;
     }
@@ -110,46 +86,22 @@ export const robCommand: CommandDefinition = {
     const res = ctx.services.economy.rob(guildCtx.guildId, interaction.user.id, target.id);
 
     if (!res.ok) {
-      const msgMap: Record<typeof res.reason, string> = {
-        self_target: '不能打劫自己！',
-        cooldown: `打劫冷却中，请等待 **${formatDurationZh((res.retryAfterSec ?? 0) * 1000)}**。`,
-        target_shielded: `<@${target.id}> 刚被光顾过，护盾剩余 **${formatDurationZh((res.retryAfterSec ?? 0) * 1000)}**。`,
-        target_too_poor: `<@${target.id}> 钱包太干净了（不足 100 ${cfg.currencyName}），放过 TA 吧。`,
-      };
-      await interaction.reply({
-        allowedMentions: { parse: [] },
-        embeds: [createErrorEmbed('❌ 打劫未执行', msgMap[res.reason])],
-      });
-      return;
-    }
-
-    if (res.success) {
       await interaction.reply({
         allowedMentions: { parse: [] },
         embeds: [
-          createSuccessEmbed(
-            '🥷 打劫得手！',
-            [
-              `你成功从 <@${target.id}> 兜里顺走了 ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}！`,
-              `你的余额：**${res.attackerBalance}** ｜ 对方开启了防盗护盾。`,
-            ].join('\n'),
+          createErrorEmbed(
+            '❌ 打劫未执行',
+            formatPocketRobError(res.reason, target.id, cfg, res.retryAfterSec),
           ),
         ],
+        flags: MessageFlags.Ephemeral,
       });
       return;
     }
 
     await interaction.reply({
       allowedMentions: { parse: [] },
-      embeds: [
-        createErrorEmbed(
-          '🚨 打劫翻车被抓现行！',
-          [
-            `失手了！你向 <@${target.id}> 赔偿了 ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName} 精神损失费。`,
-            `你的当前余额：**${res.attackerBalance}** ${cfg.currencyName}`,
-          ].join('\n'),
-        ),
-      ],
+      embeds: [formatPocketRobResultEmbed(res, target.id, cfg)],
     });
   },
 };

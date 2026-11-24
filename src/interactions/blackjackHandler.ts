@@ -1,6 +1,10 @@
 import { MessageFlags, type ButtonInteraction } from 'discord.js';
 import { buildBlackjackMessage } from '../commands/economy/blackjack.js';
 import { createErrorEmbed, type AppContext } from '../ui/embeds.js';
+import {
+  buildBlackjackPublicReportEmbed,
+  sendChannelPublicNotice,
+} from '../ui/soloFormatters.js';
 
 export async function handleBlackjackButton(
   interaction: ButtonInteraction,
@@ -27,11 +31,26 @@ export async function handleBlackjackButton(
   if (!res.ok) {
     const msgMap: Record<typeof res.reason, string> = {
       invalid_bet: '下注无效。',
+      bet_too_large: '下注超过单局上限。',
       insufficient_funds: '余额不足以双倍下注！',
       game_already_active: '对局仍在进行中。',
-      no_active_game: '该局游戏已结束或已过期。',
+      no_active_game: '该局游戏已结束或已超时自动退注，请使用 `/二十一点` 重新开局。',
       cannot_double: '只能在首轮两张牌时双倍下注。',
     };
+    if (res.reason === 'no_active_game') {
+      await interaction
+        .update({
+          embeds: [createErrorEmbed('❌ 牌局已结束', msgMap[res.reason])],
+          components: [],
+        })
+        .catch(async () => {
+          await interaction.reply({
+            embeds: [createErrorEmbed('❌ 牌局已结束', msgMap[res.reason])],
+            flags: MessageFlags.Ephemeral,
+          });
+        });
+      return;
+    }
     await interaction.reply({
       embeds: [createErrorEmbed('❌ 操作失败', msgMap[res.reason])],
       flags: MessageFlags.Ephemeral,
@@ -41,4 +60,15 @@ export async function handleBlackjackButton(
 
   const cfg = ctx.repos.guildConfig.getOrCreate(interaction.guildId).economy;
   await interaction.update(buildBlackjackMessage(res.game, res.balance, cfg.currencyName));
+
+  if (res.game.status !== 'playing') {
+    const reportEmbed = buildBlackjackPublicReportEmbed({
+      playerId: interaction.user.id,
+      playerDisplayName: interaction.user.displayName,
+      playerAvatarUrl: interaction.user.displayAvatarURL(),
+      game: res.game,
+      cfg,
+    });
+    await sendChannelPublicNotice(interaction, { embeds: [reportEmbed] });
+  }
 }

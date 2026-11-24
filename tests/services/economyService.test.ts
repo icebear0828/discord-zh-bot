@@ -1,4 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import {
+  MAX_SOLO_GAMBLE_BET,
+  ROB_ATTACKER_MIN_ASSETS,
+} from '../../src/config/economyConstants.js';
 import { createDatabase } from '../../src/db/database.js';
 import { ChaosRepo } from '../../src/db/repositories/chaosRepo.js';
 import { GuildConfigRepo } from '../../src/db/repositories/guildConfigRepo.js';
@@ -349,6 +353,75 @@ describe('economyService', () => {
       expect(failTrap.attackerBalance).toBe(0);
       expect(failTrap.attackerBankBalance).toBe(550);
     }
+
+    db.close();
+  });
+
+  it('prevents empty-pocket rob exploits via min total assets & bank fine deduction, and enforces solo gamble bet cap', () => {
+    const db = createDatabase(':memory:');
+    const configRepo = new GuildConfigRepo(db);
+    const profileRepo = new ProfileRepo(db);
+    const chaosRepo = new ChaosRepo(db);
+    const svc = new EconomyService(db, configRepo, profileRepo, 'Asia/Shanghai', chaosRepo);
+    const now = 1_700_000_000_000;
+
+    profileRepo.addCoins('g1', 'victim', 1000);
+    chaosRepo.setEffect({
+      guildId: 'g1',
+      userId: 'victim',
+      effectKey: 'trap_armed',
+      charges: 1,
+      expiresAt: now + 3600_000,
+      sourceUserId: null,
+      updatedAt: now,
+    });
+
+    // Attacker with < ROB_ATTACKER_MIN_ASSETS total assets is blocked without consuming trap
+    profileRepo.addCoins('g1', 'broke', ROB_ATTACKER_MIN_ASSETS - 1);
+    expect(svc.rob('g1', 'broke', 'victim', now, () => 0.99)).toEqual({
+      ok: false,
+      reason: 'attacker_too_poor',
+    });
+    expect(chaosRepo.getActiveEffect('g1', 'victim', 'trap_armed', now)).not.toBeNull();
+
+    // Attacker with 0 pocket + 1000 bank hits trap -> fine deducted from bank!
+    profileRepo.save({ ...profileRepo.getOrCreate('g1', 'banker'), coins: 0, bankCoins: 1000 });
+    const trapRes = svc.rob('g1', 'banker', 'victim', now, () => 0.99);
+    expect(trapRes.ok).toBe(true);
+    if (trapRes.ok) {
+      expect(trapRes.success).toBe(false);
+      expect(trapRes.trapped).toBe(true);
+      expect(trapRes.amount).toBe(300); // 30% of 1000
+      expect(trapRes.fineFromPocket).toBe(0);
+      expect(trapRes.fineFromBank).toBe(300);
+      expect(trapRes.attackerBalance).toBe(0);
+      expect(trapRes.attackerBankBalance).toBe(700);
+      expect(trapRes.targetBalance).toBe(1300);
+    }
+
+    // Attacker with 20 pocket + 500 bank fails normal rob -> pocket + bank split fine
+    profileRepo.save({ ...profileRepo.getOrCreate('g1', 'splitter'), coins: 20, bankCoins: 500 });
+    const failRes = svc.rob('g1', 'splitter', 'victim', now + 1000, () => 0.99);
+    expect(failRes.ok).toBe(true);
+    if (failRes.ok) {
+      expect(failRes.success).toBe(false);
+      expect(failRes.amount).toBe(78); // floor(520 * 0.15) = 78
+      expect(failRes.fineFromPocket).toBe(20);
+      expect(failRes.fineFromBank).toBe(58);
+      expect(failRes.attackerBalance).toBe(0);
+      expect(failRes.attackerBankBalance).toBe(442);
+    }
+
+    // Dice & slots bet cap
+    profileRepo.addCoins('g1', 'whale', MAX_SOLO_GAMBLE_BET * 2);
+    expect(svc.playDice('g1', 'whale', MAX_SOLO_GAMBLE_BET + 1, 'big')).toEqual({
+      ok: false,
+      reason: 'bet_too_large',
+    });
+    expect(svc.playSlots('g1', 'whale', MAX_SOLO_GAMBLE_BET + 1)).toEqual({
+      ok: false,
+      reason: 'bet_too_large',
+    });
 
     db.close();
   });

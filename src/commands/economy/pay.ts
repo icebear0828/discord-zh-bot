@@ -1,4 +1,4 @@
-import { SlashCommandBuilder, type ChatInputCommandInteraction } from 'discord.js';
+import { MessageFlags, SlashCommandBuilder, type ChatInputCommandInteraction } from 'discord.js';
 import {
   createErrorEmbed,
   createSuccessEmbed,
@@ -37,6 +37,7 @@ export const payCommand: CommandDefinition = {
     if (receiver.bot) {
       await interaction.reply({
         embeds: [createErrorEmbed('❌ 转账失败', '不能向机器人转账。')],
+        flags: MessageFlags.Ephemeral,
       });
       return;
     }
@@ -57,6 +58,7 @@ export const payCommand: CommandDefinition = {
       };
       await interaction.reply({
         embeds: [createErrorEmbed('❌ 转账失败', reasonMap[res.reason])],
+        flags: MessageFlags.Ephemeral,
       });
       return;
     }
@@ -71,6 +73,7 @@ export const payCommand: CommandDefinition = {
           ].join('\n'),
         ),
       ],
+      allowedMentions: { users: [receiver.id] },
     });
   },
 };

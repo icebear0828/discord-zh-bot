@@ -1,6 +1,15 @@
-import { EmbedBuilder, SlashCommandBuilder, type ChatInputCommandInteraction } from 'discord.js';
+import {
+  EmbedBuilder,
+  MessageFlags,
+  SlashCommandBuilder,
+  type ChatInputCommandInteraction,
+} from 'discord.js';
 import { COLORS, type AppContext, type CommandDefinition } from '../../ui/embeds.js';
 import { applyZh } from '../../ui/localization.js';
+import {
+  buildFortuneHighlightEmbed,
+  sendChannelPublicNotice,
+} from '../../ui/soloFormatters.js';
 import { requireGuildMember, requireModuleEnabled } from '../guards.js';
 
 export const fortuneCommand: CommandDefinition = {
@@ -37,6 +46,12 @@ export const fortuneCommand: CommandDefinition = {
       )
       .setTimestamp();
 
-    await interaction.reply({ embeds: [embed] });
+    await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+
+    if (!res.alreadyDrawn && res.record.luckTier === '大吉') {
+      await sendChannelPublicNotice(interaction, {
+        embeds: [buildFortuneHighlightEmbed(interaction.user.id, res, cfg)],
+      });
+    }
   },
 };

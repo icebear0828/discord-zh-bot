@@ -14,9 +14,10 @@ describe('funService', () => {
     const svc = new FunService(db, profileRepo, shopRepo, funRepo, 'Asia/Shanghai');
 
     const now = Date.UTC(2026, 4, 1, 4, 0, 0);
-    const f1 = svc.drawDailyFortune('g1', 'u1', now, () => 0.1);
+    const f1 = svc.drawDailyFortune('g1', 'u1', now, () => 0.0);
     expect(f1.alreadyDrawn).toBe(false);
-    expect(f1.record.bonusCoins).toBeGreaterThanOrEqual(10);
+    expect(f1.record.luckTier).toBe('大吉');
+    expect(f1.record.bonusCoins).toBeGreaterThanOrEqual(60);
     expect(profileRepo.getOrCreate('g1', 'u1').coins).toBe(f1.record.bonusCoins);
 
     // Second draw on same day returns cached fortune without extra coins

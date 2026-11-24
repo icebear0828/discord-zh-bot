@@ -1,12 +1,12 @@
-import { SlashCommandBuilder, type ChatInputCommandInteraction } from 'discord.js';
+import { MessageFlags, SlashCommandBuilder, type ChatInputCommandInteraction } from 'discord.js';
 import {
   createErrorEmbed,
-  createSuccessEmbed,
   formatDurationZh,
   type AppContext,
   type CommandDefinition,
 } from '../../ui/embeds.js';
 import { applyZh } from '../../ui/localization.js';
+import { formatWorkResultEmbed } from '../../ui/soloFormatters.js';
 import { requireGuildMember, requireModuleEnabled } from '../guards.js';
 
 export const workCommand: CommandDefinition = {
@@ -32,20 +32,14 @@ export const workCommand: CommandDefinition = {
             `先休息一会儿吧！还需等待 **${formatDurationZh(res.retryAfterSec * 1000)}** 才能继续打工。`,
           ),
         ],
+        flags: MessageFlags.Ephemeral,
       });
       return;
     }
 
     await interaction.reply({
-      embeds: [
-        createSuccessEmbed(
-          '💼 打工完成！',
-          [
-            `你${res.story}，赚取了 ${cfg.currencyEmoji} **+${res.reward}** ${cfg.currencyName}！`,
-            `当前钱包余额：**${res.balance}** ${cfg.currencyName}`,
-          ].join('\n'),
-        ),
-      ],
+      embeds: [formatWorkResultEmbed(res, cfg)],
+      flags: MessageFlags.Ephemeral,
     });
   },
 };

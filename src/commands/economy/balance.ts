@@ -1,5 +1,15 @@
-import { EmbedBuilder, SlashCommandBuilder, type ChatInputCommandInteraction } from 'discord.js';
-import { COLORS, type AppContext, type CommandDefinition } from '../../ui/embeds.js';
+import {
+  EmbedBuilder,
+  MessageFlags,
+  SlashCommandBuilder,
+  type ChatInputCommandInteraction,
+} from 'discord.js';
+import {
+  COLORS,
+  createErrorEmbed,
+  type AppContext,
+  type CommandDefinition,
+} from '../../ui/embeds.js';
 import { applyZh } from '../../ui/localization.js';
 import { requireGuildMember, requireModuleEnabled } from '../guards.js';
 
@@ -25,6 +35,14 @@ export const balanceCommand: CommandDefinition = {
     if (!(await requireModuleEnabled(interaction, ctx, 'economy', '经济系统'))) return;
 
     const target = interaction.options.getUser('user') ?? interaction.user;
+    if (target.bot) {
+      await interaction.reply({
+        embeds: [createErrorEmbed('❌ 无法查询', '机器人没有钱包账户，请选择真实群友查询。')],
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
     const cfg = ctx.repos.guildConfig.getOrCreate(guildCtx.guildId).economy;
     const profile = ctx.repos.profile.getOrCreate(guildCtx.guildId, target.id);
 
@@ -36,12 +54,12 @@ export const balanceCommand: CommandDefinition = {
       })
       .addFields(
         {
-          name: `${cfg.currencyEmoji} 口袋现金 (可能被偷)`,
+          name: `${cfg.currencyEmoji} 口袋现金 (易被顺手牵羊)`,
           value: `**${profile.coins}** ${cfg.currencyName}`,
           inline: true,
         },
         {
-          name: '🏦 银行存款 (防偷安全)',
+          name: '🏦 银行金库 (低风险·每日计息)',
           value: `**${profile.bankCoins}** ${cfg.currencyName}`,
           inline: true,
         },
@@ -63,6 +81,6 @@ export const balanceCommand: CommandDefinition = {
       )
       .setTimestamp();
 
-    await interaction.reply({ embeds: [embed] });
+    await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
   },
 };

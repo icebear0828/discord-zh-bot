@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3';
+import { SHOP_MYSTERY_BOX_MIN_PRICE } from '../config/economyConstants.js';
 import type { ChaosRepo, PropKey } from '../db/repositories/chaosRepo.js';
 import type { GuildConfigRepo } from '../db/repositories/guildConfigRepo.js';
 import type { ProfileRepo } from '../db/repositories/profileRepo.js';
@@ -92,7 +93,17 @@ export type UseInventoryResult =
       boostExpiresAt?: number;
       equippedTitle?: string;
     }
-  | { ok: false; reason: 'not_found' | 'unsupported_item' | 'already_owned' | 'invalid_title' };
+  | {
+      ok: false;
+      reason:
+        | 'not_found'
+        | 'unsupported_item'
+        | 'already_owned'
+        | 'invalid_title'
+        | 'boost_multiplier_conflict';
+      activeBoostMultiplier?: number;
+      activeBoostExpiresAt?: number;
+    };
 
 interface TitlePayload {
   titleText: string;
@@ -341,12 +352,13 @@ export class ShopService {
     price: number;
     stock: number | null;
   }): ShopItem {
+    const safePrice = Math.max(SHOP_MYSTERY_BOX_MIN_PRICE, Math.floor(input.price));
     return this.shopRepo.createItem({
       guildId: input.guildId,
       name: input.name,
       description: input.description,
       type: 'mystery_box',
-      price: Math.max(0, Math.floor(input.price)),
+      price: safePrice,
       roleId: null,
       titleText: null,
       boostMultiplier: null,
@@ -391,6 +403,7 @@ export class ShopService {
     itemId: number,
     nowMs = Date.now(),
     rng: () => number = Math.random,
+    ownedRoleIds?: ReadonlySet<string>,
   ): BuyResult {
     return this.db.transaction((): BuyResult => {
       const item = this.shopRepo.getItemById(guildId, itemId);
@@ -399,6 +412,10 @@ export class ShopService {
       }
       if (item.stock !== null && item.stock <= 0) {
         return { ok: false, reason: 'out_of_stock' };
+      }
+
+      if (item.type === 'role' && item.roleId && ownedRoleIds?.has(item.roleId)) {
+        return { ok: false, reason: 'already_owned' };
       }
 
       const profile = this.profileRepo.getOrCreate(guildId, userId);
@@ -512,7 +529,7 @@ export class ShopService {
 
         if (roll < 0.03) {
           const mult = randomIntInclusive(3, 5, rng);
-          const prize = Math.max(100, item.price * mult);
+          const prize = Math.max(0, Math.floor(item.price * mult));
           nextCoins += prize;
           reward = {
             kind: 'coins_jackpot',
@@ -573,7 +590,7 @@ export class ShopService {
               summary: `🐾 出战宠物 **${applied.updatedPet.nickname}** 获得 **+${petXpGain} XP**${applied.levelsGained > 0 ? `（连升 ${applied.levelsGained} 级至 Lv.${applied.updatedPet.level}！）` : ''}！`,
             };
           } else {
-            const prize = Math.max(1, Math.floor(item.price * 0.7));
+            const prize = Math.max(0, Math.floor(item.price * 0.7));
             nextCoins += prize;
             reward = {
               kind: 'coins_refund',
@@ -594,13 +611,13 @@ export class ShopService {
           };
         } else {
           const ratio = 0.25 + rng() * 0.55;
-          const prize = Math.max(1, Math.floor(item.price * ratio));
+          const prize = Math.max(0, Math.floor(item.price * ratio));
           nextCoins += prize;
           reward = {
             kind: 'coins_refund',
             isJackpot: false,
             coinsDelta: prize,
-            summary: `🪙 开出保底小金库，返还 **+${prize}** ${meta.currencyName}！`,
+            summary: `🪙 开出小金库返利，返还 **+${prize}** ${meta.currencyName}！`,
           };
         }
 
@@ -858,34 +875,35 @@ export class ShopService {
           typeof obj.durationSec === 'number' && obj.durationSec > 0 ? obj.durationSec : 3600;
         const durationMs = durationSec * 1000;
 
+        const hasActive = profile.xpBoostExpiresAt > nowMs && profile.xpBoostMultiplier > 1;
+        if (hasActive && profile.xpBoostMultiplier !== multiplier) {
+          return {
+            ok: false,
+            reason: 'boost_multiplier_conflict',
+            activeBoostMultiplier: profile.xpBoostMultiplier,
+            activeBoostExpiresAt: profile.xpBoostExpiresAt,
+          };
+        }
+
         const consumed = this.shopRepo.consumeInventoryItem(guildId, userId, inv.id);
         if (!consumed) {
           return { ok: false, reason: 'not_found' };
         }
 
-        const hasActive = profile.xpBoostExpiresAt > nowMs && profile.xpBoostMultiplier > 1;
-        let nextMultiplier = multiplier;
-        let nextExpiresAt = nowMs + durationMs;
-
-        if (hasActive) {
-          if (profile.xpBoostMultiplier === multiplier) {
-            nextExpiresAt = profile.xpBoostExpiresAt + durationMs;
-          } else if (profile.xpBoostMultiplier > multiplier) {
-            nextMultiplier = profile.xpBoostMultiplier;
-            nextExpiresAt = profile.xpBoostExpiresAt + durationMs;
-          }
-        }
+        const nextExpiresAt = hasActive
+          ? profile.xpBoostExpiresAt + durationMs
+          : nowMs + durationMs;
 
         this.profileRepo.save({
           ...profile,
-          xpBoostMultiplier: nextMultiplier,
+          xpBoostMultiplier: multiplier,
           xpBoostExpiresAt: nextExpiresAt,
         });
 
         return {
           ok: true,
           item: inv,
-          boostMultiplier: nextMultiplier,
+          boostMultiplier: multiplier,
           boostExpiresAt: nextExpiresAt,
         };
       }

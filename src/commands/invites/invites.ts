@@ -1,5 +1,15 @@
-import { EmbedBuilder, SlashCommandBuilder, type ChatInputCommandInteraction } from 'discord.js';
-import { COLORS, type AppContext, type CommandDefinition } from '../../ui/embeds.js';
+import {
+  EmbedBuilder,
+  MessageFlags,
+  SlashCommandBuilder,
+  type ChatInputCommandInteraction,
+} from 'discord.js';
+import {
+  COLORS,
+  createErrorEmbed,
+  type AppContext,
+  type CommandDefinition,
+} from '../../ui/embeds.js';
 import { applyZh } from '../../ui/localization.js';
 import { requireGuildMember, requireModuleEnabled } from '../guards.js';
 
@@ -21,6 +31,14 @@ export const invitesCommand: CommandDefinition = {
     if (!(await requireModuleEnabled(interaction, ctx, 'invites', '邀请追踪'))) return;
 
     const target = interaction.options.getUser('user') ?? interaction.user;
+    if (target.bot) {
+      await interaction.reply({
+        embeds: [createErrorEmbed('❌ 无法查询', '机器人没有邀请战绩，请选择真实群友查询。')],
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
     const stats = ctx.services.invite.getUserStats(guildCtx.guildId, target.id);
 
     const recentText =
@@ -46,6 +64,6 @@ export const invitesCommand: CommandDefinition = {
       )
       .setTimestamp();
 
-    await interaction.reply({ embeds: [embed] });
+    await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
   },
 };
