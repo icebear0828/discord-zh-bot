@@ -20,6 +20,7 @@ import {
   DEFAULT_LEVELING_CONFIG,
   type ModuleKey,
 } from '../config/defaults.js';
+import { buildLeaderboardMessage } from '../commands/leveling/leaderboard.js';
 import type { BlackjackActionResult, BlackjackGame } from '../services/blackjackService.js';
 import type { DiceChoice } from '../services/economyService.js';
 import type { InteractionAction } from '../services/funService.js';
@@ -851,8 +852,23 @@ export async function handleMenuButton(
       return;
     }
 
+    const fullCfg = ctx.repos.guildConfig.getOrCreate(guildId);
+    const lbNameMap: Record<LeaderboardType, string> = {
+      xp: '等级经验排行榜',
+      coins: `${fullCfg.economy.currencyName}富豪榜`,
+      invites: '邀请贡献排行榜',
+      stat: `${fullCfg.leveling.statName}排行榜`,
+    };
+    const sent = await sendPublicBroadcast(interaction, {
+      content: `🏆 <@${actor.id}> 查看了服务器「${lbNameMap[lbType]}」：`,
+      ...buildLeaderboardMessage(ctx, guildId, lbType, lbPage),
+    });
+    const feedback: MenuFeedback = sent
+      ? { type: 'success', text: '📢 已在当前频道公开展示该排行榜，所有人均可见并可翻页切换！' }
+      : { type: 'error', text: '无法在当前频道发送公开排行榜，请检查机器人发言权限。' };
+
     await interaction.update(
-      buildMenuMessage(ctx, guildId, actor, { page: 'leaderboard', lbType, lbPage }),
+      buildMenuMessage(ctx, guildId, actor, { page: 'leaderboard', lbType, lbPage }, feedback),
     );
     return;
   }

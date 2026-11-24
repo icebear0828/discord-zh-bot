@@ -1024,17 +1024,28 @@ describe('menu router & multiplayer interaction flows', () => {
     await routeInteraction(subDice.interaction, ctx);
     expect(subDice.update).toHaveBeenCalledTimes(1);
 
-    // Leaderboard pagination
+    // Leaderboard pagination & public broadcast on click
     for (let i = 1; i <= 12; i++) {
       ctx.repos.profile.addCoins('g1', `rich-${i}`, i * 100);
     }
     const lbPage1 = createButtonMock({ customId: 'menu:rank:coins:1', userId: 'u1' });
     await routeInteraction(lbPage1.interaction, ctx);
     expect(lbPage1.update.mock.calls[0]![0].embeds?.[0]?.toJSON().footer?.text).toContain('第 1 / 2 页');
+    expect(lbPage1.channel.send).toHaveBeenCalledTimes(1);
+    const pubLbPayload = lbPage1.channel.send.mock.calls[0]![0];
+    expect(pubLbPayload.content).toContain('富豪榜');
+    expect(pubLbPayload.embeds?.[0]?.toJSON().footer?.text).toContain('第 1 / 2 页');
+    expect(pubLbPayload.components?.length).toBe(2);
 
     const lbPage2 = createButtonMock({ customId: 'menu:rank:coins:2:next', userId: 'u1' });
     await routeInteraction(lbPage2.interaction, ctx);
     expect(lbPage2.update.mock.calls[0]![0].embeds?.[0]?.toJSON().footer?.text).toContain('第 2 / 2 页');
+    expect(lbPage2.channel.send).toHaveBeenCalledTimes(1);
+
+    const lbStat = createButtonMock({ customId: 'menu:rank:stat:1', userId: 'u1' });
+    await routeInteraction(lbStat.interaction, ctx);
+    expect(lbStat.channel.send).toHaveBeenCalledTimes(1);
+    expect(lbStat.channel.send.mock.calls[0]![0].content).toContain('成长值排行榜');
 
     ctx.db.close();
   });

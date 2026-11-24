@@ -26,6 +26,7 @@ import { ShopService } from '../../src/services/shopService.js';
 import { SocialPetService } from '../../src/services/socialPetService.js';
 import { TicketService } from '../../src/services/ticketService.js';
 import { WorldEventService } from '../../src/services/worldEventService.js';
+import { buildLeaderboardMessage } from '../../src/commands/leveling/leaderboard.js';
 import { buildNumberBombCard, buildRouletteCard } from '../../src/ui/chaosMenuBuilder.js';
 import type { AppContext } from '../../src/ui/embeds.js';
 import {
@@ -440,6 +441,13 @@ describe('menuBuilder Discord component constraints & schema integration', () =>
     expect(lobby.components[0]!.toJSON().components[0]).toMatchObject({
       custom_id: 'menu:open',
     });
+
+    for (const lbType of ['xp', 'coins', 'invites', 'stat'] as const) {
+      assertDiscordMessageLimits(
+        buildLeaderboardMessage(ctx, 'g1', lbType, 1),
+        `public_lb:${lbType}`,
+      );
+    }
 
     const duelRes = ctx.services.multiplayer.createDuel('g1', 'c1', 'u1', 'u2', 200);
     expect(duelRes.ok).toBe(true);

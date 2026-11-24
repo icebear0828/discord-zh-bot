@@ -55,12 +55,12 @@ export function buildLeaderboardMessage(
 
   const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
-      .setCustomId(`lb:${type}:${Math.max(1, res.page - 1)}`)
+      .setCustomId(`lb:${type}:${Math.max(1, res.page - 1)}:prev`)
       .setLabel('上一页')
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(res.page <= 1),
     new ButtonBuilder()
-      .setCustomId(`lb:${type}:${Math.min(res.totalPages, res.page + 1)}`)
+      .setCustomId(`lb:${type}:${Math.min(res.totalPages, res.page + 1)}:next`)
       .setLabel('下一页')
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(res.page >= res.totalPages),
