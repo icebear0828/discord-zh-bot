@@ -5,6 +5,7 @@ import { initRpgSchema, RpgRepo } from '../../src/db/repositories/rpgRepo.js';
 import { SocialPetRepo } from '../../src/db/repositories/socialPetRepo.js';
 import {
   computeItemEffectiveStats,
+  computeItemScore,
   DEFAULT_RPG_CONFIG,
   getEnhanceInfo,
   getSalvageValue,
@@ -713,5 +714,420 @@ describe('RpgService (Western Fantasy Roguelike Engine)', () => {
     expect(page2.items.map((c) => c.userId)).toEqual(['u_tie_a', 'u_tie_b']);
 
     db.close();
+  });
+
+  it('computes deterministic item scores that rank higher stats, rarity, and enhance levels higher', () => {
+    const commonBase = {
+      rarity: 'common' as const,
+      baseHp: 20,
+      baseAtk: 10,
+      baseDef: 4,
+      baseCritBp: 200,
+      enhanceLevel: 0,
+    };
+    const uncommonSameStats = { ...commonBase, rarity: 'uncommon' as const };
+    const rareSameStats = { ...commonBase, rarity: 'rare' as const };
+    const epicSameStats = { ...commonBase, rarity: 'epic' as const };
+    const legendarySameStats = { ...commonBase, rarity: 'legendary' as const };
+    const commonEnhanced = { ...commonBase, enhanceLevel: 3 };
+    const commonStrongerAtk = { ...commonBase, baseAtk: 15 };
+
+    // Deterministic repeatability
+    expect(computeItemScore(commonBase)).toBe(computeItemScore(commonBase));
+
+    // Higher rarity strictly increases score given identical base stats
+    expect(computeItemScore(uncommonSameStats)).toBeGreaterThan(computeItemScore(commonBase));
+    expect(computeItemScore(rareSameStats)).toBeGreaterThan(computeItemScore(uncommonSameStats));
+    expect(computeItemScore(epicSameStats)).toBeGreaterThan(computeItemScore(rareSameStats));
+    expect(computeItemScore(legendarySameStats)).toBeGreaterThan(computeItemScore(epicSameStats));
+
+    // Enhancement and stronger base stats increase score
+    expect(computeItemScore(commonEnhanced)).toBeGreaterThan(computeItemScore(commonBase));
+    expect(computeItemScore(commonStrongerAtk)).toBeGreaterThan(computeItemScore(commonBase));
+  });
+
+  it('equipBestGear equips highest-score gear across all 3 slots, respects tie-breakers, and handles empty/optimal bags', () => {
+    const { db, rpgRepo, rpg } = createFixture();
+    const now = Date.UTC(2026, 0, 20, 4, 0, 0);
+    rpg.chooseOrSwitchClass('g1', 'u1', 'warrior', now);
+
+    // Empty bag -> no_items
+    expect(rpg.equipBestGear('g1', 'u1', now)).toEqual({
+      ok: false,
+      reason: 'no_items',
+    });
+
+    // Weapons: weak equipped common vs stronger rare vs tie-score items
+    const weakSword = rpgRepo.createItem({
+      guildId: 'g1',
+      userId: 'u1',
+      name: '铁制短剑',
+      slot: 'weapon',
+      rarity: 'common',
+      baseHp: 8,
+      baseAtk: 10,
+      baseDef: 1,
+      baseCritBp: 150,
+      equipped: true,
+      createdAt: now,
+    });
+    const bestSword = rpgRepo.createItem({
+      guildId: 'g1',
+      userId: 'u1',
+      name: '龙炎魔刃',
+      slot: 'weapon',
+      rarity: 'epic',
+      baseHp: 30,
+      baseAtk: 45,
+      baseDef: 5,
+      baseCritBp: 600,
+      enhanceLevel: 2,
+      createdAt: now,
+    });
+
+    // Armor: best armor is ALREADY equipped, weaker armor is in bag
+    const bestArmor = rpgRepo.createItem({
+      guildId: 'g1',
+      userId: 'u1',
+      name: '银月板甲',
+      slot: 'armor',
+      rarity: 'rare',
+      baseHp: 90,
+      baseAtk: 0,
+      baseDef: 18,
+      baseCritBp: 0,
+      equipped: true,
+      createdAt: now,
+    });
+    rpgRepo.createItem({
+      guildId: 'g1',
+      userId: 'u1',
+      name: '皮质轻甲',
+      slot: 'armor',
+      rarity: 'common',
+      baseHp: 30,
+      baseAtk: 0,
+      baseDef: 5,
+      baseCritBp: 0,
+      createdAt: now,
+    });
+
+    // Accessory: tie-breaker check — exact same effective stats & score, higher enhanceLevel wins
+    // accLowEnh: baseAtk 10 @ +0 -> eff.atk = 10
+    // accHighEnh: baseAtk 9 @ +1 -> Math.round(9 * 1.15) = 10 -> eff.atk = 10 (identical score, higher enhanceLevel)
+    const accLowEnh = rpgRepo.createItem({
+      guildId: 'g1',
+      userId: 'u1',
+      name: '冒险者徽章A',
+      slot: 'accessory',
+      rarity: 'common',
+      baseHp: 0,
+      baseAtk: 10,
+      baseDef: 0,
+      baseCritBp: 0,
+      enhanceLevel: 0,
+      createdAt: now,
+    });
+    const accHighEnh = rpgRepo.createItem({
+      guildId: 'g1',
+      userId: 'u1',
+      name: '冒险者徽章B',
+      slot: 'accessory',
+      rarity: 'common',
+      baseHp: 0,
+      baseAtk: 9,
+      baseDef: 0,
+      baseCritBp: 0,
+      enhanceLevel: 1,
+      createdAt: now,
+    });
+    expect(computeItemScore(accLowEnh)).toBe(computeItemScore(accHighEnh));
+
+    // Another user's legendary weapon must not interfere
+    rpgRepo.createItem({
+      guildId: 'g1',
+      userId: 'other_user',
+      name: '晨曦裁决者',
+      slot: 'weapon',
+      rarity: 'legendary',
+      baseHp: 200,
+      baseAtk: 300,
+      baseDef: 50,
+      baseCritBp: 2000,
+      createdAt: now,
+    });
+
+    const res = rpg.equipBestGear('g1', 'u1', now);
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+
+    // Weapon swapped (weakSword -> bestSword), armor unchanged, accessory equipped (accHighEnh)
+    expect(res.unchangedCount).toBe(1);
+    expect(res.changed).toHaveLength(2);
+
+    const weaponChange = res.changed.find((c) => c.slot === 'weapon');
+    expect(weaponChange?.item.id).toBe(bestSword.id);
+    expect(weaponChange?.item.equipped).toBe(true);
+    expect(weaponChange?.previousItem?.id).toBe(weakSword.id);
+    expect(weaponChange?.previousItem?.equipped).toBe(false);
+
+    const accChange = res.changed.find((c) => c.slot === 'accessory');
+    expect(accChange?.item.id).toBe(accHighEnh.id);
+    expect(accChange?.item.equipped).toBe(true);
+    expect(accChange?.previousItem).toBeUndefined();
+
+    expect(res.stats.equippedItems.map((i) => i.id)).toEqual([
+      bestSword.id,
+      bestArmor.id,
+      accHighEnh.id,
+    ]);
+
+    // Running again when already optimal -> 0 changes, 3 unchanged
+    const resAgain = rpg.equipBestGear('g1', 'u1', now);
+    expect(resAgain.ok).toBe(true);
+    if (resAgain.ok) {
+      expect(resAgain.changed).toHaveLength(0);
+      expect(resAgain.unchangedCount).toBe(3);
+    }
+
+    // Tie-breaker 2: exact same score and enhanceLevel -> lower id wins
+    const tieFirst = rpgRepo.createItem({
+      guildId: 'g1',
+      userId: 'u2',
+      name: '圣殿巨剑#1',
+      slot: 'weapon',
+      rarity: 'rare',
+      baseHp: 20,
+      baseAtk: 25,
+      baseDef: 3,
+      baseCritBp: 300,
+      enhanceLevel: 1,
+      createdAt: now,
+    });
+    const tieSecond = rpgRepo.createItem({
+      guildId: 'g1',
+      userId: 'u2',
+      name: '圣殿巨剑#2',
+      slot: 'weapon',
+      rarity: 'rare',
+      baseHp: 20,
+      baseAtk: 25,
+      baseDef: 3,
+      baseCritBp: 300,
+      enhanceLevel: 1,
+      createdAt: now,
+    });
+    expect(tieFirst.id).toBeLessThan(tieSecond.id);
+    const tieRes = rpg.equipBestGear('g1', 'u2', now);
+    expect(tieRes.ok).toBe(true);
+    if (tieRes.ok) {
+      expect(tieRes.changed).toHaveLength(1);
+      expect(tieRes.changed[0]?.item.id).toBe(tieFirst.id);
+    }
+
+    db.close();
+  });
+
+  it('bulkSalvageItems salvages only unequipped items up to maxRarity, preserves equipped & higher rarities, and credits exact coins', () => {
+    const onCoinsEarned = vi.fn(() => ({ garnished: 999, net: 0 }));
+    const { db, profileRepo, rpgRepo, rpg } = createFixture({ onCoinsEarned });
+    const now = Date.UTC(2026, 0, 21, 4, 0, 0);
+
+    profileRepo.addCoins('g1', 'u1', 1000);
+
+    // Empty bag -> nothing_to_salvage
+    expect(rpg.bulkSalvageItems('g1', 'u1', 'uncommon', now)).toEqual({
+      ok: false,
+      reason: 'nothing_to_salvage',
+    });
+
+    // Equipped common & equipped uncommon MUST be preserved
+    const eqCommon = rpgRepo.createItem({
+      guildId: 'g1',
+      userId: 'u1',
+      name: '装备中的白装',
+      slot: 'weapon',
+      rarity: 'common',
+      baseHp: 5,
+      baseAtk: 8,
+      baseDef: 1,
+      baseCritBp: 0,
+      equipped: true,
+      createdAt: now,
+    });
+    const eqUncommon = rpgRepo.createItem({
+      guildId: 'g1',
+      userId: 'u1',
+      name: '装备中的绿装',
+      slot: 'armor',
+      rarity: 'uncommon',
+      baseHp: 25,
+      baseAtk: 0,
+      baseDef: 6,
+      baseCritBp: 0,
+      equipped: true,
+      createdAt: now,
+    });
+
+    // Unequipped common (+0 and +2) & unequipped uncommon (+1) -> should be salvaged by default ('uncommon')
+    const bagCommon0 = rpgRepo.createItem({
+      guildId: 'g1',
+      userId: 'u1',
+      name: '背包白装A',
+      slot: 'weapon',
+      rarity: 'common',
+      baseHp: 5,
+      baseAtk: 5,
+      baseDef: 1,
+      baseCritBp: 0,
+      enhanceLevel: 0,
+      createdAt: now,
+    });
+    const bagCommon2 = rpgRepo.createItem({
+      guildId: 'g1',
+      userId: 'u1',
+      name: '背包白装B',
+      slot: 'accessory',
+      rarity: 'common',
+      baseHp: 5,
+      baseAtk: 5,
+      baseDef: 1,
+      baseCritBp: 0,
+      enhanceLevel: 2,
+      createdAt: now,
+    });
+    const bagUncommon1 = rpgRepo.createItem({
+      guildId: 'g1',
+      userId: 'u1',
+      name: '背包绿装',
+      slot: 'armor',
+      rarity: 'uncommon',
+      baseHp: 20,
+      baseAtk: 0,
+      baseDef: 4,
+      baseCritBp: 0,
+      enhanceLevel: 1,
+      createdAt: now,
+    });
+
+    // Higher rarity items MUST be preserved when maxRarity = 'uncommon'
+    const bagRare = rpgRepo.createItem({
+      guildId: 'g1',
+      userId: 'u1',
+      name: '背包蓝装',
+      slot: 'weapon',
+      rarity: 'rare',
+      baseHp: 20,
+      baseAtk: 25,
+      baseDef: 4,
+      baseCritBp: 200,
+      createdAt: now,
+    });
+    const bagEpic = rpgRepo.createItem({
+      guildId: 'g1',
+      userId: 'u1',
+      name: '背包紫装',
+      slot: 'armor',
+      rarity: 'epic',
+      baseHp: 80,
+      baseAtk: 0,
+      baseDef: 20,
+      baseCritBp: 0,
+      createdAt: now,
+    });
+    const bagLegendary = rpgRepo.createItem({
+      guildId: 'g1',
+      userId: 'u1',
+      name: '背包橙装',
+      slot: 'accessory',
+      rarity: 'legendary',
+      baseHp: 60,
+      baseAtk: 30,
+      baseDef: 15,
+      baseCritBp: 900,
+      createdAt: now,
+    });
+
+    // Another user's unequipped common item must stay untouched
+    const otherUserItem = rpgRepo.createItem({
+      guildId: 'g1',
+      userId: 'u2',
+      name: '别人的白装',
+      slot: 'weapon',
+      rarity: 'common',
+      baseHp: 5,
+      baseAtk: 5,
+      baseDef: 1,
+      baseCritBp: 0,
+      createdAt: now,
+    });
+
+    const expectedCoins =
+      getSalvageValue(bagCommon0) + getSalvageValue(bagCommon2) + getSalvageValue(bagUncommon1);
+
+    const bulkRes = rpg.bulkSalvageItems('g1', 'u1', 'uncommon', now);
+    expect(bulkRes.ok).toBe(true);
+    if (!bulkRes.ok) return;
+
+    expect(bulkRes.salvagedCount).toBe(3);
+    expect(bulkRes.totalCoins).toBe(expectedCoins);
+    expect(bulkRes.balance).toBe(1000 + expectedCoins);
+    expect(bulkRes.byRarity).toEqual({ common: 2, uncommon: 1 });
+    expect(profileRepo.getOrCreate('g1', 'u1').coins).toBe(1000 + expectedCoins);
+    // Salvage sells own gear -> does not trigger onCoinsEarned garnishment
+    expect(onCoinsEarned).not.toHaveBeenCalled();
+
+    // Verify exact remaining items
+    const remainingIds = rpgRepo.listItems('g1', 'u1').map((i) => i.id);
+    expect(remainingIds).toHaveLength(5);
+    expect(remainingIds).toEqual(
+      expect.arrayContaining([
+        eqCommon.id,
+        eqUncommon.id,
+        bagRare.id,
+        bagEpic.id,
+        bagLegendary.id,
+      ]),
+    );
+    expect(rpgRepo.getItemById(otherUserItem.id)).not.toBeNull();
+
+    // Calling again with 'uncommon' -> nothing left to salvage
+    expect(rpg.bulkSalvageItems('g1', 'u1', 'uncommon', now)).toEqual({
+      ok: false,
+      reason: 'nothing_to_salvage',
+    });
+
+    // Calling with maxRarity = 'rare' -> salvages bagRare only (keeps equipped common/uncommon + epic/legendary)
+    const rareRes = rpg.bulkSalvageItems('g1', 'u1', 'rare', now);
+    expect(rareRes.ok).toBe(true);
+    if (rareRes.ok) {
+      expect(rareRes.salvagedCount).toBe(1);
+      expect(rareRes.totalCoins).toBe(getSalvageValue(bagRare));
+      expect(rareRes.byRarity).toEqual({ rare: 1 });
+      expect(rareRes.balance).toBe(1000 + expectedCoins + getSalvageValue(bagRare));
+    }
+    expect(rpgRepo.listItems('g1', 'u1').map((i) => i.id)).toEqual(
+      expect.arrayContaining([eqCommon.id, eqUncommon.id, bagEpic.id, bagLegendary.id]),
+    );
+    expect(rpgRepo.getItemById(bagRare.id)).toBeNull();
+
+    db.close();
+  });
+
+  it('exposes getUserCreditScore with 600 fallback and injected callback support', () => {
+    const defaultFixture = createFixture();
+    expect(defaultFixture.rpg.getUserCreditScore('g1', 'u1')).toBe(600);
+    defaultFixture.db.close();
+
+    const getCreditScore = vi.fn((guildId: string, userId: string) =>
+      guildId === 'g1' && userId === 'vip' ? 780 : 420,
+    );
+    const customFixture = createFixture({ getCreditScore });
+    expect(customFixture.rpg.getUserCreditScore('g1', 'vip')).toBe(780);
+    expect(customFixture.rpg.getUserCreditScore('g1', 'debtor')).toBe(420);
+    expect(getCreditScore).toHaveBeenCalledTimes(2);
+    expect(getCreditScore).toHaveBeenNthCalledWith(1, 'g1', 'vip');
+    expect(getCreditScore).toHaveBeenNthCalledWith(2, 'g1', 'debtor');
+    customFixture.db.close();
   });
 });
