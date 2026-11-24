@@ -116,6 +116,13 @@ describe('rpgTabletopCatalog', () => {
       expect(scene.choices.length).toBeGreaterThanOrEqual(4);
       expect(scene.choices.length).toBeLessThanOrEqual(5);
 
+      for (const cls of RPG_CLASSES) {
+        const eligible = scene.choices.filter(
+          (c) => !c.requiredClass || c.requiredClass === cls.key,
+        );
+        expect(eligible.length).toBeGreaterThanOrEqual(3);
+      }
+
       for (const choice of scene.choices) {
         assertChoiceValid(choice, seenChoiceIds);
         if (choice.requiredClass) coveredClasses.add(choice.requiredClass);
@@ -150,6 +157,17 @@ describe('rpgTabletopCatalog', () => {
       expect(bossAct!.phase2Narrative.trim().length).toBeGreaterThanOrEqual(40);
       expect(bossAct!.phase2Choices.length).toBeGreaterThanOrEqual(3);
       expect(bossAct!.victoryEpilogue.trim().length).toBeGreaterThanOrEqual(30);
+
+      for (const cls of RPG_CLASSES) {
+        expect(
+          bossAct!.phase1Choices.filter((c) => !c.requiredClass || c.requiredClass === cls.key)
+            .length,
+        ).toBeGreaterThanOrEqual(3);
+        expect(
+          bossAct!.phase2Choices.filter((c) => !c.requiredClass || c.requiredClass === cls.key)
+            .length,
+        ).toBeGreaterThanOrEqual(3);
+      }
 
       for (const choice of bossAct!.phase1Choices) {
         assertChoiceValid(choice, seenChoiceIds);

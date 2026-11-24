@@ -1283,6 +1283,26 @@ const CHAPTER_4_TO_6_SCENES: readonly TabletopSceneDef[] = [
         critFailText:
           '冷风灌进嘴里让你在念诵誓词时猛打了个响亮喷嚏，庄严气氛瞬间清零，龙裔们毫不留情地挥戟冲来。',
       },
+      {
+        id: 'ch5_spire_agility_slide',
+        label: '踏冰滑行绕过戟阵顺走龙血护符',
+        detail: '悬桥结满万年玄冰，不如顺势滑出一道优雅弧线偷家！',
+        stat: 'agility',
+        dc: 15,
+        rewardCoinsMult: 1.45,
+        rewardXpMult: 1.35,
+        dropChance: 0.5,
+        failHpPct: 0.15,
+        critFailHpPct: 0.3,
+        successText:
+          '你压低重心借玄冰斜坡飞速滑掠，从三名龙裔战戟下方惊险钻过，顺手摘下冰座上的龙血护符扬长而去。',
+        critSuccessText:
+          '你滑出堪比冰雪精灵的S形漂移，三名龙裔转身追击却互相绊成滚地葫芦，你顺手卷走整座冰座的龙巢贡品！',
+        failText:
+          '冰面暗藏霜刺凸起，你滑行半途急停不及，被龙裔战戟横拍在腰际撞出淤青。',
+        critFailText:
+          '你加速过猛刹不住车，像颗人形冰壶直直撞进龙裔队列怀里，收获了一顿热情的三重戟柄按摩。',
+      },
     ],
   },
   {
@@ -1651,6 +1671,26 @@ const CHAPTER_4_TO_6_SCENES: readonly TabletopSceneDef[] = [
           '领头武士看了一眼冷哼：“深渊王座只认血祭，不认黑吊国信用卡！”话音未落便挥剑劈来。',
         critFailText:
           '你甩卡时力道太大，金卡“啪”地拍在武士头盔缝里卡住了！暴怒的武士举着剑追着你满楼梯讨说法。',
+      },
+      {
+        id: 'ch6_pal_arcana_dispel',
+        label: '逆解深渊蚀刻切断黑甲魔力共鸣',
+        detail: '堕落甲胄全靠暗紫铭文驱动，抹去核心节点就能让它们原地停机。',
+        stat: 'arcana',
+        dc: 16,
+        rewardCoinsMult: 1.55,
+        rewardXpMult: 1.5,
+        dropChance: 0.56,
+        failHpPct: 0.16,
+        critFailHpPct: 0.32,
+        successText:
+          '你指尖划出净化解离弧光，精准抹断四具黑甲之间的暗影共鸣！堕落武士动作骤然僵直碎作星尘，留下一地高纯度星辉财宝。',
+        critSuccessText:
+          '你的逆向解咒不仅瞬间瓦解了整支黑甲仪仗，还将残余深渊魔力提纯成耀眼星晶，伴随稀有圣殿遗珍落入囊中！',
+        failText:
+          '深渊铭文反噬凶猛，一道暗紫电弧震退你的施法手势，领头武士趁机挥出凛冽剑气。',
+        critFailText:
+          '你误触了铠甲上的自爆警戒符，暗焰轰然炸开把你熏得满脸黑灰，顺带被巨剑震退数阶。',
       },
     ],
   },
