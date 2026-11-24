@@ -2215,6 +2215,15 @@ describe('menu router & multiplayer interaction flows', () => {
     expect(ctx.repos.guildConfig.getOrCreate('g1').ai.preset).toBe('roast');
     expect(ctx.repos.guildConfig.getOrCreate('g1').ai.personaName).toBe('毒舌使者');
 
+    const beautySelect = createStringSelectMock({
+      customId: 'menu:admin_ai_preset',
+      userId: 'admin1',
+      values: ['beauty'],
+    });
+    await routeInteraction(beautySelect.interaction, ctx);
+    expect(ctx.repos.guildConfig.getOrCreate('g1').ai.preset).toBe('beauty');
+    expect(ctx.repos.guildConfig.getOrCreate('g1').ai.personaName).toBe('黑吊国第一美女');
+
     // Configure free-chat channels & ignored channels via ChannelSelect
     const freeChan = createChannelSelectMock({
       customId: 'menu:chan:admin_ai_free',

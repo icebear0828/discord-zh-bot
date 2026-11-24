@@ -377,6 +377,15 @@ describe('aiService helpers & AiMemoryRepo', () => {
       expect(preset.identityPrompt).toContain('草莓布丁酱');
       expect(preset.identityPrompt).toContain('icebear');
     }
+    expect(AI_PERSONA_PRESETS.beauty.personaName).toBe('黑吊国第一美女');
+    expect(AI_PERSONA_PRESETS.beauty.identityPrompt).toContain('黑吊国第一美女');
+    expect(AI_PERSONA_PRESETS.beauty.soulPrompt).toContain('防转述');
+    expect(AI_PERSONA_PRESETS.beauty.soulPrompt).toContain('防抢话');
+    expect(AI_PERSONA_PRESETS.beauty.soulPrompt).toContain('嘴角');
+    expect(AI_PERSONA_PRESETS.beauty.identityPrompt).not.toContain('康斯坦丁');
+    expect(AI_PERSONA_PRESETS.beauty.identityPrompt).not.toContain('我即浪潮');
+    expect(AI_PERSONA_PRESETS.beauty.soulPrompt).not.toContain('不少于1000字');
+    expect(AI_PERSONA_PRESETS.beauty.soulPrompt).not.toContain('1200-1500字');
     expect(DEFAULT_AI_CONFIG.worldbook.length).toBeGreaterThan(0);
     expect(DEFAULT_AI_CONFIG.worldbook.length).toBeLessThanOrEqual(1000);
 

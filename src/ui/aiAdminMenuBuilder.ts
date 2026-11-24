@@ -25,6 +25,7 @@ const AI_PRESET_LABELS: Record<string, string> = {
   community: AI_PERSONA_PRESETS.community.label,
   roast: AI_PERSONA_PRESETS.roast.label,
   assistant: AI_PERSONA_PRESETS.assistant.label,
+  beauty: AI_PERSONA_PRESETS.beauty.label,
   custom: '🛠️ 自定义人格',
 };
 
