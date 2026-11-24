@@ -28,6 +28,11 @@ export interface LevelingConfig {
   announceEnabled: boolean;
   levelUpTitle: string;
   levelUpTemplate: string;
+  statEnabled: boolean;
+  statName: string;
+  statUnit: string;
+  statMinGain: number;
+  statMaxGain: number;
   ignoredChannelIds: string[];
   channelMultipliers: Record<string, number>;
   stackRoles: boolean;
@@ -134,6 +139,11 @@ export const DEFAULT_LEVELING_CONFIG: LevelingConfig = {
   announceEnabled: true,
   levelUpTitle: '🎉 等级提升！',
   levelUpTemplate: '恭喜 {user} 升到 **Lv.{level}**！',
+  statEnabled: true,
+  statName: '成长值',
+  statUnit: '点',
+  statMinGain: 1,
+  statMaxGain: 3,
   ignoredChannelIds: [],
   channelMultipliers: {},
   stackRoles: true,

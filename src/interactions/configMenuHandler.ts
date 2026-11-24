@@ -104,7 +104,7 @@ function buildLevelMsgModal(title: string, template: string): ModalBuilder {
           .setStyle(TextInputStyle.Paragraph)
           .setMinLength(1)
           .setMaxLength(400)
-          .setPlaceholder('可用变量：{user} {username} {level} {oldLevel} {coins} {currency} {roles}')
+          .setPlaceholder('可用变量：{user} {level} {stat} {statGained} {statUnit} {coins} {roles}')
           .setValue(truncateText(template, 400))
           .setRequired(true),
       ),
@@ -903,6 +903,9 @@ export async function tryHandleConfigMenuModal(
       coins: cfg.leveling.levelUpCoinReward,
       currency: cfg.economy.currencyName,
       roles: '@示例身份组',
+      stat: 18,
+      statGained: 2,
+      statUnit: cfg.leveling.statUnit,
     });
 
     await respondFromModal(

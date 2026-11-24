@@ -181,6 +181,7 @@ describe('env & database schema', () => {
     expect(colNames).toContain('card_bio');
     expect(colNames).toContain('card_color');
     expect(colNames).toContain('level_offset');
+    expect(colNames).toContain('stat_value');
 
     const row = db
       .prepare('SELECT coins, bank_coins, last_bank_interest_date FROM member_profiles WHERE guild_id = ? AND user_id = ?')
@@ -223,6 +224,10 @@ describe('env & database schema', () => {
     });
     expect(cleared.cardNickname).toBeNull();
     expect(profileRepo.getOrCreate('g1', 'u1').cardBio).toBeNull();
+
+    const withStat = profileRepo.setStatValue('g1', 'u1', 114514);
+    expect(withStat.statValue).toBe(114514);
+    expect(profileRepo.getOrCreate('g1', 'u1').statValue).toBe(114514);
 
     db.close();
   });

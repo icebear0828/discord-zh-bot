@@ -140,7 +140,7 @@ function parseSocialAction(raw: string | undefined): InteractionAction {
 }
 
 function parseLeaderboardType(raw: string | undefined): LeaderboardType {
-  if (raw === 'coins' || raw === 'invites') return raw;
+  if (raw === 'coins' || raw === 'invites' || raw === 'stat') return raw;
   return 'xp';
 }
 
@@ -834,6 +834,7 @@ export async function handleMenuButton(
       xp: { key: 'leveling', name: '等级与热度' },
       coins: { key: 'economy', name: '经济系统' },
       invites: { key: 'invites', name: '邀请追踪' },
+      stat: { key: 'leveling', name: '等级与热度' },
     };
     const mod = moduleMap[lbType];
     const disabledMsg = checkModuleDisabled(ctx, guildId, mod.key, mod.name);
@@ -885,6 +886,7 @@ export async function handleMenuButton(
         xp: { key: 'leveling', name: '等级与热度' },
         coins: { key: 'economy', name: '经济系统' },
         invites: { key: 'invites', name: '邀请追踪' },
+        stat: { key: 'leveling', name: '等级与热度' },
       };
       const mod = moduleMap[lbType];
       const disabledMsg = checkModuleDisabled(ctx, guildId, mod.key, mod.name);
@@ -900,11 +902,13 @@ export async function handleMenuButton(
         );
         return;
       }
-      const cfg = ctx.repos.guildConfig.getOrCreate(guildId).economy;
+      const fullCfg = ctx.repos.guildConfig.getOrCreate(guildId);
+      const cfg = fullCfg.economy;
       const lbNameMap: Record<LeaderboardType, string> = {
         xp: '等级经验排行榜',
         coins: `${cfg.currencyName}富豪榜`,
         invites: '邀请贡献排行榜',
+        stat: `${fullCfg.leveling.statName}排行榜`,
       };
       const publicEmbed = buildPublicLeaderboardEmbed(ctx, guildId, lbType, lbPage);
       const sent = await sendPublicBroadcast(interaction, {

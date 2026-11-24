@@ -50,6 +50,9 @@ export function buildLevelUpEmbed(
     coins: res.coinsAwarded,
     currency: cfg.economy.currencyName,
     roles: rolesText,
+    stat: res.statValue,
+    statGained: res.statGained,
+    statUnit: cfg.leveling.statUnit,
   };
 
   const rawTitle = cfg.leveling.levelUpTitle.trim() || DEFAULT_LEVELING_CONFIG.levelUpTitle;
@@ -62,6 +65,16 @@ export function buildLevelUpEmbed(
   if (res.coinsAwarded > 0 && !rawTemplate.includes('{coins}')) {
     rewardLines.push(
       `获得升级奖励：${cfg.economy.currencyEmoji} **+${res.coinsAwarded}** ${cfg.economy.currencyName}`,
+    );
+  }
+  if (
+    cfg.leveling.statEnabled &&
+    res.statGained > 0 &&
+    !rawTemplate.includes('{stat}') &&
+    !rawTemplate.includes('{statGained}')
+  ) {
+    rewardLines.push(
+      `📏 ${cfg.leveling.statName}：+${res.statGained} ${cfg.leveling.statUnit}（当前 **${res.statValue}** ${cfg.leveling.statUnit}）`,
     );
   }
   if (res.rolesToAdd.length > 0 && !rawTemplate.includes('{roles}')) {

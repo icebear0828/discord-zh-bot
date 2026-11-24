@@ -77,6 +77,15 @@ export const rankCommand: CommandDefinition = {
           value: `**${data.profile.coins}**`,
           inline: true,
         },
+        ...(cfg.leveling.statEnabled
+          ? [
+              {
+                name: `📏 ${cfg.leveling.statName}`,
+                value: `**${data.profile.statValue}** ${cfg.leveling.statUnit}`,
+                inline: true,
+              },
+            ]
+          : []),
         {
           name: '📊 本级经验进度',
           value: `\`${bar}\` **${pct}%**\n${data.progress.currentLevelXp} / ${data.progress.nextLevelXp} XP（累计 ${data.profile.xp} XP）`,

@@ -319,6 +319,7 @@ describe('menuBuilder Discord component constraints & schema integration', () =>
       { page: 'leaderboard', lbType: 'xp', lbPage: 1 },
       { page: 'leaderboard', lbType: 'coins', lbPage: 1 },
       { page: 'leaderboard', lbType: 'invites', lbPage: 1 },
+      { page: 'leaderboard', lbType: 'stat', lbPage: 1 },
       { page: 'admin' },
       { page: 'admin_econ' },
       { page: 'admin_lvl' },

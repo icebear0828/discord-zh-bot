@@ -131,7 +131,7 @@ describe('levelingService', () => {
 
   it('renders custom level-up templates, avoids duplicate reward lines, and parses card colors', () => {
     const rendered = renderLevelUpTemplate(
-      '{user} ({username}) 从 {oldLevel} 升到 Lv.{level}，奖 {coins} {currency}，身份组 {roles}',
+      '{user} ({username}) 从 {oldLevel} 升到 Lv.{level}，奖 {coins} {currency}，身份组 {roles}，{stat} {statUnit} (+{statGained})',
       {
         user: '<@u1>',
         username: '小熊',
@@ -140,9 +140,12 @@ describe('levelingService', () => {
         coins: 200,
         currency: '星币',
         roles: '<@&r1>',
+        stat: 30,
+        statGained: 2,
+        statUnit: '厘米',
       },
     );
-    expect(rendered).toBe('<@u1> (小熊) 从 4 升到 Lv.5，奖 200 星币，身份组 <@&r1>');
+    expect(rendered).toBe('<@u1> (小熊) 从 4 升到 Lv.5，奖 200 星币，身份组 <@&r1>，30 厘米 (+2)');
 
     // Guard against double-substitution if username contains a placeholder token
     const safeRendered = renderLevelUpTemplate('{username} -> Lv.{level}', {
@@ -153,6 +156,9 @@ describe('levelingService', () => {
       coins: 0,
       currency: '星币',
       roles: '无',
+      stat: 10,
+      statGained: 1,
+      statUnit: '点',
     });
     expect(safeRendered).toBe('{level} -> Lv.9');
 
@@ -175,29 +181,32 @@ describe('levelingService', () => {
       oldLevel: 1,
       newLevel: 2,
       coinsAwarded: 100,
+      statGained: 2,
+      statValue: 5,
       rolesToAdd: ['r2'],
       rolesToRemove: [],
     };
 
-    // Default template auto-appends coins & roles
+    // Default template auto-appends coins, stat, & roles
     const defaultEmbed = buildLevelUpEmbed(cfg, fakeMember, fakeRes).toJSON();
     expect(defaultEmbed.title).toBe('🎉 等级提升！');
     expect(defaultEmbed.description).toContain('恭喜 <@u1> 升到 **Lv.2**！');
     expect(defaultEmbed.description).toContain('获得升级奖励');
+    expect(defaultEmbed.description).toContain('+2 点');
     expect(defaultEmbed.description).toContain('<@&r2>');
 
-    // Custom template already mentioning {coins} and {roles} does not duplicate lines
+    // Custom template already mentioning {coins}, {stat}, and {roles} does not duplicate lines
     const customCfg = {
       ...cfg,
       leveling: {
         ...cfg.leveling,
         levelUpTitle: '🚀 晋升 Lv.{level}',
-        levelUpTemplate: '太强了 {user}！送你 {coins} {currency} 和 {roles}',
+        levelUpTemplate: '牛逼 {user} 的吊变大了，当前为 **{stat}** 厘米（+{coins} {currency}，{roles}）',
       },
     };
     const customEmbed = buildLevelUpEmbed(customCfg, fakeMember, fakeRes).toJSON();
     expect(customEmbed.title).toBe('🚀 晋升 Lv.2');
-    expect(customEmbed.description).toBe('太强了 <@u1>！送你 100 星币 和 <@&r2>');
+    expect(customEmbed.description).toBe('牛逼 <@u1> 的吊变大了，当前为 **5** 厘米（+100 星币，<@&r2>）');
 
     // Card color parsing
     expect(parseCardColor('')).toEqual({ ok: true, normalized: null, colorInt: null });
@@ -254,6 +263,35 @@ describe('levelingService', () => {
     expect(lb.items[0]?.secondaryValue).toBe(114514);
     expect(lb.items[1]?.userId).toBe('u-ice');
     expect(lb.items[1]?.secondaryValue).toBe(30);
+
+    // Independent growth stat increments on level-up and ranks independently of level
+    const cfg = configRepo.getOrCreate('g1');
+    configRepo.updateLeveling('g1', {
+      ...cfg.leveling,
+      statEnabled: true,
+      statName: '长度',
+      statUnit: '厘米',
+      statMinGain: 1,
+      statMaxGain: 3,
+    });
+    profileRepo.setStatValue('g1', 'u-straw', 114514);
+    profileRepo.setStatValue('g1', 'u-ice', 30);
+
+    const pNew = profileRepo.getOrCreate('g1', 'u-new');
+    profileRepo.save({ ...pNew, xp: 30, level: 0 });
+    // rng = 0.5 -> xp = 20 -> total 50 >= 40 (level 0 -> 1); stat gain = 1 + floor(0.5 * 3) = 2
+    const upRes = svc.awardMessageXp('g1', 'u-new', 'c1', 3_000_000, () => 0.5);
+    expect(upRes.leveledUp).toBe(true);
+    expect(upRes.statGained).toBe(2);
+    expect(upRes.statValue).toBe(2);
+
+    const statLb = svc.getLeaderboard('g1', 'stat', 1, 10);
+    expect(statLb.items[0]?.userId).toBe('u-straw');
+    expect(statLb.items[0]?.primaryValue).toBe(114514);
+    expect(statLb.items[1]?.userId).toBe('u-ice');
+    expect(statLb.items[1]?.primaryValue).toBe(30);
+    expect(statLb.items[2]?.userId).toBe('u-new');
+    expect(statLb.items[2]?.primaryValue).toBe(2);
 
     db.close();
   });

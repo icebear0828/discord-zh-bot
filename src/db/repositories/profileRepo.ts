@@ -6,6 +6,7 @@ export interface MemberProfile {
   xp: number;
   level: number;
   levelOffset: number;
+  statValue: number;
   messageCount: number;
   voiceMinutes: number;
   coins: number;
@@ -41,6 +42,7 @@ interface MemberProfileRow {
   xp: number;
   level: number;
   level_offset?: number;
+  stat_value?: number;
   message_count: number;
   voice_minutes: number;
   coins: number;
@@ -77,6 +79,7 @@ function mapProfile(row: MemberProfileRow): MemberProfile {
     xp: row.xp,
     level: row.level,
     levelOffset: row.level_offset ?? 0,
+    statValue: row.stat_value ?? 0,
     messageCount: row.message_count,
     voiceMinutes: row.voice_minutes,
     coins: row.coins,
@@ -128,7 +131,7 @@ export class ProfileRepo {
     this.db
       .prepare(
         `UPDATE member_profiles SET
-          xp = ?, level = ?, level_offset = ?, message_count = ?, voice_minutes = ?,
+          xp = ?, level = ?, level_offset = ?, stat_value = ?, message_count = ?, voice_minutes = ?,
           coins = ?, bank_coins = ?, daily_streak = ?, last_daily_date = ?,
           last_bank_interest_date = ?, last_work_at = ?, last_rob_at = ?, rob_shield_until = ?,
           equipped_title = ?, card_nickname = ?, card_tag = ?, card_bio = ?, card_color = ?,
@@ -140,6 +143,7 @@ export class ProfileRepo {
         profile.xp,
         profile.level,
         profile.levelOffset,
+        profile.statValue,
         profile.messageCount,
         profile.voiceMinutes,
         profile.coins,
@@ -200,6 +204,15 @@ export class ProfileRepo {
     };
   }
 
+  setStatValue(guildId: string, userId: string, value: number): MemberProfile {
+    const profile = this.getOrCreate(guildId, userId);
+    const nextStat = Math.max(0, Math.floor(value));
+    this.db
+      .prepare('UPDATE member_profiles SET stat_value = ? WHERE guild_id = ? AND user_id = ?')
+      .run(nextStat, guildId, userId);
+    return { ...profile, statValue: nextStat };
+  }
+
   addCoins(guildId: string, userId: string, delta: number): MemberProfile {
     const profile = this.getOrCreate(guildId, userId);
     const nextCoins = Math.max(0, profile.coins + delta);
@@ -246,6 +259,22 @@ export class ProfileRepo {
     const rows = this.db
       .prepare(
         'SELECT * FROM member_profiles WHERE guild_id = ? ORDER BY (coins + bank_coins) DESC, coins DESC, xp DESC LIMIT ? OFFSET ?',
+      )
+      .all(guildId, limit, offset) as MemberProfileRow[];
+    const total = this.db
+      .prepare('SELECT COUNT(*) AS cnt FROM member_profiles WHERE guild_id = ?')
+      .get(guildId) as { cnt: number };
+    return { items: rows.map(mapProfile), total: total.cnt };
+  }
+
+  listLeaderboardByStat(
+    guildId: string,
+    limit: number,
+    offset: number,
+  ): { items: MemberProfile[]; total: number } {
+    const rows = this.db
+      .prepare(
+        'SELECT * FROM member_profiles WHERE guild_id = ? ORDER BY stat_value DESC, level DESC, xp DESC LIMIT ? OFFSET ?',
       )
       .all(guildId, limit, offset) as MemberProfileRow[];
     const total = this.db

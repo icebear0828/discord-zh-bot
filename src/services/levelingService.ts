@@ -21,6 +21,8 @@ export interface AwardXpResult {
   oldLevel: number;
   newLevel: number;
   coinsAwarded: number;
+  statGained: number;
+  statValue: number;
   rolesToAdd: string[];
   rolesToRemove: string[];
 }
@@ -42,7 +44,7 @@ export interface RankCardData {
   boostExpiresAt: number;
 }
 
-export type LeaderboardType = 'xp' | 'coins' | 'invites';
+export type LeaderboardType = 'xp' | 'coins' | 'invites' | 'stat';
 
 export interface LeaderboardEntry {
   userId: string;
@@ -67,6 +69,9 @@ export interface LevelUpTemplateVars {
   coins: number;
   currency: string;
   roles: string;
+  stat: number;
+  statGained: number;
+  statUnit: string;
 }
 
 export function renderLevelUpTemplate(template: string, vars: LevelUpTemplateVars): string {
@@ -78,10 +83,13 @@ export function renderLevelUpTemplate(template: string, vars: LevelUpTemplateVar
     '{coins}': String(vars.coins),
     '{currency}': vars.currency,
     '{roles}': vars.roles,
+    '{stat}': String(vars.stat),
+    '{statGained}': String(vars.statGained),
+    '{statUnit}': vars.statUnit,
   };
 
   return template.replace(
-    /\{(user|username|level|oldLevel|coins|currency|roles)\}/g,
+    /\{(user|username|level|oldLevel|coins|currency|roles|stat|statGained|statUnit)\}/g,
     (match) => tokenMap[match] ?? match,
   );
 }
@@ -243,6 +251,12 @@ export class LevelingService {
       },
       cfg.leveling.levelUpCoinReward,
       cfg.leveling.stackRoles,
+      {
+        statEnabled: cfg.leveling.statEnabled,
+        statMinGain: cfg.leveling.statMinGain,
+        statMaxGain: cfg.leveling.statMaxGain,
+      },
+      rng,
     );
   }
 
@@ -280,6 +294,11 @@ export class LevelingService {
       },
       cfg.leveling.levelUpCoinReward,
       cfg.leveling.stackRoles,
+      {
+        statEnabled: cfg.leveling.statEnabled,
+        statMinGain: cfg.leveling.statMinGain,
+        statMaxGain: cfg.leveling.statMaxGain,
+      },
     );
   }
 
@@ -310,6 +329,8 @@ export class LevelingService {
       oldLevel,
       newLevel,
       coinsAwarded: 0,
+      statGained: 0,
+      statValue: profile.statValue,
       rolesToAdd: roleChanges.rolesToAdd,
       rolesToRemove: roleChanges.rolesToRemove,
     };
@@ -370,7 +391,9 @@ export class LevelingService {
     const res =
       type === 'coins'
         ? this.profileRepo.listLeaderboardByCoins(guildId, pageSize, offset)
-        : this.profileRepo.listLeaderboardByXp(guildId, pageSize, offset);
+        : type === 'stat'
+          ? this.profileRepo.listLeaderboardByStat(guildId, pageSize, offset)
+          : this.profileRepo.listLeaderboardByXp(guildId, pageSize, offset);
 
     const totalPages = Math.max(1, Math.ceil(res.total / pageSize));
     return {
@@ -380,7 +403,12 @@ export class LevelingService {
       totalItems: res.total,
       items: res.items.map((p) => ({
         userId: p.userId,
-        primaryValue: type === 'coins' ? p.coins + p.bankCoins : p.xp,
+        primaryValue:
+          type === 'coins'
+            ? p.coins + p.bankCoins
+            : type === 'stat'
+              ? p.statValue
+              : p.xp,
         secondaryValue: type === 'coins' ? p.bankCoins : p.level,
         equippedTitle: p.equippedTitle,
       })),
@@ -431,6 +459,8 @@ export class LevelingService {
     },
     levelUpCoinReward: number,
     stackRoles: boolean,
+    statCfg: { statEnabled: boolean; statMinGain: number; statMaxGain: number },
+    rng: () => number = Math.random,
   ): AwardXpResult {
     const oldLevel = profile.level;
     const totalXp = profile.xp + grantedXp;
@@ -439,10 +469,21 @@ export class LevelingService {
     const levelsGained = Math.max(0, newLevel - oldLevel);
     const coinsAwarded = levelsGained * Math.max(0, levelUpCoinReward);
 
+    let statGained = 0;
+    if (levelsGained > 0 && statCfg.statEnabled) {
+      const minG = Math.max(0, Math.min(statCfg.statMinGain, statCfg.statMaxGain));
+      const maxG = Math.max(0, Math.max(statCfg.statMinGain, statCfg.statMaxGain));
+      for (let i = 0; i < levelsGained; i++) {
+        statGained += minG + Math.floor(rng() * (maxG - minG + 1));
+      }
+    }
+    const nextStatValue = profile.statValue + statGained;
+
     const updated: MemberProfile = {
       ...profile,
       xp: totalXp,
       level: newLevel,
+      statValue: nextStatValue,
       messageCount: profile.messageCount + meta.messageIncrement,
       voiceMinutes: profile.voiceMinutes + meta.voiceMinutesIncrement,
       coins: profile.coins + coinsAwarded,
@@ -469,6 +510,8 @@ export class LevelingService {
       oldLevel,
       newLevel,
       coinsAwarded,
+      statGained,
+      statValue: nextStatValue,
       rolesToAdd: roleChanges.rolesToAdd,
       rolesToRemove: roleChanges.rolesToRemove,
     };
@@ -525,6 +568,8 @@ export class LevelingService {
       oldLevel: profile.level,
       newLevel: profile.level,
       coinsAwarded: 0,
+      statGained: 0,
+      statValue: profile.statValue,
       rolesToAdd: [],
       rolesToRemove: [],
     };

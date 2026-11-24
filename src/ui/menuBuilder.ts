@@ -986,7 +986,9 @@ function createRankEmbed(
   feedback: MenuFeedback | undefined,
   nowMs: number,
 ): EmbedBuilder {
-  const cfg = ctx.repos.guildConfig.getOrCreate(guildId).economy;
+  const guildCfg = ctx.repos.guildConfig.getOrCreate(guildId);
+  const cfg = guildCfg.economy;
+  const lvlCfg = guildCfg.leveling;
   const data = ctx.services.leveling.getRankCardData(guildId, actor.id, nowMs);
   const titleBadge = data.profile.equippedTitle ? `「${data.profile.equippedTitle}」` : '';
   const bar = renderProgressBar(data.progress.progressRatio, 14);
@@ -1020,9 +1022,13 @@ function createRankEmbed(
   if (data.profile.cardBio) {
     cardHeaderLines.push(`💬 *${data.profile.cardBio}*`);
   }
+  const statLine = lvlCfg.statEnabled
+    ? `📏 ${lvlCfg.statName}：**${data.profile.statValue}** ${lvlCfg.statUnit}`
+    : null;
   const rankDescription = [
     ...cardHeaderLines,
     `🏅 **Lv.${data.progress.level}** ｜ 全服第 **#${data.rank}** / ${data.totalMembers} 名`,
+    ...(statLine ? [statLine] : []),
     `\`${bar}\` **${pct}%**（${data.progress.currentLevelXp} / ${data.progress.nextLevelXp} XP，累计 ${data.profile.xp} XP）`,
   ].join('\n');
 
@@ -1073,6 +1079,7 @@ function buildRankView(
   feedback: MenuFeedback | undefined,
   nowMs: number,
 ): BuiltMenuMessage {
+  const lvlCfg = ctx.repos.guildConfig.getOrCreate(guildId).leveling;
   const embed = createRankEmbed(ctx, guildId, actor, feedback, nowMs).setFooter({
     text: '🔒 当前仅自己可见；点击「📢 晒出我的名片」可发送到当前频道展示',
   });
@@ -1088,6 +1095,7 @@ function buildRankView(
   const shareRow = buttonRow(
     makeButton('menu:modal:edit_card', '✏️ 编辑身份证', ButtonStyle.Primary),
     makeButton('menu:nav:self_roles', '🎭 自助身份组', ButtonStyle.Secondary),
+    makeButton('menu:rank:stat:1', `📏 ${lvlCfg.statName}榜`, ButtonStyle.Secondary),
     makeButton('menu:share:rank', '📢 晒出我的名片', ButtonStyle.Success),
     makeButton('menu:nav:bag', '🎒 背包称号', ButtonStyle.Secondary),
   );
@@ -1102,13 +1110,16 @@ function createLeaderboardEmbedAndMeta(
   lbPage: number,
   feedback: MenuFeedback | undefined,
 ): { embed: EmbedBuilder; page: number; totalPages: number } {
-  const cfg = ctx.repos.guildConfig.getOrCreate(guildId).economy;
+  const guildCfg = ctx.repos.guildConfig.getOrCreate(guildId);
+  const cfg = guildCfg.economy;
+  const lvlCfg = guildCfg.leveling;
   const res = ctx.services.leveling.getLeaderboard(guildId, lbType, lbPage, 10);
 
   const titleMap: Record<LeaderboardType, string> = {
     xp: '📈 服务器等级经验排行榜',
     coins: `💰 服务器${cfg.currencyName}富豪榜`,
     invites: '📨 服务器邀请贡献排行榜',
+    stat: `📏 服务器${lvlCfg.statName}排行榜`,
   };
 
   const lines = res.items.map((item, idx) => {
@@ -1121,6 +1132,9 @@ function createLeaderboardEmbedAndMeta(
     }
     if (lbType === 'coins') {
       return `${medal} <@${item.userId}> ${titleTag} — ${cfg.currencyEmoji} **${item.primaryValue}** ${cfg.currencyName}（银行 ${item.secondaryValue}）`;
+    }
+    if (lbType === 'stat') {
+      return `${medal} <@${item.userId}> ${titleTag} — 📏 **${item.primaryValue}** ${lvlCfg.statUnit}（Lv.${item.secondaryValue}）`;
     }
     return `${medal} <@${item.userId}> — 成功邀请 **${item.primaryValue}** 人`;
   });
@@ -1184,6 +1198,7 @@ function buildLeaderboardView(
     makeButton('menu:nav:home', '🏠 主菜单', ButtonStyle.Secondary),
   );
 
+  const lvlCfg = ctx.repos.guildConfig.getOrCreate(guildId).leveling;
   const prevPage = Math.max(1, page - 1);
   const nextPage = Math.min(totalPages, page + 1);
   const pagerRow = buttonRow(
@@ -1198,6 +1213,11 @@ function buildLeaderboardView(
       '➡️ 下一页',
       ButtonStyle.Secondary,
       page >= totalPages,
+    ),
+    makeButton(
+      'menu:rank:stat:1',
+      `📏 ${lvlCfg.statName}榜`,
+      lbType === 'stat' ? ButtonStyle.Primary : ButtonStyle.Secondary,
     ),
     makeButton(`menu:share:lb:${lbType}:${page}`, '📢 晒出排行榜', ButtonStyle.Success),
   );
@@ -1344,6 +1364,7 @@ function buildAdminLvlView(
     `🎖️ **升级身份组奖励**：${rewardsSummary}（${l.stackRoles ? '保留旧组' : '仅留最高'}）`,
     `🎙️ **语音挂机经验**：${l.voiceEnabled ? `✅ 已开启（每分钟 **${l.voiceXpPerMin}** XP）` : `⛔ 已关闭（预设 ${l.voiceXpPerMin} XP/分）`}`,
     `📢 **升级公告播报**：${l.announceEnabled ? '✅ 已开启' : '⛔ 已关闭'}${l.announceChannelId ? `（固定频道 <#${l.announceChannelId}>）` : '（当前发言频道）'}`,
+    `📏 **独立成长数值**：${l.statEnabled ? `${l.statName}（每次升级 +${l.statMinGain}~${l.statMaxGain} ${l.statUnit}）` : '已关闭'}`,
     `📝 **升级提示语**：标题「${truncateText(l.levelUpTitle, 24)}」｜ 内容「${truncateText(l.levelUpTemplate, 48)}」`,
   ].join('\n');
 

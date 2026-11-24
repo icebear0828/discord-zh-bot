@@ -13,7 +13,7 @@ export async function handleLeaderboardButton(
   const rawType = parts[1];
   const rawPage = Number(parts[2] ?? '1');
   const type: LeaderboardType =
-    rawType === 'coins' || rawType === 'invites' ? rawType : 'xp';
+    rawType === 'coins' || rawType === 'invites' || rawType === 'stat' ? rawType : 'xp';
   const page = Number.isFinite(rawPage) && rawPage >= 1 ? rawPage : 1;
 
   try {

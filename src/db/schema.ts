@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS member_profiles (
   xp INTEGER NOT NULL DEFAULT 0,
   level INTEGER NOT NULL DEFAULT 0,
   level_offset INTEGER NOT NULL DEFAULT 0,
+  stat_value INTEGER NOT NULL DEFAULT 0,
   message_count INTEGER NOT NULL DEFAULT 0,
   voice_minutes INTEGER NOT NULL DEFAULT 0,
   coins INTEGER NOT NULL DEFAULT 0,
@@ -237,5 +238,8 @@ export function initSchema(db: Database.Database): void {
   }
   if (!columnNames.has('level_offset')) {
     db.exec('ALTER TABLE member_profiles ADD COLUMN level_offset INTEGER NOT NULL DEFAULT 0;');
+  }
+  if (!columnNames.has('stat_value')) {
+    db.exec('ALTER TABLE member_profiles ADD COLUMN stat_value INTEGER NOT NULL DEFAULT 0;');
   }
 }
