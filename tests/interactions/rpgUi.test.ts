@@ -1149,6 +1149,14 @@ describe('RPG Interaction Handlers & Public Broadcasts', () => {
     );
     expect(ctx.services.rpg.getActiveTabletopRun(GUILD_ID, USER_ID)?.playerHp).toBeGreaterThan(50);
 
+    // Fund pocket coins and execute coin bribe as normal-credit player -> renders 金币开道 (NOT 金卡刷脸)
+    ctx.repos.profile.addCoins(GUILD_ID, USER_ID, 5000);
+    const bribeOkBtn = createButtonMock({ customId: 'rpg:tt_choice:ch1_toll_bribe' });
+    await handleRpgButton(bribeOkBtn.interaction, ctx);
+    const bribeOkDesc = bribeOkBtn.update.mock.calls[0]![0].embeds?.[0]?.toJSON().description ?? '';
+    expect(bribeOkDesc).toContain('金币开道');
+    expect(bribeOkDesc).not.toContain('金卡刷脸');
+
     const retreatBtn = createButtonMock({ customId: 'rpg:tt_act:retreat' });
     await handleRpgButton(retreatBtn.interaction, ctx);
     expect(retreatBtn.update.mock.calls[0]![0].embeds?.[0]?.toJSON().description).toContain(

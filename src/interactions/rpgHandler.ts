@@ -223,7 +223,9 @@ function buildManualTabletopShareEmbed(input: {
         : o.outcome === 'crit_fail'
           ? `💀 自然1大失败（1${modStr} vs DC ${o.dc ?? '-'}）`
           : o.outcome === 'auto'
-            ? '💰/👑 免检通过'
+            ? o.stat
+              ? '👑 金卡刷脸 · 免检通过'
+              : '💰 金币开道 · 免检通过'
             : `🎲 掷出 ${o.rolled}${modStr} = ${o.total}（DC ${o.dc ?? '-'}）`;
     lines.push('', `**${rollBadge} · 「${o.choiceLabel}」**`, `> ${o.narrative}`);
     if (o.petLine) {

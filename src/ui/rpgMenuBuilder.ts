@@ -363,10 +363,9 @@ function formatOutcomeBlockquote(
   } else if (outcome.outcome === 'crit_fail') {
     header = `> 💀 **自然1大失败！** D20(**1**)${modStr} vs DC ${outcome.dc ?? '-'} ·「${outcome.choiceLabel}」`;
   } else if (outcome.outcome === 'auto') {
-    header =
-      outcome.coinsDelta < 0
-        ? `> 💰 **金币开道 · 免检通过**「${outcome.choiceLabel}」`
-        : `> 👑 **金卡刷脸 · 免检通过**「${outcome.choiceLabel}」`;
+    header = outcome.stat
+      ? `> 👑 **金卡刷脸 · 免检通过**「${outcome.choiceLabel}」`
+      : `> 💰 **金币开道 · 免检通过**「${outcome.choiceLabel}」`;
   } else if (outcome.outcome === 'success') {
     header = `> 🎲 **D20 检定成功**（掷出 **${outcome.rolled}**${modStr} = **${outcome.total}** ≥ DC ${outcome.dc ?? '-'}）·「${outcome.choiceLabel}」`;
   } else {
