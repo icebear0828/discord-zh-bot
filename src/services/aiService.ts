@@ -45,6 +45,7 @@ export interface GenerateAiReplyInput {
   channelId: string;
   userId: string;
   userName: string;
+  userHandle?: string;
   messageId: string;
   userContent: string;
   replyChain?: RawContextMessage[];
@@ -120,12 +121,43 @@ export function extractMemoryTags(raw: string): ExtractedMemoryTag[] {
   return results;
 }
 
-export function cleanAiOutput(raw: string): string {
+function escapeRegExp(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function stripLeadingSpeakerPrefix(text: string, personaName?: string): string {
+  let out = text.trimStart();
+  const trimmedName = personaName?.trim();
+  const plainNameRegex = trimmedName
+    ? new RegExp(`^(?:${escapeRegExp(trimmedName)})\\s*[:：]\\s*`, 'i')
+    : null;
+
+  for (let i = 0; i < 3; i++) {
+    const afterBracket = out.replace(/^\[[^\]\r\n]{1,32}\]\s*[:：]\s*/, '');
+    if (afterBracket !== out) {
+      out = afterBracket.trimStart();
+      continue;
+    }
+    if (plainNameRegex) {
+      const afterPlain = out.replace(plainNameRegex, '');
+      if (afterPlain !== out) {
+        out = afterPlain.trimStart();
+        continue;
+      }
+    }
+    break;
+  }
+
+  return out;
+}
+
+export function cleanAiOutput(raw: string, personaName?: string): string {
   let out = raw;
   out = out.replace(/\[MEMORY:[^\]]*\]/gi, '');
   out = out.replace(/\[VOICE:[^\]]*\]/gi, '');
   out = out.replace(/\[IMAGE:[^\]]*\]/gi, '');
   out = out.replace(/\[USAGE:\{[^\]]*\}\]/gi, '');
+  out = stripLeadingSpeakerPrefix(out, personaName);
   out = out.replace(/\n{3,}/g, '\n\n');
   return out.trim();
 }
@@ -199,15 +231,33 @@ export function buildSystemPrompt(params: {
   channelMemories: AiMemoryRecord[];
   userMemories: AiMemoryRecord[];
   currentUserName: string;
+  currentUserHandle?: string;
 }): string {
-  const { aiCfg, guildMemories, channelMemories, userMemories, currentUserName } = params;
+  const {
+    aiCfg,
+    guildMemories,
+    channelMemories,
+    userMemories,
+    currentUserName,
+    currentUserHandle,
+  } = params;
+  const trimmedHandle = currentUserHandle?.trim();
+  const speakerDesc =
+    trimmedHandle && !currentUserName.toLowerCase().includes(trimmedHandle.toLowerCase())
+      ? `${currentUserName}（账号：@${trimmedHandle}）`
+      : currentUserName;
+
   const sections: string[] = [
     `# 身份设定：${aiCfg.personaName}`,
     aiCfg.identityPrompt.trim(),
     '',
     '## 说话风格与行为原则',
     aiCfg.soulPrompt.trim(),
-    `- 当前正在与你对话的群友昵称：${currentUserName}`,
+    '',
+    '## 群聊交互与去前缀铁律',
+    `- 当前正在对你发言的群友：${speakerDesc}`,
+    `- 历史与用户消息开头的 \`[昵称]:\` 仅用于系统区分不同发言人；你回复时直接输出正文，严禁在开头加 \`[${aiCfg.personaName}]:\`、\`${aiCfg.personaName}：\` 或任何 \`[名字]:\` 前缀。`,
+    '- 看清上下文每条消息的发言人，不要把其他群友说的话张冠李戴到当前发言人头上。',
     '- 默认使用中文回复；避免使用 @everyone 或 @here。',
   ];
 
@@ -488,6 +538,7 @@ export class AiService {
       channelMemories,
       userMemories,
       currentUserName: input.userName,
+      currentUserHandle: input.userHandle,
     });
 
     const resetAt = this.aiMemoryRepo.getChannelResetAt(input.guildId, input.channelId);
@@ -527,7 +578,7 @@ export class AiService {
       });
 
       const tags = extractMemoryTags(response.content);
-      const replyText = cleanAiOutput(response.content);
+      const replyText = cleanAiOutput(response.content, aiCfg.personaName);
       const chunks = splitDiscordMessage(replyText);
 
       let storedMemoryCount = 0;

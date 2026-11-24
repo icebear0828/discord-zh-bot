@@ -1,10 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { createDefaultGuildConfig } from '../../src/config/defaults.js';
+import {
+  AI_PERSONA_PRESETS,
+  createDefaultGuildConfig,
+  DEFAULT_AI_CONFIG,
+} from '../../src/config/defaults.js';
 import { createDatabase } from '../../src/db/database.js';
 import { AiMemoryRepo } from '../../src/db/repositories/aiMemoryRepo.js';
 import { GuildConfigRepo } from '../../src/db/repositories/guildConfigRepo.js';
 import {
   AiService,
+  buildSystemPrompt,
   cleanAiOutput,
   extractMemoryTags,
   loadImageParts,
@@ -308,5 +313,86 @@ describe('aiService helpers & AiMemoryRepo', () => {
     expect(aiService.listMemories('g1', 'user', 'u2')).toHaveLength(0);
 
     db.close();
+  });
+
+  it('strips leading speaker prefixes in cleanAiOutput and generateReply while preserving valid bracket syntax', async () => {
+    expect(cleanAiOutput('[黑吊使者]: 这波纯属发牌员针对', '黑吊使者')).toBe(
+      '这波纯属发牌员针对',
+    );
+    expect(cleanAiOutput('[毒舌使者]：  就这水平？', '毒舌使者')).toBe('就这水平？');
+    expect(cleanAiOutput('[黑吊使者]: [Bot]: 双重前缀测试', '黑吊使者')).toBe('双重前缀测试');
+    expect(cleanAiOutput('黑吊使者：不带括号前缀也要去掉', '黑吊使者')).toBe(
+      '不带括号前缀也要去掉',
+    );
+    expect(cleanAiOutput('[置顶] 今晚九点打世界Boss', '黑吊使者')).toBe(
+      '[置顶] 今晚九点打世界Boss',
+    );
+    expect(cleanAiOutput('[文档链接](https://example.com): 说明', '黑吊使者')).toBe(
+      '[文档链接](https://example.com): 说明',
+    );
+
+    const db = createDatabase(':memory:');
+    const guildConfigRepo = new GuildConfigRepo(db);
+    const aiMemoryRepo = new AiMemoryRepo(db);
+    const llmClient = new LlmClient(
+      {
+        baseUrl: 'https://gateway.local/v1',
+        apiKey: 'sk-test',
+        model: 'demo-model',
+        timeoutMs: 10_000,
+      },
+      {
+        fetchFn: async () =>
+          new Response(
+            JSON.stringify({
+              model: 'demo-model',
+              choices: [{ message: { content: '[黑吊使者]: 草莓布丁酱说得全对' } }],
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          ),
+      },
+    );
+    const aiService = new AiService(guildConfigRepo, aiMemoryRepo, llmClient);
+    const res = await aiService.generateReply({
+      guildId: 'g1',
+      channelId: 'c1',
+      userId: 'u_vip',
+      userName: '草莓布丁酱',
+      messageId: 'm_vip',
+      userContent: '今天手气怎么样',
+    });
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.replyText).toBe('草莓布丁酱说得全对');
+      expect(res.chunks).toEqual(['草莓布丁酱说得全对']);
+    }
+    db.close();
+  });
+
+  it('builds 2026 persona prompt with anti-prefix rule, handle disambiguation, VIP favoritism, and modal limits', () => {
+    for (const preset of Object.values(AI_PERSONA_PRESETS)) {
+      expect(preset.personaName.length).toBeLessThanOrEqual(32);
+      expect(preset.identityPrompt.length).toBeLessThanOrEqual(500);
+      expect(preset.soulPrompt.length).toBeLessThanOrEqual(500);
+      expect(preset.identityPrompt).toContain('草莓布丁酱');
+      expect(preset.identityPrompt).toContain('icebear');
+    }
+    expect(DEFAULT_AI_CONFIG.worldbook.length).toBeGreaterThan(0);
+    expect(DEFAULT_AI_CONFIG.worldbook.length).toBeLessThanOrEqual(1000);
+
+    const prompt = buildSystemPrompt({
+      aiCfg: DEFAULT_AI_CONFIG,
+      guildMemories: [],
+      channelMemories: [],
+      userMemories: [],
+      currentUserName: '冰熊',
+      currentUserHandle: 'icebear',
+    });
+
+    expect(prompt).toContain('冰熊（账号：@icebear）');
+    expect(prompt).toContain('严禁在开头加');
+    expect(prompt).toContain('[名字]:');
+    expect(prompt).toContain('黑吊王「草莓布丁酱」');
+    expect(prompt).toContain('冰吊王「icebear」');
   });
 });

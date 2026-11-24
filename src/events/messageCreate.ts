@@ -127,6 +127,7 @@ async function handleAiMessage(client: Client, message: Message, ctx: AppContext
         channelId: message.channelId,
         userId: message.author.id,
         userName: message.member.displayName,
+        userHandle: message.author.username,
         messageId: message.id,
         userContent,
         replyChain,
