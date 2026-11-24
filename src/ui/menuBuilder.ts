@@ -1285,7 +1285,7 @@ function buildAdminOverviewView(
         makeButton('menu:nav:admin_lvl', '📈 等级/热度/语音', ButtonStyle.Primary),
         makeButton('menu:nav:admin_games', '🎮 玩法与事件调参', ButtonStyle.Primary),
         makeButton('menu:nav:admin_mod', '🧩 模块开关', ButtonStyle.Secondary),
-        makeButton('menu:nav:admin_ops', '👥 发币与管理员', ButtonStyle.Secondary),
+        makeButton('menu:nav:admin_ops', '👥 发币/数值/管理', ButtonStyle.Secondary),
       ),
       buttonRow(
         makeButton('menu:nav:admin_roles', '🎭 自助身份组', ButtonStyle.Primary),
@@ -1488,13 +1488,14 @@ function buildAdminOpsView(
     '',
     '• 第一个选人框：给指定群友**发放或扣除口袋星币**（正数公开喜报，负数私密扣除）',
     '• 第二个选人框：**添加或移除 Bot 管理员用户**（被授权群友也可打开「⚙️ 管理后台」调参）',
+    `• 第三个选人框：自由设置指定群友的 **${cfg.leveling.statName}**（单位：${cfg.leveling.statUnit}）`,
     '• 点击下方「🎉 全服全员发币」可统一为服务器全部真实成员发放福利！',
   ].join('\n');
 
   const embed = new EmbedBuilder()
     .setColor(resolveColor(COLORS.GOLD, feedback))
-    .setAuthor({ name: `${actor.displayName} · 发币与管理员授权`, iconURL: actor.avatarUrl })
-    .setTitle('👥 发币与管理员管理')
+    .setAuthor({ name: `${actor.displayName} · 发币 / 数值 / 管理员`, iconURL: actor.avatarUrl })
+    .setTitle('👥 发币 / 成员数值 / 管理员管理')
     .setDescription(withFeedback(description, feedback))
     .setTimestamp();
 
@@ -1514,11 +1515,22 @@ function buildAdminOpsView(
       .setMaxValues(1),
   );
 
+  const setStatUserRow = new ActionRowBuilder<UserSelectMenuBuilder>().addComponents(
+    new UserSelectMenuBuilder()
+      .setCustomId('menu:user:admin_set_stat')
+      .setPlaceholder(
+        truncateText(`📏 选择一位群友设置${cfg.leveling.statName}（${cfg.leveling.statUnit}）...`, 150),
+      )
+      .setMinValues(1)
+      .setMaxValues(1),
+  );
+
   return {
     embeds: [embed],
     components: [
       grantUserRow,
       toggleAdminRow,
+      setStatUserRow,
       buttonRow(
         makeButton('menu:modal:admin_grant_all', '🎉 全服全员发币', ButtonStyle.Success),
         makeButton('menu:nav:admin', '⬅️ 管理后台', ButtonStyle.Secondary),

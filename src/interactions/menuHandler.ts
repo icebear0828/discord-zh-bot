@@ -39,6 +39,7 @@ import {
   buildPublicLeaderboardEmbed,
   buildPublicRankEmbed,
   buildRedPacketMessage,
+  truncateText,
   type BuiltMenuMessage,
   type MenuActor,
   type MenuFeedback,
@@ -1474,6 +1475,43 @@ export async function handleMenuUserSelect(
     return;
   }
 
+  if (actionType === 'admin_set_stat') {
+    if (!actor.isAdmin) {
+      await interaction.update(
+        buildMenuMessage(ctx, guildId, actor, { page: 'home' }, ADMIN_DENIED_FEEDBACK),
+      );
+      return;
+    }
+    if (targetUser?.bot) {
+      await interaction.update(
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'admin_ops' },
+          { type: 'error', text: '不能修改机器人的成长数值。' },
+        ),
+      );
+      return;
+    }
+    const profile = ctx.repos.profile.getOrCreate(guildId, targetId);
+    const lvl = ctx.repos.guildConfig.getOrCreate(guildId).leveling;
+    await interaction.showModal(
+      new ModalBuilder()
+        .setCustomId(`menu:modal_sub:admin_set_stat:${targetId}`)
+        .setTitle(truncateText(`📏 设置成员${lvl.statName}`, 45))
+        .addComponents(
+          prefilledField(
+            'statValue',
+            truncateText(`目标${lvl.statName}（0 ~ 1000000000 ${lvl.statUnit}）`, 45),
+            profile.statValue,
+            10,
+          ),
+        ),
+    );
+    return;
+  }
+
   if (actionType === 'admin_toggle_user') {
     if (!actor.isAdmin) {
       await interaction.update(
@@ -2118,6 +2156,45 @@ export async function handleMenuModal(
               amount > 0
                 ? `已向 <@${targetId}> 发放 **+${amount}** ${cfg.economy.currencyName}（当前现金 **${updated.coins}**）。`
                 : `已从 <@${targetId}> 扣除 **${Math.abs(amount)}** ${cfg.economy.currencyName}（剩余现金 **${updated.coins}**）。`,
+          },
+        ),
+      );
+      return;
+    }
+
+    if (modalType === 'admin_set_stat') {
+      const targetId = parts[3];
+      if (!targetId) return;
+      const value = parseIntInRange(
+        interaction.fields.getTextInputValue('statValue'),
+        0,
+        1_000_000_000,
+      );
+      if (value === null) {
+        await respondFromModal(
+          interaction,
+          buildMenuMessage(
+            ctx,
+            guildId,
+            actor,
+            { page: 'admin_ops' },
+            { type: 'error', text: '请输入 0 ~ 1,000,000,000 之间的整数。' },
+          ),
+        );
+        return;
+      }
+
+      const updated = ctx.repos.profile.setStatValue(guildId, targetId, value);
+      await respondFromModal(
+        interaction,
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'admin_ops' },
+          {
+            type: 'success',
+            text: `✅ 已将 <@${targetId}> 的 **${cfg.leveling.statName}** 设为 **${updated.statValue}** ${cfg.leveling.statUnit}！`,
           },
         ),
       );

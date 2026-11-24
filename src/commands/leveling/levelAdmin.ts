@@ -201,6 +201,34 @@ export const levelAdminCommand: CommandDefinition = {
           '设置用户经验',
           '手动设置指定用户的总经验值',
         ),
+      )
+      .addSubcommand((sub) =>
+        applyZh(
+          sub
+            .setName('set-stat')
+            .setDescription('手动设置指定成员的成长数值（如长度/厘米）')
+            .addUserOption((opt) =>
+              applyZh(
+                opt.setName('user').setDescription('目标成员').setRequired(true),
+                '用户',
+                '要修改成长数值的成员',
+              ),
+            )
+            .addIntegerOption((opt) =>
+              applyZh(
+                opt
+                  .setName('value')
+                  .setDescription('目标成长数值')
+                  .setMinValue(0)
+                  .setMaxValue(1_000_000_000)
+                  .setRequired(true),
+                '数值',
+                '设置后的成长数值',
+              ),
+            ),
+          '设置成长数值',
+          '手动设置指定成员的成长数值（如长度/厘米）',
+        ),
       ),
     '等级管理',
     '管理等级奖励身份组、热度倍率、语音经验与用户经验',
@@ -355,6 +383,22 @@ export const levelAdminCommand: CommandDefinition = {
           createSuccessEmbed(
             '✅ 经验已调整',
             `已将 <@${user.id}> 的总经验设为 **${res.totalXp} XP**（当前 Lv.**${res.newLevel}**）。`,
+          ),
+        ],
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    if (sub === 'set-stat') {
+      const user = interaction.options.getUser('user', true);
+      const value = interaction.options.getInteger('value', true);
+      const updated = ctx.repos.profile.setStatValue(guildId, user.id, value);
+      await interaction.reply({
+        embeds: [
+          createSuccessEmbed(
+            `✅ ${cfg.leveling.statName}已调整`,
+            `已将 <@${user.id}> 的 **${cfg.leveling.statName}** 设为 **${updated.statValue}** ${cfg.leveling.statUnit}。`,
           ),
         ],
         flags: MessageFlags.Ephemeral,

@@ -1944,6 +1944,39 @@ describe('menu router & multiplayer interaction flows', () => {
     expect(updatedEmbed?.author?.name).toContain('冰熊骑士');
     expect(updatedEmbed?.description).toContain('深夜代码仙人');
 
+    // 7. Admin sets member growth stat via admin_ops UserSelect -> Modal
+    const nonAdminSetStat = createUserSelectMock({
+      customId: 'menu:user:admin_set_stat',
+      userId: 'member1',
+      target: { id: 'u9' },
+    });
+    await routeInteraction(nonAdminSetStat.interaction, ctx);
+    expect(nonAdminSetStat.showModal).not.toHaveBeenCalled();
+
+    const adminSetStatSelect = createUserSelectMock({
+      customId: 'menu:user:admin_set_stat',
+      userId: 'admin1',
+      target: { id: 'u9' },
+    });
+    await routeInteraction(adminSetStatSelect.interaction, ctx);
+    expect(adminSetStatSelect.showModal).toHaveBeenCalledTimes(1);
+
+    const invalidStatModal = createModalMock({
+      customId: 'menu:modal_sub:admin_set_stat:u9',
+      userId: 'admin1',
+      fields: { statValue: '-5' },
+    });
+    await routeInteraction(invalidStatModal.interaction, ctx);
+    expect(ctx.repos.profile.getOrCreate('g1', 'u9').statValue).toBe(0);
+
+    const validStatModal = createModalMock({
+      customId: 'menu:modal_sub:admin_set_stat:u9',
+      userId: 'admin1',
+      fields: { statValue: '114514' },
+    });
+    await routeInteraction(validStatModal.interaction, ctx);
+    expect(ctx.repos.profile.getOrCreate('g1', 'u9').statValue).toBe(114514);
+
     ctx.db.close();
   });
 });
