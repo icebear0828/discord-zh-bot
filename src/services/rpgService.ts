@@ -993,6 +993,15 @@ function generatePendingItem(
   };
 }
 
+export function generateShopRpgLoot(
+  chapter: number,
+  minRarity: RpgItemRarity,
+  rng: () => number = Math.random,
+): PendingRpgItem {
+  const safeChapter = Math.max(1, Math.min(6, Math.floor(chapter)));
+  return generatePendingItem(safeChapter, 'chest', rng, minRarity);
+}
+
 function parseRunState(raw: string): RpgRunState | null {
   try {
     const parsed: unknown = JSON.parse(raw);

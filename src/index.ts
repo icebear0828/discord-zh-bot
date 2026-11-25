@@ -142,6 +142,7 @@ function main(): void {
         chaosRepo,
         socialPetRepo,
         creditLoanService,
+        rpgRepo,
         timezone: env.timezone,
       }),
       fun: new FunService(db, profileRepo, shopRepo, funRepo, env.timezone),

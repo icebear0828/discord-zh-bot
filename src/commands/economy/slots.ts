@@ -7,6 +7,7 @@ import {
 } from '../../ui/embeds.js';
 import { applyZh } from '../../ui/localization.js';
 import {
+  buildRobTargetHints,
   buildSlotsHighlightEmbed,
   buildSlotsResultEmbed,
   formatSoloBetError,
@@ -19,7 +20,7 @@ export const slotsCommand: CommandDefinition = {
   data: applyZh(
     new SlashCommandBuilder()
       .setName('slots')
-      .setDescription('拉动幸运老虎机，三连 7️⃣ 赢取 15 倍奖金')
+      .setDescription('拉动幸运老虎机，三连 🧊 赢取 100 倍、三连 7️⃣ 赢取 15 倍奖金')
       .addIntegerOption((opt) =>
         applyZh(
           opt
@@ -33,7 +34,7 @@ export const slotsCommand: CommandDefinition = {
         ),
       ),
     '老虎机',
-    '拉动幸运老虎机，三连 7️⃣ 赢取 15 倍奖金',
+    '拉动幸运老虎机，三连 🧊 赢取 100 倍、三连 7️⃣ 赢取 15 倍奖金',
   ),
   async execute(interaction: ChatInputCommandInteraction, ctx: AppContext): Promise<void> {
     const guildCtx = await requireGuildMember(interaction);
@@ -42,7 +43,15 @@ export const slotsCommand: CommandDefinition = {
 
     const bet = interaction.options.getInteger('bet', true);
     const cfg = ctx.repos.guildConfig.getOrCreate(guildCtx.guildId).economy;
-    const res = ctx.services.economy.playSlots(guildCtx.guildId, interaction.user.id, bet);
+    const playerHints = buildRobTargetHints(interaction.user, guildCtx.member);
+    const res = ctx.services.economy.playSlots(
+      guildCtx.guildId,
+      interaction.user.id,
+      bet,
+      Math.random,
+      Date.now(),
+      playerHints,
+    );
 
     if (!res.ok) {
       await interaction.reply({

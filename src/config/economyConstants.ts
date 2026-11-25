@@ -16,9 +16,17 @@ export const ROB_TRAP_FINE_MAX = 1000;
 export const ROB_LOCKPICK_BONUS = 0.25;
 export const ROB_LOCKPICK_CAP = 0.85;
 
-// Easter egg: robbing protected royal targets (zero hardcoded Discord IDs)
+// Easter egg: robbing protected royal targets & slots VIP players (zero hardcoded Discord IDs)
 export const ROB_EASTER_EGG_FINE_RATE = 0.1;
 export const DEFAULT_ROB_PROTECTED_KEYWORDS = ['黑吊王', '草莓布丁酱'] as const;
+export const DEFAULT_SLOTS_VIP_KEYWORDS = [
+  'icebear',
+  '冰吊王',
+  '冰冰冰',
+  '草莓布丁酱',
+  '黑吊王',
+] as const;
+export const SLOTS_VIP_ICE_JACKPOT_CHANCE = 0.5;
 export const ROB_KING_EASTER_EGG_STORIES = [
   '👑 {attacker} 刚把手伸向 {target}，瞬间被黑吊王的王者霸气震慑到双膝跪地，颤抖着奉上 10% 家当（{fine} {currency}）求饶！',
   '🛡️ 放肆！{attacker} 企图对 {target} 下手，草丛里瞬间杀出八名黑吊国禁卫军将其当场按倒，依法罚没 {fine} {currency} 充公！',
@@ -89,6 +97,8 @@ export const ECONOMY_CONSTANTS = {
   ROB_LOCKPICK_CAP,
   ROB_EASTER_EGG_FINE_RATE,
   DEFAULT_ROB_PROTECTED_KEYWORDS,
+  DEFAULT_SLOTS_VIP_KEYWORDS,
+  SLOTS_VIP_ICE_JACKPOT_CHANCE,
   ROB_KING_EASTER_EGG_STORIES,
   BANK_ROB_TARGET_MIN,
   BANK_ROB_ATTACKER_MIN_ASSETS,

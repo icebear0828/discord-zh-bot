@@ -81,7 +81,7 @@ CREATE TABLE IF NOT EXISTS shop_items (
   guild_id TEXT NOT NULL,
   name TEXT NOT NULL,
   description TEXT NOT NULL,
-  type TEXT NOT NULL CHECK (type IN ('role', 'title', 'xp_boost', 'stat_boost', 'custom_title', 'pet_xp', 'mystery_box')),
+  type TEXT NOT NULL CHECK (type IN ('role', 'title', 'xp_boost', 'stat_boost', 'custom_title', 'pet_xp', 'mystery_box', 'credit_boost', 'rpg_supply', 'cp_affinity')),
   price INTEGER NOT NULL CHECK (price >= 0),
   role_id TEXT,
   title_text TEXT,
@@ -255,6 +255,8 @@ export function initSchema(db: Database.Database): void {
   ensureColumn(db, 'member_profiles', 'stat_value', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn(db, 'member_profiles', 'last_stat_boost_date', 'TEXT');
   ensureColumn(db, 'member_profiles', 'stat_boost_daily_count', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn(db, 'member_profiles', 'last_credit_boost_date', 'TEXT');
+  ensureColumn(db, 'member_profiles', 'credit_boost_daily_count', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn(db, 'member_profiles', 'last_pet_work_at', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn(db, 'member_profiles', 'pet_pvp_xp_date', "TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, 'member_profiles', 'pet_pvp_xp_daily', 'INTEGER NOT NULL DEFAULT 0');
@@ -271,7 +273,7 @@ export function initSchema(db: Database.Database): void {
     .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'shop_items'")
     .get() as { sql?: string } | undefined;
   const shopSql = shopTableRow?.sql ?? '';
-  if (!shopColNames.has('payload_json') || !shopSql.includes('mystery_box')) {
+  if (!shopColNames.has('payload_json') || !shopSql.includes('cp_affinity')) {
     const payloadSelect = shopColNames.has('payload_json') ? "COALESCE(payload_json, '{}')" : "'{}'";
     db.transaction(() => {
       db.exec(`
@@ -280,7 +282,7 @@ export function initSchema(db: Database.Database): void {
           guild_id TEXT NOT NULL,
           name TEXT NOT NULL,
           description TEXT NOT NULL,
-          type TEXT NOT NULL CHECK (type IN ('role', 'title', 'xp_boost', 'stat_boost', 'custom_title', 'pet_xp', 'mystery_box')),
+          type TEXT NOT NULL CHECK (type IN ('role', 'title', 'xp_boost', 'stat_boost', 'custom_title', 'pet_xp', 'mystery_box', 'credit_boost', 'rpg_supply', 'cp_affinity')),
           price INTEGER NOT NULL CHECK (price >= 0),
           role_id TEXT,
           title_text TEXT,

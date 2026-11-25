@@ -346,7 +346,15 @@ describe('env & database schema', () => {
       payload_json: '{}',
     });
 
-    for (const newType of ['stat_boost', 'custom_title', 'pet_xp', 'mystery_box'] as const) {
+    for (const newType of [
+      'stat_boost',
+      'custom_title',
+      'pet_xp',
+      'mystery_box',
+      'credit_boost',
+      'rpg_supply',
+      'cp_affinity',
+    ] as const) {
       expect(() =>
         db
           .prepare(
@@ -361,6 +369,8 @@ describe('env & database schema', () => {
     );
     expect(profCols).toContain('last_stat_boost_date');
     expect(profCols).toContain('stat_boost_daily_count');
+    expect(profCols).toContain('last_credit_boost_date');
+    expect(profCols).toContain('credit_boost_daily_count');
 
     db.close();
   });

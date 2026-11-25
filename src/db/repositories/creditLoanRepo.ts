@@ -768,6 +768,13 @@ export class CreditLoanRepo {
       );
   }
 
+  resetAllHustleCooldowns(guildId: string): number {
+    const res = this.db
+      .prepare('UPDATE hustle_stats SET last_hustle_at = 0 WHERE guild_id = ? AND last_hustle_at > 0')
+      .run(guildId);
+    return res.changes;
+  }
+
   // Gambling stats
   getOrCreateGamblingStats(guildId: string, userId: string): GamblingStats {
     const existing = this.db

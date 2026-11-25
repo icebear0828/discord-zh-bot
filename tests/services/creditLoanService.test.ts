@@ -565,55 +565,76 @@ describe('CreditLoanService', () => {
     db.close();
   });
 
-  it('runs sellButt with guild economy tuning, 24h cooldown, all 4 event branches, credit drop, and automatic debt garnish', () => {
+  it('runs sellButt with guild economy tuning, 1h cooldown, 12x~14x payout, -5 credit drop, bust 0.85x, automatic debt garnish, and resetAllHustleCooldowns', () => {
     const { db, configRepo, profileRepo, service } = createFixture();
 
-    // Tune guild economy workMin=2500, workMax=5000 -> baseReward in [10,000, 25,000]
+    // Verify new default config values
+    expect(DEFAULT_CREDIT_LOAN_CONFIG.hustleCooldownSec).toBe(3_600);
+    expect(DEFAULT_CREDIT_LOAN_CONFIG.hustleMinMultiplier).toBe(12);
+    expect(DEFAULT_CREDIT_LOAN_CONFIG.hustleMaxMultiplier).toBe(14);
+    expect(DEFAULT_CREDIT_LOAN_CONFIG.hustleCreditPenalty).toBe(5);
+
+    // Tune guild economy workMin=2500, workMax=5000 -> baseReward in [30,000, 70,000]
     const cfg = configRepo.getOrCreate('g1');
     configRepo.updateEconomy('g1', { ...cfg.economy, workMin: 2_500, workMax: 5_000 });
 
     // Branch 1: VIP (eventRoll 0.05 < 0.15, multRoll 0.5 -> 2.0x)
-    // baseRoll 0 -> minReward 10,000 -> gross = 20,000
+    // baseRoll 0 -> minReward 30,000 -> gross = 60,000
     const vip = service.sellButt('g1', 'h1', BASE_TIME, makeRngSequence([0.0, 0.05, 0.5, 0.0]));
     expect(vip.ok).toBe(true);
     if (vip.ok) {
       expect(vip.eventKey).toBe('vip');
-      expect(vip.baseReward).toBe(10_000);
+      expect(vip.baseReward).toBe(30_000);
       expect(vip.multiplier).toBe(2.0);
-      expect(vip.grossReward).toBe(20_000);
+      expect(vip.grossReward).toBe(60_000);
       expect(vip.garnished).toBe(0);
-      expect(vip.netReward).toBe(20_000);
-      expect(vip.creditDelta).toBe(-10);
-      expect(vip.creditScore).toBe(590);
-      expect(vip.balance).toBe(20_000);
+      expect(vip.netReward).toBe(60_000);
+      expect(vip.creditDelta).toBe(-5);
+      expect(vip.creditScore).toBe(595);
+      expect(vip.balance).toBe(60_000);
       expect(vip.stats.totalCount).toBe(1);
-      expect(vip.stats.bestPayout).toBe(20_000);
+      expect(vip.stats.bestPayout).toBe(60_000);
       expect(vip.publicAnnouncement).toContain('<@h1>');
     }
 
-    // Cooldown enforced within 24h
-    const cd = service.sellButt('g1', 'h1', BASE_TIME + 3600_000);
+    // Cooldown enforced within 1h
+    const cd = service.sellButt('g1', 'h1', BASE_TIME + 1800_000);
     expect(cd.ok).toBe(false);
     if (!cd.ok) {
       expect(cd.reason).toBe('cooldown');
-      expect(cd.retryAfterSec).toBe(82_800);
+      expect(cd.retryAfterSec).toBe(1800);
     }
 
-    // Branch 2: acquaintance (eventRoll 0.20 in [0.15, 0.30), multRoll 0.5 -> 1.4x)
+    // Branch 2: acquaintance (eventRoll 0.20 in [0.15, 0.30), multRoll 0.5 -> 1.4x) after 1h elapsed
     const acq = service.sellButt(
       'g1',
       'h1',
-      BASE_TIME + DAY_MS,
+      BASE_TIME + 3_600_000,
       makeRngSequence([0.0, 0.2, 0.5, 0.2]),
     );
     expect(acq.ok).toBe(true);
     if (acq.ok) {
       expect(acq.eventKey).toBe('acquaintance');
       expect(acq.multiplier).toBe(1.4);
-      expect(acq.grossReward).toBe(14_000);
-      expect(acq.creditScore).toBe(580);
+      expect(acq.grossReward).toBe(42_000);
+      expect(acq.creditScore).toBe(590);
       expect(acq.stats.totalCount).toBe(2);
-      expect(acq.stats.totalEarned).toBe(34_000);
+      expect(acq.stats.totalEarned).toBe(102_000);
+    }
+
+    // Admin resetAllHustleCooldowns clears cooldown immediately while keeping historical stats
+    const cleared = service.resetAllHustleCooldowns('g1');
+    expect(cleared).toBe(1);
+    const afterReset = service.sellButt(
+      'g1',
+      'h1',
+      BASE_TIME + 3_605_000,
+      makeRngSequence([0.0, 0.5, 0.5, 0.5]),
+    );
+    expect(afterReset.ok).toBe(true);
+    if (afterReset.ok) {
+      expect(afterReset.stats.totalCount).toBe(3);
+      expect(afterReset.stats.totalEarned).toBe(132_000);
     }
 
     // Branch 3: normal (eventRoll 0.50 in [0.30, 0.85), 1.0x)
@@ -622,27 +643,27 @@ describe('CreditLoanService', () => {
     if (norm.ok) {
       expect(norm.eventKey).toBe('normal');
       expect(norm.multiplier).toBe(1.0);
-      expect(norm.grossReward).toBe(10_000);
+      expect(norm.grossReward).toBe(30_000);
     }
 
-    // Branch 4: bust (eventRoll 0.90 >= 0.85, 0.5x) + automatic overdue debt garnish!
+    // Branch 4: bust (eventRoll 0.90 >= 0.85, 0.85x) + automatic overdue debt garnish!
     const loan = service.takeUsuryLoan('g1', 'h3', 10_000, BASE_TIME);
     expect(loan.ok).toBe(true);
     profileRepo.save({ ...profileRepo.getOrCreate('g1', 'h3'), coins: 0 });
     const overdueAt = BASE_TIME + 3 * DAY_MS;
     service.processOverdueLoans(overdueAt);
 
-    // baseRoll 0 -> 10,000, bust 0.5x -> gross 5,000, 50% garnish = 2,500, net = 2,500
+    // baseRoll 0 -> 30,000, bust 0.85x -> gross 25,500, 50% garnish = 12,000 (debt cap), net = 13,500
     const bust = service.sellButt('g1', 'h3', overdueAt + 1000, makeRngSequence([0.0, 0.9, 0.0, 0.0]));
     expect(bust.ok).toBe(true);
     if (bust.ok) {
       expect(bust.eventKey).toBe('bust');
-      expect(bust.multiplier).toBe(0.5);
-      expect(bust.grossReward).toBe(5_000);
-      expect(bust.garnished).toBe(2_500);
-      expect(bust.netReward).toBe(2_500);
-      expect(bust.balance).toBe(2_500);
-      expect(bust.creditDelta).toBe(-10);
+      expect(bust.multiplier).toBe(0.85);
+      expect(bust.grossReward).toBe(25_500);
+      expect(bust.garnished).toBe(12_000);
+      expect(bust.netReward).toBe(13_500);
+      expect(bust.balance).toBe(13_500);
+      expect(bust.creditDelta).toBe(-5);
       expect(bust.publicAnnouncement).toContain('逾期强扣还债');
     }
 

@@ -429,6 +429,7 @@ export async function tryHandleConfigMenuButton(
       'rp_toggle_mode',
       'rp_delete',
       'reset_credit_rpg',
+      'reset_hustle_cd',
       'shop_del_confirm',
     ]);
     if (!action || !handledActions.has(action)) {
@@ -467,6 +468,23 @@ export async function tryHandleConfigMenuButton(
           removed
             ? { type: 'success', text: `🗑️ 已下架商店商品 **#${itemId}**。` }
             : { type: 'error', text: `未找到商品 **#${itemId}**。` },
+        ),
+      );
+      return true;
+    }
+
+    if (action === 'reset_hustle_cd') {
+      const cleared = ctx.services.creditLoan.resetAllHustleCooldowns(guildId);
+      await interaction.update(
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'admin_credit_rpg' },
+          {
+            type: 'success',
+            text: `✅ 已重置本服所有成员的卖屁股冷却时间（共解除 **${cleared}** 名成员冷却）！`,
+          },
         ),
       );
       return true;

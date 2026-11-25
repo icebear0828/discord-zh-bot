@@ -61,10 +61,10 @@ export const DEFAULT_CREDIT_LOAN_CONFIG: CreditLoanConfig = {
   usuryDailyRate: 0.12,
   usuryTermDays: 2,
   garnishRate: 0.5,
-  hustleCooldownSec: 86_400,
-  hustleMinMultiplier: 4,
-  hustleMaxMultiplier: 5,
-  hustleCreditPenalty: 10,
+  hustleCooldownSec: 3_600,
+  hustleMinMultiplier: 12,
+  hustleMaxMultiplier: 14,
+  hustleCreditPenalty: 5,
   dailyReviewLimit: 3,
   reviewTargetCooldownSec: 86_400,
   reviewTargetDailyCap: 30,
@@ -357,8 +357,8 @@ const HUSTLE_EVENTS: Readonly<Record<HustleEventKey, HustleEventSpec>> = {
   bust: {
     key: 'bust',
     title: '🚨 踩坑扫黄 / 老赖逃单',
-    minMult: 0.5,
-    maxMult: 0.5,
+    minMult: 0.85,
+    maxMult: 0.85,
     stories: [
       '刚开场就遇上治安巡逻查消防证，抱着收款码一路狂奔，只捡回一半出场费',
       '辛辛苦苦陪聊两小时，结果对面是个比你还穷的群友老赖，借口上厕所跳窗跑单',
@@ -459,6 +459,10 @@ export class CreditLoanService {
 
   getHustleStats(guildId: string, userId: string): HustleStats {
     return this.repo.getOrCreateHustleStats(guildId, userId);
+  }
+
+  resetAllHustleCooldowns(guildId: string): number {
+    return this.repo.resetAllHustleCooldowns(guildId);
   }
 
   getGamblingStats(guildId: string, userId: string): GamblingStats {

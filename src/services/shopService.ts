@@ -3,14 +3,25 @@ import { SHOP_MYSTERY_BOX_MIN_PRICE } from '../config/economyConstants.js';
 import type { ChaosRepo, PropKey } from '../db/repositories/chaosRepo.js';
 import type { GuildConfigRepo } from '../db/repositories/guildConfigRepo.js';
 import type { ProfileRepo } from '../db/repositories/profileRepo.js';
+import type {
+  RpgItemRarity,
+  RpgItemSlot,
+  RpgRepo,
+} from '../db/repositories/rpgRepo.js';
 import type { InventoryItem, ShopItem, ShopRepo } from '../db/repositories/shopRepo.js';
-import type { SocialPetRepo } from '../db/repositories/socialPetRepo.js';
+import type { RelationshipType, SocialPetRepo } from '../db/repositories/socialPetRepo.js';
 import { PROP_CATALOG } from './chaosService.js';
-import { getCreditTier, type CreditLoanService } from './creditLoanService.js';
+import { CREDIT_SCORE_MAX, getCreditTier, type CreditLoanService } from './creditLoanService.js';
 import { getDateKey } from './economyService.js';
-import { applyPetXp } from './socialPetService.js';
+import { DEFAULT_RPG_CONFIG, generateShopRpgLoot } from './rpgService.js';
+import { applyPetXp, unlockRelationshipMilestoneTitles } from './socialPetService.js';
 
 export const DEFAULT_STAT_BOOST_DAILY_LIMIT = 3;
+export const DEFAULT_CREDIT_BOOST_DAILY_LIMIT = 2;
+
+export interface RoleItemPayload {
+  requiredRoleId: string | null;
+}
 
 export interface StatBoostPayload {
   minGain: number;
@@ -22,6 +33,21 @@ export interface StatBoostPayload {
 
 export interface PetXpPayload {
   petXp: number;
+}
+
+export interface CreditBoostPayload {
+  creditGain: number;
+  dailyLimit: number;
+}
+
+export interface RpgSupplyPayload {
+  staminaGain: number;
+  lootBox: boolean;
+  minRarity: RpgItemRarity;
+}
+
+export interface CpAffinityPayload {
+  affinityGain: number;
 }
 
 export type StatBoostOutcome = 'crit' | 'normal' | 'backfire';
@@ -42,6 +68,32 @@ export interface PetXpResult {
   levelsGained: number;
 }
 
+export interface CreditBoostResult {
+  delta: number;
+  newScore: number;
+  tierLabel: string;
+  usedToday: number;
+  dailyLimit: number;
+}
+
+export interface RpgSupplyResult {
+  staminaGained: number;
+  newStamina: number;
+  droppedItem?: {
+    name: string;
+    slot: RpgItemSlot;
+    rarity: RpgItemRarity;
+  };
+}
+
+export interface CpAffinityResult {
+  partnerId: string;
+  relType: RelationshipType;
+  affinityGained: number;
+  newAffinity: number;
+  unlockedTitles: string[];
+}
+
 export type MysteryBoxReward =
   | { kind: 'coins_jackpot'; summary: string; isJackpot: true; coinsDelta: number }
   | { kind: 'stat_jackpot'; summary: string; isJackpot: true; statDelta: number; newStatValue: number }
@@ -56,6 +108,7 @@ export interface ShopServiceDeps {
   chaosRepo?: ChaosRepo;
   socialPetRepo?: SocialPetRepo;
   creditLoanService?: CreditLoanService;
+  rpgRepo?: RpgRepo;
   timezone?: string;
 }
 
@@ -66,7 +119,12 @@ export type BuyFailureReason =
   | 'already_owned'
   | 'daily_limit_reached'
   | 'no_active_pet'
-  | 'invalid_title';
+  | 'invalid_title'
+  | 'missing_required_role'
+  | 'credit_already_max'
+  | 'no_rpg_character'
+  | 'rpg_bag_full'
+  | 'no_relationship';
 
 export type BuyResult =
   | {
@@ -79,6 +137,9 @@ export type BuyResult =
       addedInventory: InventoryItem | null;
       statBoostResult?: StatBoostResult;
       petXpResult?: PetXpResult;
+      creditBoostResult?: CreditBoostResult;
+      rpgSupplyResult?: RpgSupplyResult;
+      cpAffinityResult?: CpAffinityResult;
       mysteryBoxResult?: MysteryBoxReward;
       customTitleVoucher?: boolean;
     }
@@ -87,6 +148,7 @@ export type BuyResult =
       reason: BuyFailureReason;
       dailyLimit?: number;
       finalPrice?: number;
+      requiredRoleId?: string;
     };
 
 export type UseInventoryResult =
@@ -160,6 +222,63 @@ export function parsePetXpPayload(payloadJson: string): PetXpPayload {
   return { petXp: Math.max(1, raw) };
 }
 
+export function parseRolePayload(payloadJson: string): RoleItemPayload {
+  const obj = parseJsonObject(payloadJson);
+  const raw = typeof obj.requiredRoleId === 'string' ? obj.requiredRoleId.trim() : '';
+  return { requiredRoleId: raw.length > 0 ? raw : null };
+}
+
+export function parseCreditBoostPayload(payloadJson: string): CreditBoostPayload {
+  const obj = parseJsonObject(payloadJson);
+  const gainRaw =
+    typeof obj.creditGain === 'number' && Number.isFinite(obj.creditGain)
+      ? Math.floor(obj.creditGain)
+      : 15;
+  const limitRaw =
+    typeof obj.dailyLimit === 'number' && Number.isFinite(obj.dailyLimit)
+      ? Math.floor(obj.dailyLimit)
+      : DEFAULT_CREDIT_BOOST_DAILY_LIMIT;
+  return {
+    creditGain: Math.max(1, gainRaw),
+    dailyLimit: Math.max(1, limitRaw),
+  };
+}
+
+const VALID_RPG_RARITIES: ReadonlySet<string> = new Set([
+  'common',
+  'uncommon',
+  'rare',
+  'epic',
+  'legendary',
+]);
+
+export function parseRpgSupplyPayload(payloadJson: string): RpgSupplyPayload {
+  const obj = parseJsonObject(payloadJson);
+  const staminaRaw =
+    typeof obj.staminaGain === 'number' && Number.isFinite(obj.staminaGain)
+      ? Math.floor(obj.staminaGain)
+      : 0;
+  const lootBox = typeof obj.lootBox === 'boolean' ? obj.lootBox : false;
+  const rawRarity = typeof obj.minRarity === 'string' ? obj.minRarity : 'rare';
+  const minRarity: RpgItemRarity = VALID_RPG_RARITIES.has(rawRarity)
+    ? (rawRarity as RpgItemRarity)
+    : 'rare';
+  return {
+    staminaGain: Math.max(0, staminaRaw),
+    lootBox,
+    minRarity,
+  };
+}
+
+export function parseCpAffinityPayload(payloadJson: string): CpAffinityPayload {
+  const obj = parseJsonObject(payloadJson);
+  const raw =
+    typeof obj.affinityGain === 'number' && Number.isFinite(obj.affinityGain)
+      ? Math.floor(obj.affinityGain)
+      : 20;
+  return { affinityGain: Math.max(1, raw) };
+}
+
 function randomIntInclusive(min: number, max: number, rng: () => number): number {
   const lo = Math.ceil(min);
   const hi = Math.floor(max);
@@ -172,6 +291,7 @@ export class ShopService {
   private readonly chaosRepo?: ChaosRepo;
   private readonly socialPetRepo?: SocialPetRepo;
   private readonly creditLoanService?: CreditLoanService;
+  private readonly rpgRepo?: RpgRepo;
   private readonly timezone: string;
 
   constructor(
@@ -184,6 +304,7 @@ export class ShopService {
     this.chaosRepo = deps.chaosRepo;
     this.socialPetRepo = deps.socialPetRepo;
     this.creditLoanService = deps.creditLoanService;
+    this.rpgRepo = deps.rpgRepo;
     this.timezone = deps.timezone ?? 'Asia/Shanghai';
   }
 
@@ -220,7 +341,10 @@ export class ShopService {
     price: number;
     roleId: string;
     stock: number | null;
+    requiredRoleId?: string | null;
   }): ShopItem {
+    const reqRole = input.requiredRoleId?.trim() || null;
+    const payloadJson = reqRole ? JSON.stringify({ requiredRoleId: reqRole }) : '{}';
     return this.shopRepo.createItem({
       guildId: input.guildId,
       name: input.name,
@@ -232,7 +356,7 @@ export class ShopService {
       boostMultiplier: null,
       boostDurationSec: null,
       stock: input.stock,
-      payloadJson: '{}',
+      payloadJson,
     });
   }
 
@@ -388,6 +512,90 @@ export class ShopService {
     });
   }
 
+  createCreditBoostItem(input: {
+    guildId: string;
+    name: string;
+    description: string;
+    price: number;
+    creditGain: number;
+    dailyLimit?: number;
+    stock: number | null;
+  }): ShopItem {
+    const payload: CreditBoostPayload = {
+      creditGain: Math.max(1, Math.floor(input.creditGain)),
+      dailyLimit: Math.max(1, Math.floor(input.dailyLimit ?? DEFAULT_CREDIT_BOOST_DAILY_LIMIT)),
+    };
+    return this.shopRepo.createItem({
+      guildId: input.guildId,
+      name: input.name,
+      description: input.description,
+      type: 'credit_boost',
+      price: Math.max(0, Math.floor(input.price)),
+      roleId: null,
+      titleText: null,
+      boostMultiplier: null,
+      boostDurationSec: null,
+      stock: input.stock,
+      payloadJson: JSON.stringify(payload),
+    });
+  }
+
+  createRpgSupplyItem(input: {
+    guildId: string;
+    name: string;
+    description: string;
+    price: number;
+    staminaGain: number;
+    lootBox: boolean;
+    minRarity?: RpgItemRarity;
+    stock: number | null;
+  }): ShopItem {
+    const payload: RpgSupplyPayload = {
+      staminaGain: Math.max(0, Math.floor(input.staminaGain)),
+      lootBox: Boolean(input.lootBox),
+      minRarity: input.minRarity ?? 'rare',
+    };
+    return this.shopRepo.createItem({
+      guildId: input.guildId,
+      name: input.name,
+      description: input.description,
+      type: 'rpg_supply',
+      price: Math.max(0, Math.floor(input.price)),
+      roleId: null,
+      titleText: null,
+      boostMultiplier: null,
+      boostDurationSec: null,
+      stock: input.stock,
+      payloadJson: JSON.stringify(payload),
+    });
+  }
+
+  createCpAffinityItem(input: {
+    guildId: string;
+    name: string;
+    description: string;
+    price: number;
+    affinityGain: number;
+    stock: number | null;
+  }): ShopItem {
+    const payload: CpAffinityPayload = {
+      affinityGain: Math.max(1, Math.floor(input.affinityGain)),
+    };
+    return this.shopRepo.createItem({
+      guildId: input.guildId,
+      name: input.name,
+      description: input.description,
+      type: 'cp_affinity',
+      price: Math.max(0, Math.floor(input.price)),
+      roleId: null,
+      titleText: null,
+      boostMultiplier: null,
+      boostDurationSec: null,
+      stock: input.stock,
+      payloadJson: JSON.stringify(payload),
+    });
+  }
+
   listItems(guildId: string): ShopItem[] {
     return this.shopRepo.listItems(guildId);
   }
@@ -436,6 +644,13 @@ export class ShopService {
 
       if (item.type === 'role' && item.roleId && ownedRoleIds?.has(item.roleId)) {
         return { ok: false, reason: 'already_owned' };
+      }
+
+      if (item.type === 'role') {
+        const { requiredRoleId } = parseRolePayload(item.payloadJson);
+        if (requiredRoleId && ownedRoleIds && !ownedRoleIds.has(requiredRoleId)) {
+          return { ok: false, reason: 'missing_required_role', requiredRoleId };
+        }
       }
 
       const profile = this.profileRepo.getOrCreate(guildId, userId);
@@ -542,8 +757,178 @@ export class ShopService {
         };
       }
 
+      if (item.type === 'credit_boost') {
+        if (!this.creditLoanService) {
+          return { ok: false, reason: 'not_found' };
+        }
+        const payload = parseCreditBoostPayload(item.payloadJson);
+        const today = getDateKey(nowMs, this.timezone);
+        const usedToday = profile.lastCreditBoostDate === today ? profile.creditBoostDailyCount : 0;
+        if (usedToday >= payload.dailyLimit) {
+          return { ok: false, reason: 'daily_limit_reached', dailyLimit: payload.dailyLimit };
+        }
+        const creditProfile = this.creditLoanService.getCreditProfile(guildId, userId, nowMs);
+        if (creditProfile.account.score >= CREDIT_SCORE_MAX) {
+          return { ok: false, reason: 'credit_already_max' };
+        }
+
+        const nextCoins = profile.coins - finalPrice;
+        const nextUsed = usedToday + 1;
+        this.shopRepo.decrementStock(guildId, item.id);
+        this.profileRepo.save({
+          ...profile,
+          coins: nextCoins,
+          lastCreditBoostDate: today,
+          creditBoostDailyCount: nextUsed,
+        });
+        const adjusted = this.creditLoanService.adjustCredit(
+          guildId,
+          userId,
+          payload.creditGain,
+          `商店信用修复道具 (${item.name})`,
+          nowMs,
+        );
+
+        return {
+          ok: true,
+          item,
+          finalPrice,
+          balance: nextCoins,
+          grantRoleId: null,
+          equippedTitle: null,
+          addedInventory: null,
+          creditBoostResult: {
+            delta: adjusted.actualDelta,
+            newScore: adjusted.account.score,
+            tierLabel: adjusted.tier.label,
+            usedToday: nextUsed,
+            dailyLimit: payload.dailyLimit,
+          },
+        };
+      }
+
+      if (item.type === 'rpg_supply') {
+        if (!this.rpgRepo) {
+          return { ok: false, reason: 'no_rpg_character' };
+        }
+        const character = this.rpgRepo.getCharacter(guildId, userId);
+        if (!character) {
+          return { ok: false, reason: 'no_rpg_character' };
+        }
+
+        const payload = parseRpgSupplyPayload(item.payloadJson);
+        const rpgCfg = this.guildConfigRepo?.getOrCreate(guildId).rpg ?? DEFAULT_RPG_CONFIG;
+        if (payload.lootBox && this.rpgRepo.countItems(guildId, userId) >= rpgCfg.bagCapacity) {
+          return { ok: false, reason: 'rpg_bag_full' };
+        }
+
+        const nextCoins = profile.coins - finalPrice;
+        this.shopRepo.decrementStock(guildId, item.id);
+        this.profileRepo.save({ ...profile, coins: nextCoins });
+
+        let nextStamina = character.stamina;
+        if (payload.staminaGain > 0) {
+          nextStamina = character.stamina + payload.staminaGain;
+          this.rpgRepo.saveCharacter({
+            ...character,
+            stamina: nextStamina,
+            updatedAt: nowMs,
+          });
+        }
+
+        let droppedItem: RpgSupplyResult['droppedItem'];
+        if (payload.lootBox) {
+          const targetChapter = Math.max(1, Math.min(6, character.maxChapterCleared + 1));
+          const pending = generateShopRpgLoot(targetChapter, payload.minRarity, rng);
+          const created = this.rpgRepo.createItem({
+            guildId,
+            userId,
+            name: pending.name,
+            slot: pending.slot,
+            rarity: pending.rarity,
+            baseHp: pending.baseHp,
+            baseAtk: pending.baseAtk,
+            baseDef: pending.baseDef,
+            baseCritBp: pending.baseCritBp,
+            enhanceLevel: 0,
+            equipped: false,
+            createdAt: nowMs,
+          });
+          droppedItem = {
+            name: created.name,
+            slot: created.slot,
+            rarity: created.rarity,
+          };
+        }
+
+        return {
+          ok: true,
+          item,
+          finalPrice,
+          balance: nextCoins,
+          grantRoleId: null,
+          equippedTitle: null,
+          addedInventory: null,
+          rpgSupplyResult: {
+            staminaGained: payload.staminaGain,
+            newStamina: nextStamina,
+            ...(droppedItem ? { droppedItem } : {}),
+          },
+        };
+      }
+
+      if (item.type === 'cp_affinity') {
+        if (!this.socialPetRepo) {
+          return { ok: false, reason: 'no_relationship' };
+        }
+        const rels = this.socialPetRepo.listUserRelationships(guildId, userId);
+        if (rels.length === 0) {
+          return { ok: false, reason: 'no_relationship' };
+        }
+
+        const targetRel = rels.find((r) => r.relType === 'marriage') ?? rels[0]!;
+        const payload = parseCpAffinityPayload(item.payloadJson);
+        const nextCoins = profile.coins - finalPrice;
+        const nextAffinity = targetRel.affinity + payload.affinityGain;
+
+        this.shopRepo.decrementStock(guildId, item.id);
+        this.profileRepo.save({ ...profile, coins: nextCoins });
+        this.socialPetRepo.updateRelationshipAffinity(
+          targetRel.id,
+          nextAffinity,
+          targetRel.lastCheckinDate ?? '',
+        );
+        const unlockedTitles = unlockRelationshipMilestoneTitles(
+          this.shopRepo,
+          targetRel,
+          targetRel.affinity,
+          nextAffinity,
+          nowMs,
+        );
+        const partnerId = targetRel.userA === userId ? targetRel.userB : targetRel.userA;
+
+        return {
+          ok: true,
+          item,
+          finalPrice,
+          balance: nextCoins,
+          grantRoleId: null,
+          equippedTitle: null,
+          addedInventory: null,
+          cpAffinityResult: {
+            partnerId,
+            relType: targetRel.relType,
+            affinityGained: payload.affinityGain,
+            newAffinity: nextAffinity,
+            unlockedTitles,
+          },
+        };
+      }
+
       if (item.type === 'mystery_box') {
         const meta = this.getStatMeta(guildId);
+        const tierScale =
+          item.price <= 2000 ? 1 : Math.max(1, Math.min(10, Math.round(item.price / 3000)));
         this.shopRepo.decrementStock(guildId, item.id);
         let nextCoins = profile.coins - finalPrice;
         let nextStat = profile.statValue;
@@ -561,7 +946,9 @@ export class ShopService {
             summary: `💥 **超级金奖！** 开出 **${mult}x** 暴击返币 **+${prize}** ${meta.currencyName}！`,
           };
         } else if (roll < 0.05) {
-          const gain = randomIntInclusive(8, 15, rng);
+          const minStat = tierScale === 1 ? 8 : Math.min(40, 8 * tierScale);
+          const maxStat = tierScale === 1 ? 15 : Math.min(80, 15 * tierScale);
+          const gain = randomIntInclusive(minStat, maxStat, rng);
           nextStat += gain;
           reward = {
             kind: 'stat_jackpot',
@@ -571,12 +958,16 @@ export class ShopService {
             summary: `🌟 **天选奇迹！** ${meta.statName}暴涨 **+${gain}** ${meta.statUnit}（现 **${nextStat}** ${meta.statUnit}）！`,
           };
         } else if (roll < 0.25) {
-          const boostPayload: BoostPayload = { multiplier: 2.0, durationSec: 3600 };
+          const boostMult = tierScale >= 5 ? 3.0 : 2.0;
+          const boostDur = tierScale >= 5 ? 7200 : 3600;
+          const boostName =
+            boostMult >= 3.0 ? '🔥 盲盒三倍经验卡' : '⚡ 盲盒双倍经验卡';
+          const boostPayload: BoostPayload = { multiplier: boostMult, durationSec: boostDur };
           this.shopRepo.addInventoryItem({
             guildId,
             userId,
             itemType: 'xp_boost',
-            itemName: '⚡ 盲盒双倍经验卡',
+            itemName: boostName,
             payloadJson: JSON.stringify(boostPayload),
             quantity: 1,
             acquiredAt: nowMs,
@@ -584,9 +975,9 @@ export class ShopService {
           reward = {
             kind: 'xp_boost',
             isJackpot: false,
-            boostMultiplier: 2.0,
-            boostDurationSec: 3600,
-            summary: '⚡ 开出 **2.0x 经验加成卡（60分钟）**，已存入背包！',
+            boostMultiplier: boostMult,
+            boostDurationSec: boostDur,
+            summary: `⚡ 开出 **${boostMult.toFixed(1)}x 经验加成卡（${Math.round(boostDur / 60)}分钟）**，已存入背包！`,
           };
         } else if (roll < 0.45 && this.chaosRepo) {
           const propKey = PROP_KEYS[Math.floor(rng() * PROP_KEYS.length)] ?? 'shield';
@@ -601,7 +992,7 @@ export class ShopService {
         } else if (roll < 0.60 && this.socialPetRepo) {
           const activePet = this.socialPetRepo.getActivePet(guildId, userId);
           if (activePet) {
-            const petXpGain = 120;
+            const petXpGain = 120 * tierScale;
             const applied = applyPetXp(activePet, petXpGain);
             this.socialPetRepo.savePet(applied.updatedPet);
             reward = {
@@ -623,7 +1014,9 @@ export class ShopService {
             };
           }
         } else if (roll < 0.72) {
-          const gain = randomIntInclusive(1, 3, rng);
+          const minSmall = tierScale === 1 ? 1 : Math.min(12, tierScale);
+          const maxSmall = tierScale === 1 ? 3 : Math.min(25, 3 * tierScale);
+          const gain = randomIntInclusive(minSmall, maxSmall, rng);
           nextStat += gain;
           reward = {
             kind: 'stat_small',

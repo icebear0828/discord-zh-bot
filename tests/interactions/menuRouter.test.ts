@@ -2848,6 +2848,15 @@ describe('menu router & multiplayer interaction flows', () => {
       bagCapacity: 50,
     });
 
+    const resetHustleBtn = createButtonMock({
+      customId: 'menu:admin:reset_hustle_cd',
+      userId: 'admin1',
+    });
+    ctx.services.creditLoan.sellButt('g1', 'u1', Date.now(), () => 0.5);
+    expect(ctx.services.creditLoan.getHustleStats('g1', 'u1').lastHustleAt).toBeGreaterThan(0);
+    await routeInteraction(resetHustleBtn.interaction, ctx);
+    expect(ctx.services.creditLoan.getHustleStats('g1', 'u1').lastHustleAt).toBe(0);
+
     const resetBtn = createButtonMock({
       customId: 'menu:admin:reset_credit_rpg',
       userId: 'admin1',

@@ -10,12 +10,16 @@ import {
 } from 'discord.js';
 import type { ShopItem, ShopItemType } from '../db/repositories/shopRepo.js';
 import type { BlackjackGame } from '../services/blackjackService.js';
-import type { DiceChoice } from '../services/economyService.js';
+import type { DiceChoice, RobTargetHints } from '../services/economyService.js';
 import type { InteractionAction } from '../services/funService.js';
 import type { LeaderboardType } from '../services/levelingService.js';
 import {
   DEFAULT_STAT_BOOST_DAILY_LIMIT,
+  parseCpAffinityPayload,
+  parseCreditBoostPayload,
   parsePetXpPayload,
+  parseRolePayload,
+  parseRpgSupplyPayload,
   parseStatBoostPayload,
   type BuyFailureReason,
 } from '../services/shopService.js';
@@ -28,6 +32,7 @@ export interface MenuActor {
   isAdmin?: boolean;
   isSuperAdmin?: boolean;
   roleIds?: readonly string[];
+  hints?: RobTargetHints;
 }
 
 export interface MenuFeedback {
@@ -180,7 +185,13 @@ export function formatShopItemTag(
   compact = false,
 ): string {
   if (item.type === 'role') {
-    return compact ? '身份组奖励' : `身份组 <@&${item.roleId}>`;
+    const { requiredRoleId } = parseRolePayload(item.payloadJson);
+    if (compact) {
+      return requiredRoleId ? '身份组奖励（需前置身份组）' : '身份组奖励';
+    }
+    return requiredRoleId
+      ? `身份组 <@&${item.roleId}>（需先有 <@&${requiredRoleId}>）`
+      : `身份组 <@&${item.roleId}>`;
   }
   if (item.type === 'title') {
     return `称号「${item.titleText ?? item.name}」`;
@@ -203,6 +214,31 @@ export function formatShopItemTag(
     const { petXp } = parsePetXpPayload(item.payloadJson);
     return compact ? `出战宠物 +${petXp} XP` : `买即生效 · 出战宠物 +${petXp} XP`;
   }
+  if (item.type === 'credit_boost') {
+    const p = parseCreditBoostPayload(item.payloadJson);
+    return compact
+      ? `信用修复 +${p.creditGain} 分（日限${p.dailyLimit}次）`
+      : `买即生效 · 信用分 +${p.creditGain}（封顶 1000，日限 ${p.dailyLimit} 次）`;
+  }
+  if (item.type === 'rpg_supply') {
+    const p = parseRpgSupplyPayload(item.payloadJson);
+    const rarityLabelMap: Record<string, string> = {
+      common: '白装+',
+      uncommon: '绿装+',
+      rare: '蓝装+',
+      epic: '紫装+',
+      legendary: '传说橙装',
+    };
+    const parts: string[] = [];
+    if (p.staminaGain > 0) parts.push(`体力+${p.staminaGain}`);
+    if (p.lootBox) parts.push(`必出${rarityLabelMap[p.minRarity] ?? '蓝装+'}`);
+    const summary = parts.join(' + ') || '地牢补给';
+    return compact ? `RPG补给 · ${summary}` : `买即生效 · 西幻RPG ${summary}`;
+  }
+  if (item.type === 'cp_affinity') {
+    const p = parseCpAffinityPayload(item.payloadJson);
+    return compact ? `CP亲密度 +${p.affinityGain}` : `买即生效 · 结婚/结拜 CP 亲密度 +${p.affinityGain}`;
+  }
   return compact ? '神秘幸运盲盒（5%超级大奖）' : '买即开箱 · 返币/经验卡/黑市道具/成长暴涨';
 }
 
@@ -216,6 +252,7 @@ export function formatShopBuyError(
   reason: BuyFailureReason,
   currencyName: string,
   dailyLimit?: number,
+  requiredRoleId?: string,
 ): string {
   const limit = dailyLimit ?? DEFAULT_STAT_BOOST_DAILY_LIMIT;
   const map: Record<BuyFailureReason, string> = {
@@ -223,9 +260,16 @@ export function formatShopBuyError(
     out_of_stock: '该商品已售罄。',
     insufficient_funds: `你的口袋 ${currencyName} 余额不足！`,
     already_owned: '你已经拥有该专属称号或身份组了，无需重复购买。',
-    daily_limit_reached: `今日成长药水/增幅道具使用已达上限（每日共限 **${limit}** 次），请明天再来！`,
+    daily_limit_reached: `今日该类限购道具使用已达上限（每日限 **${limit}** 次），请明天再来！`,
     no_active_pet: '你当前没有出战宠物，请先前往「🐾 宠物屋」抽取并设置出战宠物（本次未扣款）。',
     invalid_title: '自定义称号需在 1 ~ 20 个字之间，请重新输入（本次未扣款）。',
+    missing_required_role: requiredRoleId
+      ? `需先拥有前置身份组 <@&${requiredRoleId}> 才可购买此商品（本次未扣款）。`
+      : '尚未满足该身份组的前置条件（本次未扣款）。',
+    credit_already_max: '你的信用分已达到 **1000** 满分上限，无需再使用信用修复道具（本次未扣款）。',
+    no_rpg_character: '你尚未创建西幻 RPG 冒险角色，请先打开「⚔️ 西幻冒险」选择职业后再购买（本次未扣款）。',
+    rpg_bag_full: '你的西幻 RPG 装备背包已满，请先前往「⚔️ 西幻冒险 → 🎒 背包」分解或清理装备后再买（本次未扣款）。',
+    no_relationship: '你当前尚未绑定结婚或结拜 CP 关系，请先前往「💞 关系与CP」建立关系后再购买（本次未扣款）。',
   };
   return map[reason];
 }

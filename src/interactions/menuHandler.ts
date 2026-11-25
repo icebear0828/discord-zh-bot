@@ -319,7 +319,14 @@ function runSlotsAction(
   }
 
   const cfg = ctx.repos.guildConfig.getOrCreate(guildId).economy;
-  const res = ctx.services.economy.playSlots(guildId, actor.id, bet);
+  const res = ctx.services.economy.playSlots(
+    guildId,
+    actor.id,
+    bet,
+    Math.random,
+    Date.now(),
+    actor.hints,
+  );
   if (!res.ok) {
     const msgMap: Record<typeof res.reason, string> = {
       invalid_bet: '下注金额无效，请输入大于 0 的整数。',
@@ -341,10 +348,15 @@ function runSlotsAction(
   const highlight: MessageCreateOptions | undefined =
     res.multiplier >= 4
       ? {
-          content: `🎰 欧皇降临！<@${actor.id}> 在老虎机转出 ${reelDisplay}（${res.multiplier}x），狂赚 **+${res.netChange}** ${cfg.currencyName}！`,
+          content:
+            res.multiplier >= 100
+              ? `🧊 核爆级欧皇降临！<@${actor.id}> 在老虎机转出 ${reelDisplay}（${res.multiplier}x 冰冰冰大奖），狂赚 **+${res.netChange}** ${cfg.currencyName}！`
+              : `🎰 欧皇降临！<@${actor.id}> 在老虎机转出 ${reelDisplay}（${res.multiplier}x），狂赚 **+${res.netChange}** ${cfg.currencyName}！`,
           embeds: [
             createSuccessEmbed(
-              '🎰 频道喜报：老虎机爆大奖！',
+              res.multiplier >= 100
+                ? '🧊 频道核爆喜报：冰冰冰 100 倍超级大奖！'
+                : '🎰 频道喜报：老虎机爆大奖！',
               `<@${actor.id}> 拉出 ${reelDisplay}（**${res.multiplier}x**），返还 ${cfg.currencyEmoji} **${res.payout}** ${cfg.currencyName}（净赚 **+${res.netChange}**）！`,
             ),
           ],
@@ -1704,7 +1716,10 @@ export async function handleMenuStringSelect(
         guildId,
         actor,
         { page: 'shop', listPage },
-        { type: 'error', text: formatShopBuyError(res.reason, cfg.currencyName, res.dailyLimit) },
+        {
+          type: 'error',
+          text: formatShopBuyError(res.reason, cfg.currencyName, res.dailyLimit, res.requiredRoleId),
+        },
       );
       await interaction.update(errMsg);
       return;
@@ -1817,6 +1832,22 @@ export async function handleMenuStringSelect(
     } else if (res.petXpResult) {
       const p = res.petXpResult;
       detail = `🐾 出战宠物 **${p.petName}** 获得 **+${p.xpGained} XP**${p.levelsGained > 0 ? `，升级至 **Lv.${p.newLevel}**（连升 ${p.levelsGained} 级）！` : '！'}`;
+    } else if (res.creditBoostResult) {
+      const c = res.creditBoostResult;
+      detail = `🧾 信用分 **+${c.delta}**（当前 **${c.newScore}** · ${c.tierLabel}，今日剩余 **${c.dailyLimit - c.usedToday}/${c.dailyLimit}** 次）！`;
+    } else if (res.rpgSupplyResult) {
+      const r = res.rpgSupplyResult;
+      const parts: string[] = [];
+      if (r.staminaGained > 0) parts.push(`恢复体力 **+${r.staminaGained}**（现 **${r.newStamina}** 点）`);
+      if (r.droppedItem) parts.push(`获得装备 **[${r.droppedItem.rarity}] ${r.droppedItem.name}**`);
+      detail = `⚔️ 西幻 RPG 补给已到账：${parts.join('，')}！`;
+    } else if (res.cpAffinityResult) {
+      const cp = res.cpAffinityResult;
+      const titleNote =
+        cp.unlockedTitles.length > 0
+          ? `（解锁双人称号：**${cp.unlockedTitles.join('、')}**）`
+          : '';
+      detail = `💞 与 <@${cp.partnerId}> 的亲密度 **+${cp.affinityGained}**（现 **${cp.newAffinity}**）${titleNote}！`;
     } else if (res.mysteryBoxResult) {
       detail = `🎁 **盲盒开启**：${res.mysteryBoxResult.summary}`;
       if (res.mysteryBoxResult.isJackpot) {
@@ -1840,7 +1871,7 @@ export async function handleMenuStringSelect(
       { page: 'shop', listPage },
       {
         type: 'success',
-        text: `购买成功：**${res.item.name}**（花费 ${cfg.currencyEmoji} ${res.item.price}）\n${detail}\n剩余现金：**${res.balance}**。`,
+        text: `购买成功：**${res.item.name}**（花费 ${cfg.currencyEmoji} ${res.finalPrice}）\n${detail}\n剩余现金：**${res.balance}**。`,
       },
     );
     if (isRoleItem) {

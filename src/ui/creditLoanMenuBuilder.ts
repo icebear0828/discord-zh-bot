@@ -401,16 +401,17 @@ export function buildHustleView(
   const minBase = Math.max(1, Math.floor(workMin * creditCfg.hustleMinMultiplier));
   const maxBase = Math.max(minBase, Math.floor(workMax * creditCfg.hustleMaxMultiplier));
 
+  const cooldownText = formatDurationZh(cooldownMs);
   const cooldownLine = onCooldown
     ? `⏳ **冷却状态**：体力恢复中，剩余 **${formatDurationZh(remainingMs)}**`
-    : '✅ **冷却状态**：精力充沛，现在就能上街营业！（24 小时冷却）';
+    : `✅ **冷却状态**：精力充沛，现在就能上街营业！（${cooldownText}冷却）`;
 
   const lines = [
     `📈 **营业履历**：累计 **${stats.totalCount}** 次 ｜ 累计创收 ${currencyEmoji} **${stats.totalEarned.toLocaleString()}** ${currencyName} ｜ 历史单次最高 **${stats.bestPayout.toLocaleString()}**`,
     cooldownLine,
     '',
     `💰 **预计基础收益**：${currencyEmoji} **${minBase.toLocaleString()} ~ ${maxBase.toLocaleString()}** ${currencyName}（打工基准 ${creditCfg.hustleMinMultiplier}x ~ ${creditCfg.hustleMaxMultiplier}x）`,
-    '🎲 **随机奇遇**：💎 VIP 金主包场 (1.8~2.2x) / 👀 撞见熟人封口费 (1.3~1.5x) / 🕺 常规营业 (1.0x) / 🚨 扫黄跑单 (0.5x)',
+    '🎲 **随机奇遇**：💎 VIP 金主包场 (1.8~2.2x) / 👀 撞见熟人封口费 (1.3~1.5x) / 🕺 常规营业 (1.0x) / 🚨 扫黄跑单 (0.85x)',
     `⚠️ **代价提醒**：每次上街营业将扣除 **-${creditCfg.hustleCreditPenalty}** 信用分，并在当前频道触发公开抽象快报！`,
   ];
 
@@ -447,6 +448,7 @@ export function buildSellButtPublicEmbed(
   actor: CreditInspectTarget,
   currencyName: string,
   currencyEmoji: string,
+  cooldownSec = 3600,
 ): EmbedBuilder {
   const colorMap: Record<Extract<SellButtResult, { ok: true }>['eventKey'], number> = {
     vip: COLORS.GOLD,
@@ -478,6 +480,8 @@ export function buildSellButtPublicEmbed(
     .setAuthor({ name: `${actor.displayName} · 下海快报`, iconURL: actor.avatarUrl })
     .setTitle(`🍑 ${result.eventTitle}`)
     .setDescription(truncateText(detailLines.join('\n'), 4096))
-    .setFooter({ text: '24 小时后可再次上街营业 · 使用 /贷款 或 /卖屁股 随时开启致富之路' })
+    .setFooter({
+      text: `${formatDurationZh(cooldownSec * 1000)}后可再次上街营业 · 使用 /贷款 或 /卖屁股 随时开启致富之路`,
+    })
     .setTimestamp();
 }

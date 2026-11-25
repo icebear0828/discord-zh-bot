@@ -74,6 +74,37 @@ const SWORN_MILESTONES: ReadonlyArray<{ threshold: number; title: string }> = [
   { threshold: 400, title: '⚔️ 传奇结拜兄弟' },
 ];
 
+export function unlockRelationshipMilestoneTitles(
+  shopRepo: ShopRepo,
+  rel: Relationship,
+  oldAffinity: number,
+  nextAffinity: number,
+  nowMs: number,
+): string[] {
+  const milestones = rel.relType === 'marriage' ? MARRIAGE_MILESTONES : SWORN_MILESTONES;
+  const unlockedTitles: string[] = [];
+  for (const m of milestones) {
+    if (oldAffinity < m.threshold && nextAffinity >= m.threshold) {
+      for (const uid of [rel.userA, rel.userB]) {
+        const owned = shopRepo.findInventoryByTypeAndName(rel.guildId, uid, 'title', m.title);
+        if (!owned) {
+          shopRepo.addInventoryItem({
+            guildId: rel.guildId,
+            userId: uid,
+            itemType: 'title',
+            itemName: m.title,
+            payloadJson: JSON.stringify({ titleText: m.title }),
+            quantity: 1,
+            acquiredAt: nowMs,
+          });
+        }
+      }
+      unlockedTitles.push(m.title);
+    }
+  }
+  return unlockedTitles;
+}
+
 const RELEASE_REFUND_RATIOS: Readonly<Record<PetRarity, number>> = {
   N: 0.25,
   R: 0.45,
@@ -628,32 +659,13 @@ export class SocialPetService {
       const nextAffinity = rel.affinity + gain;
       this.socialPetRepo.updateRelationshipAffinity(rel.id, nextAffinity, today);
 
-      const milestones = rel.relType === 'marriage' ? MARRIAGE_MILESTONES : SWORN_MILESTONES;
-      const unlockedTitles: string[] = [];
-      for (const m of milestones) {
-        if (rel.affinity < m.threshold && nextAffinity >= m.threshold) {
-          for (const uid of [rel.userA, rel.userB]) {
-            const owned = this.shopRepo.findInventoryByTypeAndName(
-              rel.guildId,
-              uid,
-              'title',
-              m.title,
-            );
-            if (!owned) {
-              this.shopRepo.addInventoryItem({
-                guildId: rel.guildId,
-                userId: uid,
-                itemType: 'title',
-                itemName: m.title,
-                payloadJson: JSON.stringify({ titleText: m.title }),
-                quantity: 1,
-                acquiredAt: nowMs,
-              });
-            }
-          }
-          unlockedTitles.push(m.title);
-        }
-      }
+      const unlockedTitles = unlockRelationshipMilestoneTitles(
+        this.shopRepo,
+        rel,
+        rel.affinity,
+        nextAffinity,
+        nowMs,
+      );
 
       return {
         ok: true,

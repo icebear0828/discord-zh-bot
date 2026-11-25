@@ -56,6 +56,9 @@ export const shopCommand: CommandDefinition = {
             )
             .addIntegerOption((opt) =>
               applyZh(opt.setName('stock').setDescription('库存数量（留空为无限）').setMinValue(1), '库存', '库存数量'),
+            )
+            .addRoleOption((opt) =>
+              applyZh(opt.setName('required-role').setDescription('购买所需的门槛前置身份组'), '前置身份组', '需先拥有的身份组'),
             ),
           '上架身份组',
           '上架身份组商品',
@@ -236,6 +239,114 @@ export const shopCommand: CommandDefinition = {
       .addSubcommand((sub) =>
         applyZh(
           sub
+            .setName('add-credit')
+            .setDescription('【管理】上架信用修复道具')
+            .addStringOption((opt) =>
+              applyZh(opt.setName('name').setDescription('商品名称').setRequired(true), '名称', '商品名称'),
+            )
+            .addIntegerOption((opt) =>
+              applyZh(opt.setName('price').setDescription('售价').setMinValue(0).setRequired(true), '价格', '购买所需星币'),
+            )
+            .addIntegerOption((opt) =>
+              applyZh(
+                opt.setName('credit-gain').setDescription('恢复的信用分（1~200）').setMinValue(1).setMaxValue(200).setRequired(true),
+                '信用增量',
+                '购买后增加的信用分',
+              ),
+            )
+            .addIntegerOption((opt) =>
+              applyZh(
+                opt.setName('daily-limit').setDescription('每日限购次数（默认 2）').setMinValue(1).setMaxValue(20),
+                '每日限购',
+                '每天最多购买次数',
+              ),
+            )
+            .addStringOption((opt) =>
+              applyZh(opt.setName('description').setDescription('商品简介'), '简介', '商品描述'),
+            )
+            .addIntegerOption((opt) =>
+              applyZh(opt.setName('stock').setDescription('库存数量（留空为无限）').setMinValue(1), '库存', '库存数量'),
+            ),
+          '上架信用修复',
+          '上架信用修复道具',
+        ),
+      )
+      .addSubcommand((sub) =>
+        applyZh(
+          sub
+            .setName('add-rpg-supply')
+            .setDescription('【管理】上架西幻 RPG 补给/装备箱')
+            .addStringOption((opt) =>
+              applyZh(opt.setName('name').setDescription('商品名称').setRequired(true), '名称', '商品名称'),
+            )
+            .addIntegerOption((opt) =>
+              applyZh(opt.setName('price').setDescription('售价').setMinValue(0).setRequired(true), '价格', '购买所需星币'),
+            )
+            .addIntegerOption((opt) =>
+              applyZh(
+                opt.setName('stamina-gain').setDescription('补充体力值（0~50）').setMinValue(0).setMaxValue(50).setRequired(true),
+                '恢复体力',
+                '购买后补充的体力值',
+              ),
+            )
+            .addBooleanOption((opt) =>
+              applyZh(opt.setName('loot-box').setDescription('是否附带随机装备箱').setRequired(true), '带装备箱', '是否开出装备'),
+            )
+            .addStringOption((opt) =>
+              applyZh(
+                opt
+                  .setName('min-rarity')
+                  .setDescription('保底品质（rare / epic / legendary）')
+                  .addChoices(
+                    { name: '精良蓝装 (rare)', value: 'rare' },
+                    { name: '史诗紫装 (epic)', value: 'epic' },
+                    { name: '传说橙装 (legendary)', value: 'legendary' },
+                  ),
+                '保底品质',
+                '装备箱保底品质',
+              ),
+            )
+            .addStringOption((opt) =>
+              applyZh(opt.setName('description').setDescription('商品简介'), '简介', '商品描述'),
+            )
+            .addIntegerOption((opt) =>
+              applyZh(opt.setName('stock').setDescription('库存数量（留空为无限）').setMinValue(1), '库存', '库存数量'),
+            ),
+          '上架地牢补给',
+          '上架西幻 RPG 补给/装备箱',
+        ),
+      )
+      .addSubcommand((sub) =>
+        applyZh(
+          sub
+            .setName('add-cp-affinity')
+            .setDescription('【管理】上架 CP 亲密度礼物')
+            .addStringOption((opt) =>
+              applyZh(opt.setName('name').setDescription('商品名称').setRequired(true), '名称', '商品名称'),
+            )
+            .addIntegerOption((opt) =>
+              applyZh(opt.setName('price').setDescription('售价').setMinValue(0).setRequired(true), '价格', '购买所需星币'),
+            )
+            .addIntegerOption((opt) =>
+              applyZh(
+                opt.setName('affinity-gain').setDescription('增加的 CP 亲密度（1~1000）').setMinValue(1).setMaxValue(1000).setRequired(true),
+                '亲密增量',
+                '购买后直接增加的 CP 亲密度',
+              ),
+            )
+            .addStringOption((opt) =>
+              applyZh(opt.setName('description').setDescription('商品简介'), '简介', '商品描述'),
+            )
+            .addIntegerOption((opt) =>
+              applyZh(opt.setName('stock').setDescription('库存数量（留空为无限）').setMinValue(1), '库存', '库存数量'),
+            ),
+          '上架亲密礼物',
+          '上架 CP 亲密度礼物',
+        ),
+      )
+      .addSubcommand((sub) =>
+        applyZh(
+          sub
             .setName('remove')
             .setDescription('【管理】下架指定商品')
             .addIntegerOption((opt) =>
@@ -328,8 +439,12 @@ export const shopCommand: CommandDefinition = {
       if (!res.ok) {
         await interaction.reply({
           embeds: [
-            createErrorEmbed('❌ 购买失败', formatShopBuyError(res.reason, cfg.currencyName, res.dailyLimit)),
+            createErrorEmbed(
+              '❌ 购买失败',
+              formatShopBuyError(res.reason, cfg.currencyName, res.dailyLimit, res.requiredRoleId),
+            ),
           ],
+          allowedMentions: { parse: [] },
           flags: MessageFlags.Ephemeral,
         });
         return;
@@ -375,6 +490,22 @@ export const shopCommand: CommandDefinition = {
       } else if (res.petXpResult) {
         const p = res.petXpResult;
         detail = `🐾 出战宠物 **${p.petName}** 获得 **+${p.xpGained} XP**${p.levelsGained > 0 ? `，升级至 **Lv.${p.newLevel}**（连升 ${p.levelsGained} 级）！` : '！'}`;
+      } else if (res.creditBoostResult) {
+        const c = res.creditBoostResult;
+        detail = `🧾 信用分 **+${c.delta}**（当前 **${c.newScore}** · ${c.tierLabel}，今日已用 ${c.usedToday}/${c.dailyLimit} 次）！`;
+      } else if (res.rpgSupplyResult) {
+        const r = res.rpgSupplyResult;
+        const parts: string[] = [];
+        if (r.staminaGained > 0) parts.push(`恢复体力 **+${r.staminaGained}**（现 **${r.newStamina}** 点）`);
+        if (r.droppedItem) parts.push(`获得装备 **[${r.droppedItem.rarity}] ${r.droppedItem.name}**`);
+        detail = `⚔️ 西幻 RPG 补给已送达：${parts.join('，')}！`;
+      } else if (res.cpAffinityResult) {
+        const cp = res.cpAffinityResult;
+        const titleNote =
+          cp.unlockedTitles.length > 0
+            ? `（解锁双人称号：**${cp.unlockedTitles.join('、')}**）`
+            : '';
+        detail = `💞 与 <@${cp.partnerId}> 的亲密度 **+${cp.affinityGained}**（现 **${cp.newAffinity}**）${titleNote}！`;
       } else if (res.mysteryBoxResult) {
         detail = `🎁 **盲盒开启结果**：${res.mysteryBoxResult.summary}`;
       } else if (res.customTitleVoucher) {
@@ -387,7 +518,7 @@ export const shopCommand: CommandDefinition = {
         embeds: [
           createSuccessEmbed(
             '🛍️ 购买成功！',
-            `已购买 **${res.item.name}**（花费 ${cfg.currencyEmoji} ${res.item.price}）\n${detail}\n剩余余额：**${res.balance}** ${cfg.currencyName}`,
+            `已购买 **${res.item.name}**（花费 ${cfg.currencyEmoji} ${res.finalPrice}）\n${detail}\n剩余余额：**${res.balance}** ${cfg.currencyName}`,
           ),
         ],
         allowedMentions: { parse: [] },
@@ -405,6 +536,7 @@ export const shopCommand: CommandDefinition = {
       const role = interaction.options.getRole('role', true);
       const description = interaction.options.getString('description') ?? '';
       const stock = interaction.options.getInteger('stock');
+      const requiredRole = interaction.options.getRole('required-role');
 
       const created = ctx.services.shop.createRoleItem({
         guildId: adminCtx.guildId,
@@ -413,10 +545,14 @@ export const shopCommand: CommandDefinition = {
         price,
         roleId: role.id,
         stock,
+        requiredRoleId: requiredRole?.id ?? null,
       });
       await interaction.reply({
         embeds: [
-          createSuccessEmbed('✅ 已上架身份组商品', `编号 **#${created.id}** · **${created.name}** → <@&${role.id}>（${price} ${cfg.currencyName}）`),
+          createSuccessEmbed(
+            '✅ 已上架身份组商品',
+            `编号 **#${created.id}** · **${created.name}** → <@&${role.id}>（${price} ${cfg.currencyName}${requiredRole ? `，需前置 <@&${requiredRole.id}>` : ''}）`,
+          ),
         ],
         flags: MessageFlags.Ephemeral,
       });
@@ -588,6 +724,95 @@ export const shopCommand: CommandDefinition = {
           createSuccessEmbed(
             '✅ 已上架神秘盲盒',
             `编号 **#${created.id}** · **${created.name}**（${created.price} ${cfg.currencyName}）`,
+          ),
+        ],
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    if (sub === 'add-credit') {
+      const name = interaction.options.getString('name', true);
+      const price = interaction.options.getInteger('price', true);
+      const creditGain = interaction.options.getInteger('credit-gain', true);
+      const dailyLimit = interaction.options.getInteger('daily-limit') ?? 2;
+      const description = interaction.options.getString('description') ?? '';
+      const stock = interaction.options.getInteger('stock');
+
+      const created = ctx.services.shop.createCreditBoostItem({
+        guildId: adminCtx.guildId,
+        name,
+        description,
+        price,
+        creditGain,
+        dailyLimit,
+        stock,
+      });
+      await interaction.reply({
+        embeds: [
+          createSuccessEmbed(
+            '✅ 已上架信用修复道具',
+            `编号 **#${created.id}** · **${created.name}**（+${creditGain} 信用分 · 日限 ${dailyLimit} 次 · ${price} ${cfg.currencyName}）`,
+          ),
+        ],
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    if (sub === 'add-rpg-supply') {
+      const name = interaction.options.getString('name', true);
+      const price = interaction.options.getInteger('price', true);
+      const staminaGain = interaction.options.getInteger('stamina-gain', true);
+      const lootBox = interaction.options.getBoolean('loot-box', true);
+      const rawRarity = interaction.options.getString('min-rarity') ?? 'rare';
+      const minRarity =
+        rawRarity === 'epic' || rawRarity === 'legendary' ? rawRarity : ('rare' as const);
+      const description = interaction.options.getString('description') ?? '';
+      const stock = interaction.options.getInteger('stock');
+
+      const created = ctx.services.shop.createRpgSupplyItem({
+        guildId: adminCtx.guildId,
+        name,
+        description,
+        price,
+        staminaGain,
+        lootBox,
+        minRarity,
+        stock,
+      });
+      await interaction.reply({
+        embeds: [
+          createSuccessEmbed(
+            '✅ 已上架 RPG 补给道具',
+            `编号 **#${created.id}** · **${created.name}**（体力 +${staminaGain}${lootBox ? ` · 保底 ${minRarity} 装备箱` : ''} · ${price} ${cfg.currencyName}）`,
+          ),
+        ],
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    if (sub === 'add-cp-affinity') {
+      const name = interaction.options.getString('name', true);
+      const price = interaction.options.getInteger('price', true);
+      const affinityGain = interaction.options.getInteger('affinity-gain', true);
+      const description = interaction.options.getString('description') ?? '';
+      const stock = interaction.options.getInteger('stock');
+
+      const created = ctx.services.shop.createCpAffinityItem({
+        guildId: adminCtx.guildId,
+        name,
+        description,
+        price,
+        affinityGain,
+        stock,
+      });
+      await interaction.reply({
+        embeds: [
+          createSuccessEmbed(
+            '✅ 已上架 CP 亲密度礼物',
+            `编号 **#${created.id}** · **${created.name}**（亲密度 +${affinityGain} · ${price} ${cfg.currencyName}）`,
           ),
         ],
         flags: MessageFlags.Ephemeral,

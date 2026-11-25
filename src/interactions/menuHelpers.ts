@@ -21,6 +21,7 @@ import type { ModuleKey } from '../config/defaults.js';
 import { checkMemberIsBotAdmin } from '../commands/guards.js';
 import type { AppContext } from '../ui/embeds.js';
 import { truncateText, type BuiltMenuMessage, type MenuActor, type MenuFeedback } from '../ui/menuShared.js';
+import { buildRobTargetHints } from '../ui/soloFormatters.js';
 
 export type MenuSupportedInteraction =
   | ButtonInteraction
@@ -74,6 +75,10 @@ export function getActor(
   const roleIds = interaction.inCachedGuild()
     ? [...interaction.member.roles.cache.keys()]
     : undefined;
+  const hints = buildRobTargetHints(
+    interaction.user,
+    interaction.inCachedGuild() ? interaction.member : null,
+  );
   return {
     id: interaction.user.id,
     displayName: interaction.user.displayName,
@@ -81,6 +86,7 @@ export function getActor(
     isAdmin,
     isSuperAdmin,
     roleIds,
+    hints,
   };
 }
 
@@ -114,6 +120,7 @@ export async function resolveActor(
       isAdmin,
       isSuperAdmin,
       roleIds,
+      hints: buildRobTargetHints(interaction.user, fetchedMember),
     };
   }
 
@@ -126,6 +133,7 @@ export async function resolveActor(
     isAdmin,
     isSuperAdmin,
     roleIds: undefined,
+    hints: buildRobTargetHints(interaction.user, null),
   };
 }
 

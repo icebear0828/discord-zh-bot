@@ -15,6 +15,7 @@ import {
   BANK_ROB_TRAP_FINE_MIN,
   BANK_ROB_TRAP_FINE_RATE,
   DEFAULT_ROB_PROTECTED_KEYWORDS,
+  DEFAULT_SLOTS_VIP_KEYWORDS,
   MAX_SOLO_GAMBLE_BET,
   ROB_ATTACKER_MIN_ASSETS,
   ROB_EASTER_EGG_FINE_RATE,
@@ -32,6 +33,7 @@ import {
   ROB_TRAP_FINE_MAX,
   ROB_TRAP_FINE_MIN,
   ROB_TRAP_FINE_RATE,
+  SLOTS_VIP_ICE_JACKPOT_CHANCE,
 } from '../config/economyConstants.js';
 import type { ChaosRepo } from '../db/repositories/chaosRepo.js';
 import type { GuildConfigRepo } from '../db/repositories/guildConfigRepo.js';
@@ -112,6 +114,14 @@ export function matchesRobProtectedTarget(
     }
   }
   return false;
+}
+
+export function matchesSlotsVipPlayer(
+  playerProfile: { equippedTitle: string | null; cardNickname: string | null },
+  playerHints?: RobTargetHints,
+  keywords: readonly string[] = DEFAULT_SLOTS_VIP_KEYWORDS,
+): boolean {
+  return matchesRobProtectedTarget(playerProfile, playerHints, keywords);
 }
 
 function renderRobEasterEggStory(
@@ -244,13 +254,14 @@ const WORK_STORIES = [
   '撰写了一份新手入门攻略',
 ];
 
-const SLOT_SYMBOLS: ReadonlyArray<{ symbol: string; weight: number }> = [
-  { symbol: '🍒', weight: 30 },
-  { symbol: '🍋', weight: 25 },
-  { symbol: '🍇', weight: 20 },
-  { symbol: '🔔', weight: 13 },
+export const SLOT_SYMBOLS: ReadonlyArray<{ symbol: string; weight: number }> = [
+  { symbol: '🍒', weight: 35 },
+  { symbol: '🍋', weight: 23 },
+  { symbol: '🍇', weight: 15 },
+  { symbol: '🔔', weight: 9 },
   { symbol: '💎', weight: 8 },
-  { symbol: '7️⃣', weight: 4 },
+  { symbol: '7️⃣', weight: 5 },
+  { symbol: '🧊', weight: 5 },
 ];
 
 const TOTAL_SLOT_WEIGHT = SLOT_SYMBOLS.reduce((sum, item) => sum + item.weight, 0);
@@ -960,6 +971,7 @@ export class EconomyService {
     bet: number,
     rng: () => number = Math.random,
     nowMs = Date.now(),
+    playerHints?: RobTargetHints,
   ): SlotsResult {
     const cleanBet = Math.floor(bet);
     if (!Number.isFinite(cleanBet) || cleanBet <= 0) {
@@ -978,22 +990,32 @@ export class EconomyService {
         return { ok: false, reason: 'insufficient_funds' };
       }
 
-      const r1 = pickWeightedSlotSymbol(rng());
-      const r2 = pickWeightedSlotSymbol(rng());
-      const r3 = pickWeightedSlotSymbol(rng());
-      const reels: [string, string, string] = [r1, r2, r3];
-
+      const isVip = matchesSlotsVipPlayer(profile, playerHints);
+      let reels: [string, string, string];
       let multiplier = 0;
-      if (r1 === r2 && r2 === r3) {
-        if (r1 === '7️⃣') {
-          multiplier = 15;
-        } else if (r1 === '💎') {
-          multiplier = 8;
-        } else {
-          multiplier = 4;
+
+      if (isVip && rng() < SLOTS_VIP_ICE_JACKPOT_CHANCE) {
+        reels = ['🧊', '🧊', '🧊'];
+        multiplier = 100;
+      } else {
+        const r1 = pickWeightedSlotSymbol(rng());
+        const r2 = pickWeightedSlotSymbol(rng());
+        const r3 = pickWeightedSlotSymbol(rng());
+        reels = [r1, r2, r3];
+
+        if (r1 === r2 && r2 === r3) {
+          if (r1 === '🧊') {
+            multiplier = 100;
+          } else if (r1 === '7️⃣') {
+            multiplier = 15;
+          } else if (r1 === '💎') {
+            multiplier = 8;
+          } else {
+            multiplier = 4;
+          }
+        } else if (r1 === r2 || r2 === r3 || r1 === r3) {
+          multiplier = 1.5;
         }
-      } else if (r1 === r2 || r2 === r3 || r1 === r3) {
-        multiplier = 1.5;
       }
 
       const payout = Math.floor(cleanBet * multiplier);

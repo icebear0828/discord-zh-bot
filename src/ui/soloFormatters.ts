@@ -382,8 +382,12 @@ export function buildSlotsHighlightEmbed(
   cfg: EconomyDisplayConfig,
 ): EmbedBuilder {
   const reelDisplay = `【 ${res.reels.join('  |  ')} 】`;
+  const title =
+    res.multiplier >= 100
+      ? '🧊 频道核爆喜报：冰冰冰 100 倍超级大奖！'
+      : '🎰 频道喜报：老虎机爆大奖！';
   return createSuccessEmbed(
-    '🎰 频道喜报：老虎机爆大奖！',
+    title,
     `<@${playerId}> 拉出 ${reelDisplay}（**${res.multiplier}x**），返还 ${cfg.currencyEmoji} **${res.payout}** ${cfg.currencyName}（净赚 **+${res.netChange}**）！`,
   );
 }

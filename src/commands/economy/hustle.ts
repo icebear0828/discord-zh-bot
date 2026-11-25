@@ -20,11 +20,11 @@ export const hustleCommand: CommandDefinition = {
   data: applyZh(
     new SlashCommandBuilder()
       .setName('卖屁股')
-      .setDescription('立刻上街下海营业赚快钱还债（24小时冷却，扣信用分并公开播报）'),
+      .setDescription('立刻上街下海营业赚快钱还债（1小时冷却，扣信用分并公开播报）'),
     '卖屁股',
-    '立刻上街下海营业赚快钱还债（24小时冷却，扣信用分并公开播报）',
+    '立刻上街下海营业赚快钱还债（1小时冷却，扣信用分并公开播报）',
     '賣屁股',
-    '立刻上街下海營業賺快錢還債（24小時冷卻，扣信用分並公開播報）',
+    '立刻上街下海營業賺快錢還債（1小時冷卻，扣信用分並公開播報）',
   ),
   async execute(interaction: ChatInputCommandInteraction, ctx: AppContext): Promise<void> {
     const guildCtx = await requireGuildMember(interaction);
@@ -68,6 +68,7 @@ export const hustleCommand: CommandDefinition = {
       },
       cfg.economy.currencyName,
       cfg.economy.currencyEmoji,
+      cfg.creditLoan.hustleCooldownSec,
     );
 
     await interaction.reply({

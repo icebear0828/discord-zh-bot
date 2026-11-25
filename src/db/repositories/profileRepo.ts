@@ -24,6 +24,8 @@ export interface MemberProfile {
   cardColor: string | null;
   lastStatBoostDate: string | null;
   statBoostDailyCount: number;
+  lastCreditBoostDate: string | null;
+  creditBoostDailyCount: number;
   xpBoostMultiplier: number;
   xpBoostExpiresAt: number;
   heatStreak: number;
@@ -65,6 +67,8 @@ interface MemberProfileRow {
   card_color: string | null;
   last_stat_boost_date?: string | null;
   stat_boost_daily_count?: number;
+  last_credit_boost_date?: string | null;
+  credit_boost_daily_count?: number;
   xp_boost_multiplier: number;
   xp_boost_expires_at: number;
   heat_streak: number;
@@ -107,6 +111,8 @@ function mapProfile(row: MemberProfileRow): MemberProfile {
     cardColor: row.card_color ?? null,
     lastStatBoostDate: row.last_stat_boost_date ?? null,
     statBoostDailyCount: row.stat_boost_daily_count ?? 0,
+    lastCreditBoostDate: row.last_credit_boost_date ?? null,
+    creditBoostDailyCount: row.credit_boost_daily_count ?? 0,
     xpBoostMultiplier: row.xp_boost_multiplier,
     xpBoostExpiresAt: row.xp_boost_expires_at,
     heatStreak: row.heat_streak,
@@ -151,6 +157,7 @@ export class ProfileRepo {
           last_bank_interest_date = ?, last_work_at = ?, last_rob_at = ?, rob_shield_until = ?,
           equipped_title = ?, card_nickname = ?, card_tag = ?, card_bio = ?, card_color = ?,
           last_stat_boost_date = ?, stat_boost_daily_count = ?,
+          last_credit_boost_date = ?, credit_boost_daily_count = ?,
           xp_boost_multiplier = ?, xp_boost_expires_at = ?,
           heat_streak = ?, last_xp_at = ?, hour_window_start = ?, hour_xp_earned = ?,
           last_pet_work_at = ?, pet_pvp_xp_date = ?, pet_pvp_xp_daily = ?
@@ -178,6 +185,8 @@ export class ProfileRepo {
         profile.cardColor,
         profile.lastStatBoostDate,
         profile.statBoostDailyCount,
+        profile.lastCreditBoostDate,
+        profile.creditBoostDailyCount,
         profile.xpBoostMultiplier,
         profile.xpBoostExpiresAt,
         profile.heatStreak,

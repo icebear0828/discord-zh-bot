@@ -2,10 +2,14 @@ import { describe, expect, it } from 'vitest';
 import { SHOP_MYSTERY_BOX_MIN_PRICE } from '../../src/config/economyConstants.js';
 import { createDatabase } from '../../src/db/database.js';
 import { ChaosRepo } from '../../src/db/repositories/chaosRepo.js';
+import { CreditLoanRepo } from '../../src/db/repositories/creditLoanRepo.js';
 import { GuildConfigRepo } from '../../src/db/repositories/guildConfigRepo.js';
 import { ProfileRepo } from '../../src/db/repositories/profileRepo.js';
+import { RpgRepo } from '../../src/db/repositories/rpgRepo.js';
 import { ShopRepo } from '../../src/db/repositories/shopRepo.js';
 import { SocialPetRepo } from '../../src/db/repositories/socialPetRepo.js';
+import { CreditLoanService } from '../../src/services/creditLoanService.js';
+import { RpgService } from '../../src/services/rpgService.js';
 import { ShopService } from '../../src/services/shopService.js';
 import { SocialPetService } from '../../src/services/socialPetService.js';
 
@@ -335,6 +339,193 @@ describe('shopService & inventory', () => {
     expect(dupRoleRes).toEqual({ ok: false, reason: 'already_owned' });
     expect(profileRepo.getOrCreate('g1', 'u1').coins).toBe(coinsBeforeRole);
     expect(shopRepo.getItemById('g1', roleItem.id)?.stock).toBe(3);
+
+    db.close();
+  });
+
+  it('supports requiredRoleId gating, credit_boost, rpg_supply, cp_affinity, and scaled mystery_box', () => {
+    const db = createDatabase(':memory:');
+    const guildConfigRepo = new GuildConfigRepo(db);
+    const profileRepo = new ProfileRepo(db);
+    const shopRepo = new ShopRepo(db);
+    const chaosRepo = new ChaosRepo(db);
+    const socialPetRepo = new SocialPetRepo(db);
+    const creditLoanRepo = new CreditLoanRepo(db);
+    const rpgRepo = new RpgRepo(db);
+
+    const creditLoanService = new CreditLoanService(
+      db,
+      guildConfigRepo,
+      profileRepo,
+      creditLoanRepo,
+      'Asia/Shanghai',
+      chaosRepo,
+    );
+    const petSvc = new SocialPetService(
+      db,
+      guildConfigRepo,
+      profileRepo,
+      shopRepo,
+      socialPetRepo,
+      'Asia/Shanghai',
+      creditLoanService,
+    );
+    const rpgSvc = new RpgService(db, rpgRepo, profileRepo, {
+      timezone: 'Asia/Shanghai',
+      guildConfigRepo,
+      socialPetRepo,
+    });
+    const svc = new ShopService(db, profileRepo, shopRepo, {
+      guildConfigRepo,
+      chaosRepo,
+      socialPetRepo,
+      creditLoanService,
+      rpgRepo,
+      timezone: 'Asia/Shanghai',
+    });
+
+    const now = Date.UTC(2026, 5, 10, 4, 0, 0);
+    profileRepo.addCoins('g1', 'u1', 500_000);
+    profileRepo.addCoins('g1', 'u2', 100_000);
+
+    // 1. Role with requiredRoleId prerequisite
+    const upperRole = svc.createRoleItem({
+      guildId: 'g1',
+      name: '上等公民',
+      description: '需先拥有中等公民',
+      price: 1000,
+      roleId: 'role-upper',
+      stock: 5,
+      requiredRoleId: 'role-mid',
+    });
+    const missingReq = svc.buyItem('g1', 'u1', upperRole.id, now, Math.random, new Set(['other']));
+    expect(missingReq).toEqual({
+      ok: false,
+      reason: 'missing_required_role',
+      requiredRoleId: 'role-mid',
+    });
+    expect(shopRepo.getItemById('g1', upperRole.id)?.stock).toBe(5);
+
+    const okReq = svc.buyItem('g1', 'u1', upperRole.id, now, Math.random, new Set(['role-mid']));
+    expect(okReq.ok && okReq.grantRoleId === 'role-upper').toBe(true);
+
+    // 2. credit_boost: daily limit & 1000-score cap
+    creditLoanService.adjustCredit('g1', 'u1', -50, '测试降分', now); // 550
+    const creditItem = svc.createCreditBoostItem({
+      guildId: 'g1',
+      name: '征信修复函',
+      description: '恢复信用分',
+      price: 5000,
+      creditGain: 20,
+      dailyLimit: 2,
+      stock: null,
+    });
+    const cb1 = svc.buyItem('g1', 'u1', creditItem.id, now);
+    expect(cb1.ok).toBe(true);
+    if (cb1.ok) {
+      expect(cb1.creditBoostResult).toMatchObject({
+        delta: 20,
+        newScore: 570,
+        usedToday: 1,
+        dailyLimit: 2,
+      });
+    }
+    const cb2 = svc.buyItem('g1', 'u1', creditItem.id, now + 1000);
+    expect(cb2.ok && cb2.creditBoostResult?.newScore === 590).toBe(true);
+    const cbLimit = svc.buyItem('g1', 'u1', creditItem.id, now + 2000);
+    expect(cbLimit).toEqual({ ok: false, reason: 'daily_limit_reached', dailyLimit: 2 });
+
+    creditLoanService.adjustCredit('g1', 'u1', 500, '升到满分', now + 3000);
+    const cbMax = svc.buyItem('g1', 'u1', creditItem.id, now + 86_400_000);
+    expect(cbMax).toEqual({ ok: false, reason: 'credit_already_max' });
+
+    // 3. rpg_supply: requires character, checks bag capacity, restores stamina & drops item
+    const rpgSupply = svc.createRpgSupplyItem({
+      guildId: 'g1',
+      name: '勇者秘宝盒',
+      description: '补体力+史诗装',
+      price: 10_000,
+      staminaGain: 3,
+      lootBox: true,
+      minRarity: 'epic',
+      stock: null,
+    });
+    expect(svc.buyItem('g1', 'u1', rpgSupply.id, now)).toEqual({
+      ok: false,
+      reason: 'no_rpg_character',
+    });
+
+    rpgSvc.chooseOrSwitchClass('g1', 'u1', 'warrior', now);
+    const staminaBefore = rpgRepo.getCharacter('g1', 'u1')!.stamina;
+    const supplyOk = svc.buyItem('g1', 'u1', rpgSupply.id, now, () => 0.1);
+    expect(supplyOk.ok).toBe(true);
+    if (supplyOk.ok) {
+      expect(supplyOk.rpgSupplyResult?.staminaGained).toBe(3);
+      expect(supplyOk.rpgSupplyResult?.newStamina).toBe(staminaBefore + 3);
+      expect(['epic', 'legendary']).toContain(supplyOk.rpgSupplyResult?.droppedItem?.rarity);
+    }
+
+    // Fill RPG bag to capacity -> rpg_bag_full without deducting coins
+    guildConfigRepo.updateRpg('g1', { ...guildConfigRepo.getOrCreate('g1').rpg, bagCapacity: 1 });
+    const coinsBeforeFull = profileRepo.getOrCreate('g1', 'u1').coins;
+    expect(svc.buyItem('g1', 'u1', rpgSupply.id, now)).toEqual({
+      ok: false,
+      reason: 'rpg_bag_full',
+    });
+    expect(profileRepo.getOrCreate('g1', 'u1').coins).toBe(coinsBeforeFull);
+
+    // 4. cp_affinity: blocked without CP, works once married and unlocks milestone titles
+    const cpGift = svc.createCpAffinityItem({
+      guildId: 'g1',
+      name: '誓约玫瑰',
+      description: '+60亲密度',
+      price: 5000,
+      affinityGain: 60,
+      stock: null,
+    });
+    expect(svc.buyItem('g1', 'u1', cpGift.id, now)).toEqual({
+      ok: false,
+      reason: 'no_relationship',
+    });
+
+    const prop = petSvc.createProposal({
+      guildId: 'g1',
+      channelId: 'c1',
+      proposerId: 'u1',
+      targetId: 'u2',
+      relType: 'marriage',
+      nowMs: now,
+    });
+    expect(prop.ok).toBe(true);
+    if (prop.ok) {
+      expect(petSvc.acceptProposal(prop.proposal.id, 'u2', now).ok).toBe(true);
+    }
+
+    const cpOk = svc.buyItem('g1', 'u1', cpGift.id, now);
+    expect(cpOk.ok).toBe(true);
+    if (cpOk.ok) {
+      expect(cpOk.cpAffinityResult).toMatchObject({
+        partnerId: 'u2',
+        relType: 'marriage',
+        affinityGained: 60,
+        newAffinity: 70,
+      });
+      expect(cpOk.cpAffinityResult?.unlockedTitles).toContain('💞 甜蜜新婚');
+    }
+
+    // 5. High-price mystery box scales stat_jackpot reward
+    const luxBox = svc.createMysteryBoxItem({
+      guildId: 'g1',
+      name: '至尊盲盒',
+      description: '高档盲盒',
+      price: 15_000,
+      stock: null,
+    });
+    const luxRes = svc.buyItem('g1', 'u1', luxBox.id, now, () => 0.04);
+    expect(luxRes.ok).toBe(true);
+    if (luxRes.ok && luxRes.mysteryBoxResult?.kind === 'stat_jackpot') {
+      expect(luxRes.mysteryBoxResult.statDelta).toBeGreaterThanOrEqual(40);
+    }
 
     db.close();
   });

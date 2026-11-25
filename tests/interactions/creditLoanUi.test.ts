@@ -455,8 +455,8 @@ describe('Credit, Loan & Hustle UI builders, handlers and slash commands', () =>
       const readyParsed = assertValidMenuLayout(readyView);
       const readyBtn = readyParsed.buttons.find((b) => b.custom_id === 'cl:act:sell_butt');
       expect(readyBtn?.disabled).toBeFalsy();
-      expect(readyParsed.embed.description).toContain('8,000 ~ 25,000');
-      expect(readyParsed.embed.description).toContain('-10');
+      expect(readyParsed.embed.description).toContain('24,000 ~ 70,000');
+      expect(readyParsed.embed.description).toContain('-5');
       expect(readyParsed.embed.description).toContain('逾期自动划扣提醒');
 
       const sellRes = ctx.services.creditLoan.sellButt(GUILD_ID, USER_A, nowMs, () => 0.5);

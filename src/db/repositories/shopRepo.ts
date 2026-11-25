@@ -7,7 +7,10 @@ export type ShopItemType =
   | 'stat_boost'
   | 'custom_title'
   | 'pet_xp'
-  | 'mystery_box';
+  | 'mystery_box'
+  | 'credit_boost'
+  | 'rpg_supply'
+  | 'cp_affinity';
 
 export interface ShopItem {
   id: number;

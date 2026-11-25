@@ -1,17 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_ROB_PROTECTED_KEYWORDS,
+  DEFAULT_SLOTS_VIP_KEYWORDS,
   MAX_SOLO_GAMBLE_BET,
   ROB_ATTACKER_MIN_ASSETS,
   ROB_EASTER_EGG_FINE_RATE,
   ROB_KING_EASTER_EGG_STORIES,
+  SLOTS_VIP_ICE_JACKPOT_CHANCE,
 } from '../../src/config/economyConstants.js';
 import { createDatabase } from '../../src/db/database.js';
 import { ChaosRepo } from '../../src/db/repositories/chaosRepo.js';
 import { GuildConfigRepo } from '../../src/db/repositories/guildConfigRepo.js';
 import { InviteRepo } from '../../src/db/repositories/inviteRepo.js';
 import { ProfileRepo } from '../../src/db/repositories/profileRepo.js';
-import { EconomyService, getDateKey } from '../../src/services/economyService.js';
+import { EconomyService, getDateKey, SLOT_SYMBOLS } from '../../src/services/economyService.js';
 import { LevelingService } from '../../src/services/levelingService.js';
 
 describe('economyService', () => {
@@ -118,12 +120,101 @@ describe('economyService', () => {
       expect(diceTriple.balance).toBe(1500);
     }
 
-    // Slots deterministic jackpot (max rng picks 7️⃣)
-    const slots = svc.playSlots('g1', 'u1', 100, () => 0.999);
-    expect(slots.ok).toBe(true);
-    if (slots.ok) {
-      expect(slots.reels).toEqual(['7️⃣', '7️⃣', '7️⃣']);
-      expect(slots.netChange).toBe(1400);
+    // Slots deterministic jackpots: 7️⃣ (15x) & 🧊 (100x)
+    const slots7 = svc.playSlots('g1', 'u1', 100, () => 0.92);
+    expect(slots7.ok).toBe(true);
+    if (slots7.ok) {
+      expect(slots7.reels).toEqual(['7️⃣', '7️⃣', '7️⃣']);
+      expect(slots7.multiplier).toBe(15);
+      expect(slots7.netChange).toBe(1400);
+    }
+
+    const slotsIce = svc.playSlots('g1', 'u1', 100, () => 0.999);
+    expect(slotsIce.ok).toBe(true);
+    if (slotsIce.ok) {
+      expect(slotsIce.reels).toEqual(['🧊', '🧊', '🧊']);
+      expect(slotsIce.multiplier).toBe(100);
+      expect(slotsIce.netChange).toBe(9900);
+    }
+
+    db.close();
+  });
+
+  it('maintains balanced normal slots RTP (<100%) while giving VIP keywords a 50% 100x ice jackpot', () => {
+    // 1. Exact analytical RTP check for normal players
+    const totalW = SLOT_SYMBOLS.reduce((sum, s) => sum + s.weight, 0);
+    expect(totalW).toBe(100);
+    let rtp = 0;
+    for (const a of SLOT_SYMBOLS) {
+      for (const b of SLOT_SYMBOLS) {
+        for (const c of SLOT_SYMBOLS) {
+          const p = (a.weight / totalW) * (b.weight / totalW) * (c.weight / totalW);
+          let mult = 0;
+          if (a.symbol === b.symbol && b.symbol === c.symbol) {
+            mult = a.symbol === '🧊' ? 100 : a.symbol === '7️⃣' ? 15 : a.symbol === '💎' ? 8 : 4;
+          } else if (a.symbol === b.symbol || b.symbol === c.symbol || a.symbol === c.symbol) {
+            mult = 1.5;
+          }
+          rtp += p * mult;
+        }
+      }
+    }
+    expect(rtp).toBeGreaterThan(0.9544);
+    expect(rtp).toBeLessThan(0.98);
+
+    // 2. VIP 50% 🧊🧊🧊 check vs non-VIP
+    expect(SLOTS_VIP_ICE_JACKPOT_CHANCE).toBe(0.5);
+    expect(DEFAULT_SLOTS_VIP_KEYWORDS).toContain('icebear');
+    expect(DEFAULT_SLOTS_VIP_KEYWORDS).toContain('草莓布丁酱');
+
+    const db = createDatabase(':memory:');
+    const configRepo = new GuildConfigRepo(db);
+    const profileRepo = new ProfileRepo(db);
+    const svc = new EconomyService(db, configRepo, profileRepo, 'Asia/Shanghai');
+
+    profileRepo.addCoins('g1', 'normal_user', 10_000);
+    profileRepo.addCoins('g1', 'vip_icebear', 10_000);
+    profileRepo.addCoins('g1', 'vip_strawberry', 10_000);
+
+    const makeSeq = (vals: number[]): (() => number) => {
+      let i = 0;
+      return () => vals[i++] ?? 0.5;
+    };
+
+    // Non-VIP with low rng [0.1, 0.4, 0.7] does NOT trigger 🧊🧊🧊 shortcut (rolls 🍒/🍋/🍇 -> 0x)
+    const nonVipRes = svc.playSlots('g1', 'normal_user', 100, makeSeq([0.1, 0.4, 0.7]), 1_000_000, {
+      displayNames: ['普通群友'],
+    });
+    expect(nonVipRes.ok).toBe(true);
+    if (nonVipRes.ok) {
+      expect(nonVipRes.reels).toEqual(['🍒', '🍋', '🍇']);
+      expect(nonVipRes.multiplier).toBe(0);
+    }
+
+    // VIP matched by displayName "icebear" with rng 0.2 < 0.5 triggers 100x 🧊🧊🧊
+    const vipWin = svc.playSlots('g1', 'vip_icebear', 100, makeSeq([0.2]), 1_000_000, {
+      displayNames: ['icebear4922'],
+    });
+    expect(vipWin.ok).toBe(true);
+    if (vipWin.ok) {
+      expect(vipWin.reels).toEqual(['🧊', '🧊', '🧊']);
+      expect(vipWin.multiplier).toBe(100);
+      expect(vipWin.payout).toBe(10_000);
+    }
+
+    // VIP matched by equippedTitle "冰冰冰" with rng 0.6 >= 0.5 falls back to normal rolls
+    profileRepo.save({ ...profileRepo.getOrCreate('g1', 'vip_strawberry'), equippedTitle: '冰冰冰' });
+    const vipFallback = svc.playSlots(
+      'g1',
+      'vip_strawberry',
+      100,
+      makeSeq([0.6, 0.1, 0.4, 0.7]),
+      1_000_000,
+    );
+    expect(vipFallback.ok).toBe(true);
+    if (vipFallback.ok) {
+      expect(vipFallback.reels).toEqual(['🍒', '🍋', '🍇']);
+      expect(vipFallback.multiplier).toBe(0);
     }
 
     db.close();

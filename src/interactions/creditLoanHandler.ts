@@ -503,6 +503,7 @@ export async function handleCreditLoanButton(
         actor,
         cfg.economy.currencyName,
         cfg.economy.currencyEmoji,
+        creditCfg.hustleCooldownSec,
       );
       await sendPublicBroadcast(interaction, { embeds: [publicEmbed] });
       return;
