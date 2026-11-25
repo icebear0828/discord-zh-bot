@@ -316,18 +316,18 @@ describe('aiService helpers & AiMemoryRepo', () => {
   });
 
   it('strips leading speaker prefixes in cleanAiOutput and generateReply while preserving valid bracket syntax', async () => {
-    expect(cleanAiOutput('[黑吊使者]: 这波纯属发牌员针对', '黑吊使者')).toBe(
+    expect(cleanAiOutput('[黑吊姬]: 这波纯属发牌员针对', '黑吊姬')).toBe(
       '这波纯属发牌员针对',
     );
     expect(cleanAiOutput('[毒舌使者]：  就这水平？', '毒舌使者')).toBe('就这水平？');
-    expect(cleanAiOutput('[黑吊使者]: [Bot]: 双重前缀测试', '黑吊使者')).toBe('双重前缀测试');
-    expect(cleanAiOutput('黑吊使者：不带括号前缀也要去掉', '黑吊使者')).toBe(
+    expect(cleanAiOutput('[黑吊姬]: [Bot]: 双重前缀测试', '黑吊姬')).toBe('双重前缀测试');
+    expect(cleanAiOutput('黑吊姬：不带括号前缀也要去掉', '黑吊姬')).toBe(
       '不带括号前缀也要去掉',
     );
-    expect(cleanAiOutput('[置顶] 今晚九点打世界Boss', '黑吊使者')).toBe(
+    expect(cleanAiOutput('[置顶] 今晚九点打世界Boss', '黑吊姬')).toBe(
       '[置顶] 今晚九点打世界Boss',
     );
-    expect(cleanAiOutput('[文档链接](https://example.com): 说明', '黑吊使者')).toBe(
+    expect(cleanAiOutput('[文档链接](https://example.com): 说明', '黑吊姬')).toBe(
       '[文档链接](https://example.com): 说明',
     );
 
@@ -346,7 +346,7 @@ describe('aiService helpers & AiMemoryRepo', () => {
           new Response(
             JSON.stringify({
               model: 'demo-model',
-              choices: [{ message: { content: '[黑吊使者]: 草莓布丁酱说得全对' } }],
+              choices: [{ message: { content: '[黑吊姬]: 草莓布丁酱说得全对' } }],
             }),
             { status: 200, headers: { 'Content-Type': 'application/json' } },
           ),
