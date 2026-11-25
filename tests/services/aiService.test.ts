@@ -871,6 +871,34 @@ describe('aiService helpers & AiMemoryRepo', () => {
     expect(res.text).toContain('const x = "@天使本性";');
   });
 
+  it('unwraps standalone backticked @name and <@id> mentions while keeping real inline code and fenced blocks intact', () => {
+    const participants = [
+      { id: '1476003837352349857', names: ['EdmondZ', 'edmondz0446'] },
+      { id: '100000000000000001', names: ['icebear', '冰吊王'] },
+      { id: '100000000000000003', names: ['无根水'] },
+    ];
+
+    const res = resolveOutgoingMentions(
+      [
+        '`@EdmondZ` 少贴金，是被 `<@1476003837352349857>` 缠烦了吧，顺便问 `@icebear` 和 `@无根水`',
+        '假标签 `<@999999999999999999>`；真行内代码 `const x = "@EdmondZ"` 和 `echo <@1476003837352349857>` 别动',
+        '```ts',
+        'const y = `@EdmondZ`;',
+        '```',
+      ].join('\n'),
+      participants,
+      2,
+    );
+
+    expect(res.allowedMentionUserIds).toEqual(['1476003837352349857', '100000000000000001']);
+    expect(res.text).toContain('<@1476003837352349857> 少贴金，是被 <@1476003837352349857> 缠烦了吧');
+    expect(res.text).toContain('顺便问 <@100000000000000001> 和 @无根水');
+    expect(res.text).toContain('假标签 @群友');
+    expect(res.text).toContain('`const x = "@EdmondZ"`');
+    expect(res.text).toContain('`echo <@1476003837352349857>`');
+    expect(res.text).toContain('const y = `@EdmondZ`;');
+  });
+
   it('injects only active user profiles into prompt and preserves reply/mention targets in generateReply', async () => {
     const db = createDatabase(':memory:');
     const guildConfigRepo = new GuildConfigRepo(db);

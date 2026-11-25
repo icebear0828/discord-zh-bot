@@ -30,7 +30,11 @@ import { ShopRepo } from '../../src/db/repositories/shopRepo.js';
 import { SocialPetRepo } from '../../src/db/repositories/socialPetRepo.js';
 import { TicketRepo } from '../../src/db/repositories/ticketRepo.js';
 import { WorldEventRepo } from '../../src/db/repositories/worldEventRepo.js';
-import { handleMessageCreate, resetAiRuntimeGuards } from '../../src/events/messageCreate.js';
+import {
+  AI_CHANNEL_MAX_PENDING,
+  handleMessageCreate,
+  resetAiRuntimeGuards,
+} from '../../src/events/messageCreate.js';
 import { handleGiveawayButton } from '../../src/interactions/giveawayHandler.js';
 import { handleRolePanelButton } from '../../src/interactions/rolePanelHandler.js';
 import {
@@ -898,8 +902,8 @@ describe('messageCreate isolation, world event guards, and AI safety/rate-limits
 
     ctx.db.close();
 
-    // 4. Per-user cooldown & per-channel concurrency lock
-    let resolveFirst!: (res: Response) => void;
+    // 4. Per-user cooldown & per-channel FIFO queue (same channel serializes instead of dropping)
+    const resolvers: Array<(res: Response) => void> = [];
     let fetchCount = 0;
     const slowClient = new LlmClient(
       { baseUrl: 'https://gateway.local/v1', apiKey: 'sk-test', model: 'demo', timeoutMs: 5000 },
@@ -907,13 +911,19 @@ describe('messageCreate isolation, world event guards, and AI safety/rate-limits
         fetchFn: () => {
           fetchCount++;
           return new Promise<Response>((resolve) => {
-            resolveFirst = resolve;
+            resolvers.push(resolve);
           });
         },
       },
     );
     const ctx2 = createCtx(slowClient);
-    const makeChatMsg = (id: string, userId: string, channelId: string) =>
+    const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    const makeChatMsg = (
+      id: string,
+      userId: string,
+      channelId: string,
+      replySpy = vi.fn(async () => undefined),
+    ) =>
       ({
         id,
         channelId,
@@ -932,19 +942,26 @@ describe('messageCreate isolation, world event guards, and AI safety/rate-limits
           sendTyping: vi.fn(async () => undefined),
           messages: { fetch: vi.fn(async () => new Map()) },
         },
-        reply: vi.fn(async () => undefined),
+        reply: replySpy,
       }) as unknown as Message;
 
-    const p1 = handleMessageCreate(fakeClient, makeChatMsg('c1', 'user-a', 'chan-lock'), ctx2);
-    // Wait a microtask for p1 to enter LLM fetch
-    await Promise.resolve();
-    await Promise.resolve();
+    const reply1 = vi.fn(async () => undefined);
+    const reply2 = vi.fn(async () => undefined);
+    const p1 = handleMessageCreate(fakeClient, makeChatMsg('c1', 'user-a', 'chan-lock', reply1), ctx2);
+    // Wait for p1 to enter LLM fetch
+    await vi.waitFor(() => {
+      expect(fetchCount).toBe(1);
+    });
 
-    // Different user in SAME channel is blocked by per-channel concurrency lock
-    await handleMessageCreate(fakeClient, makeChatMsg('c2', 'user-b', 'chan-lock'), ctx2);
+    // Different user in SAME channel is queued rather than dropped or fired concurrently
+    const p2 = handleMessageCreate(fakeClient, makeChatMsg('c2', 'user-b', 'chan-lock', reply2), ctx2);
+    await Promise.resolve();
     expect(fetchCount).toBe(1);
+    expect(
+      infoSpy.mock.calls.some((args) => String(args[0]).includes('[ai:queue] pos=1 user=user-b')),
+    ).toBe(true);
 
-    resolveFirst(
+    resolvers[0]!(
       new Response(
         JSON.stringify({ model: 'demo', choices: [{ message: { content: '第一条回复' } }] }),
         { status: 200, headers: { 'Content-Type': 'application/json' } },
@@ -952,11 +969,367 @@ describe('messageCreate isolation, world event guards, and AI safety/rate-limits
     );
     await p1;
 
+    await vi.waitFor(() => {
+      expect(fetchCount).toBe(2);
+    });
+    resolvers[1]!(
+      new Response(
+        JSON.stringify({ model: 'demo', choices: [{ message: { content: '第二条回复' } }] }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+    await p2;
+    expect(reply1).toHaveBeenCalledTimes(1);
+    expect(reply2).toHaveBeenCalledTimes(1);
+
     // Same user immediately in another channel is blocked by per-user 5s cooldown
     await handleMessageCreate(fakeClient, makeChatMsg('c3', 'user-a', 'chan-other'), ctx2);
-    expect(fetchCount).toBe(1);
+    expect(fetchCount).toBe(2);
+    expect(
+      infoSpy.mock.calls.some((args) => String(args[0]).includes('[ai:skip] reason=cooldown')),
+    ).toBe(true);
 
+    infoSpy.mockRestore();
     ctx2.db.close();
+  });
+
+  it('caps per-channel AI queue at AI_CHANNEL_MAX_PENDING and skips overflow without consuming cooldown', async () => {
+    const resolvers: Array<(res: Response) => void> = [];
+    let fetchCount = 0;
+    const llmClient = new LlmClient(
+      { baseUrl: 'https://gateway.local/v1', apiKey: 'sk-test', model: 'demo', timeoutMs: 5000 },
+      {
+        fetchFn: () => {
+          fetchCount++;
+          return new Promise<Response>((resolve) => {
+            resolvers.push(resolve);
+          });
+        },
+      },
+    );
+    const ctx = createCtx(llmClient);
+    const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    const fakeClient = { user: { id: 'bot-1' } } as unknown as Client;
+
+    const makeChatMsg = (id: string, userId: string, channelId = 'chan-cap') =>
+      ({
+        id,
+        channelId,
+        content: '<@bot-1> 排队测试',
+        createdTimestamp: Date.now(),
+        author: { id: userId, bot: false, username: userId },
+        member: { displayName: userId },
+        guild: { id: 'g1' },
+        mentions: { users: new Map([['bot-1', { id: 'bot-1' }]]) },
+        attachments: new Map(),
+        embeds: [],
+        reference: null,
+        channel: {
+          isTextBased: () => true,
+          isSendable: () => true,
+          sendTyping: vi.fn(async () => undefined),
+          messages: { fetch: vi.fn(async () => new Map()) },
+        },
+        reply: vi.fn(async () => undefined),
+      }) as unknown as Message;
+
+    const totalAccepted = 1 + AI_CHANNEL_MAX_PENDING;
+    const pendingPromises: Array<Promise<void>> = [];
+    pendingPromises.push(handleMessageCreate(fakeClient, makeChatMsg('m0', 'u0'), ctx));
+    await vi.waitFor(() => {
+      expect(fetchCount).toBe(1);
+    });
+
+    for (let i = 1; i < totalAccepted; i++) {
+      pendingPromises.push(handleMessageCreate(fakeClient, makeChatMsg(`m${i}`, `u${i}`), ctx));
+    }
+
+    // Overflow user should return immediately without entering queue or setting cooldown
+    await handleMessageCreate(fakeClient, makeChatMsg('m-overflow', 'u-overflow'), ctx);
+    expect(
+      infoSpy.mock.calls.some((args) =>
+        String(args[0]).includes('[ai:skip] reason=queue_full pending=4 user=u-overflow'),
+      ),
+    ).toBe(true);
+
+    for (let i = 0; i < totalAccepted; i++) {
+      await vi.waitFor(() => {
+        expect(resolvers.length).toBe(i + 1);
+      });
+      resolvers[i]!(
+        new Response(
+          JSON.stringify({ model: 'demo', choices: [{ message: { content: `ok-${i}` } }] }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      );
+    }
+    await Promise.all(pendingPromises);
+    expect(fetchCount).toBe(totalAccepted);
+
+    // Since u-overflow was skipped by queue_full, it was not put on cooldown
+    const afterDrain = handleMessageCreate(fakeClient, makeChatMsg('m-after', 'u-overflow'), ctx);
+    await vi.waitFor(() => {
+      expect(fetchCount).toBe(totalAccepted + 1);
+    });
+    resolvers[totalAccepted]!(
+      new Response(
+        JSON.stringify({ model: 'demo', choices: [{ message: { content: 'ok-after' } }] }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+    await afterDrain;
+
+    infoSpy.mockRestore();
+    ctx.db.close();
+  });
+
+  it('allows concurrent AI requests across different channels without waiting', async () => {
+    const resolvers: Array<(res: Response) => void> = [];
+    let fetchCount = 0;
+    const llmClient = new LlmClient(
+      { baseUrl: 'https://gateway.local/v1', apiKey: 'sk-test', model: 'demo', timeoutMs: 5000 },
+      {
+        fetchFn: () => {
+          fetchCount++;
+          return new Promise<Response>((resolve) => {
+            resolvers.push(resolve);
+          });
+        },
+      },
+    );
+    const ctx = createCtx(llmClient);
+    const fakeClient = { user: { id: 'bot-1' } } as unknown as Client;
+    const makeChatMsg = (id: string, userId: string, channelId: string) =>
+      ({
+        id,
+        channelId,
+        content: '<@bot-1> 并发频道',
+        createdTimestamp: Date.now(),
+        author: { id: userId, bot: false, username: userId },
+        member: { displayName: userId },
+        guild: { id: 'g1' },
+        mentions: { users: new Map([['bot-1', { id: 'bot-1' }]]) },
+        attachments: new Map(),
+        embeds: [],
+        reference: null,
+        channel: {
+          isTextBased: () => true,
+          isSendable: () => true,
+          sendTyping: vi.fn(async () => undefined),
+          messages: { fetch: vi.fn(async () => new Map()) },
+        },
+        reply: vi.fn(async () => undefined),
+      }) as unknown as Message;
+
+    const pa = handleMessageCreate(fakeClient, makeChatMsg('ma', 'ua', 'chan-a'), ctx);
+    const pb = handleMessageCreate(fakeClient, makeChatMsg('mb', 'ub', 'chan-b'), ctx);
+
+    await vi.waitFor(() => {
+      expect(fetchCount).toBe(2);
+    });
+
+    resolvers[0]!(
+      new Response(JSON.stringify({ model: 'demo', choices: [{ message: { content: 'a' } }] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    resolvers[1]!(
+      new Response(JSON.stringify({ model: 'demo', choices: [{ message: { content: 'b' } }] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    await Promise.all([pa, pb]);
+    ctx.db.close();
+  });
+
+  it('isolates per-task errors in the channel queue so subsequent queued messages still receive replies', async () => {
+    const resolvers: Array<(res: Response) => void> = [];
+    let fetchCount = 0;
+    const llmClient = new LlmClient(
+      { baseUrl: 'https://gateway.local/v1', apiKey: 'sk-test', model: 'demo', timeoutMs: 5000 },
+      {
+        fetchFn: () => {
+          fetchCount++;
+          return new Promise<Response>((resolve) => {
+            resolvers.push(resolve);
+          });
+        },
+      },
+    );
+    const ctx = createCtx(llmClient);
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const fakeClient = { user: { id: 'bot-1' } } as unknown as Client;
+
+    const failingReply = vi.fn(async () => {
+      throw new Error('Discord reply failed');
+    });
+    const okReply = vi.fn(async () => undefined);
+    const makeChatMsg = (id: string, userId: string, replyFn: ReturnType<typeof vi.fn>) =>
+      ({
+        id,
+        channelId: 'chan-err-iso',
+        content: '<@bot-1> 测试异常隔离',
+        createdTimestamp: Date.now(),
+        author: { id: userId, bot: false, username: userId },
+        member: { displayName: userId },
+        guild: { id: 'g1' },
+        mentions: { users: new Map([['bot-1', { id: 'bot-1' }]]) },
+        attachments: new Map(),
+        embeds: [],
+        reference: null,
+        channel: {
+          isTextBased: () => true,
+          isSendable: () => true,
+          sendTyping: vi.fn(async () => undefined),
+          messages: { fetch: vi.fn(async () => new Map()) },
+        },
+        reply: replyFn,
+      }) as unknown as Message;
+
+    const p1 = handleMessageCreate(fakeClient, makeChatMsg('me1', 'ue1', failingReply), ctx);
+    await vi.waitFor(() => {
+      expect(fetchCount).toBe(1);
+    });
+    const p2 = handleMessageCreate(fakeClient, makeChatMsg('me2', 'ue2', okReply), ctx);
+
+    resolvers[0]!(
+      new Response(JSON.stringify({ model: 'demo', choices: [{ message: { content: 'r1' } }] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    await p1;
+
+    await vi.waitFor(() => {
+      expect(fetchCount).toBe(2);
+    });
+    resolvers[1]!(
+      new Response(JSON.stringify({ model: 'demo', choices: [{ message: { content: 'r2' } }] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    await p2;
+
+    expect(errSpy).toHaveBeenCalled();
+    expect(okReply).toHaveBeenCalledTimes(1);
+    errSpy.mockRestore();
+    ctx.db.close();
+  });
+
+  it('passes failIfNotExists: false on AI replies and logs upstream error detail in [ai:error]', async () => {
+    const fakeClient = { user: { id: 'bot-1' } } as unknown as Client;
+
+    // 1. Unconfigured notice includes failIfNotExists: false
+    const unconfCtx = createCtx(new LlmClient(undefined));
+    const unconfReply = vi.fn(async () => undefined);
+    await handleMessageCreate(
+      fakeClient,
+      {
+        id: 'm-unconf-flag',
+        channelId: 'chan-flag',
+        content: '<@bot-1> hi',
+        createdTimestamp: Date.now(),
+        author: { id: 'u1', bot: false, username: 'u1' },
+        member: { displayName: 'u1' },
+        guild: { id: 'g1' },
+        mentions: { users: new Map([['bot-1', { id: 'bot-1' }]]) },
+        attachments: new Map(),
+        embeds: [],
+        reference: null,
+        channel: { isTextBased: () => true, isSendable: () => true },
+        reply: unconfReply,
+      } as unknown as Message,
+      unconfCtx,
+    );
+    expect(unconfReply.mock.calls[0]?.[0]).toMatchObject({ failIfNotExists: false });
+    unconfCtx.db.close();
+
+    // 2. Normal reply & HTTP 400 error reply both include failIfNotExists: false, and [ai:error] logs detail
+    let mode: 'ok' | '400' = 'ok';
+    const llmClient = new LlmClient(
+      { baseUrl: 'https://gateway.local/v1', apiKey: 'sk-test', model: 'demo', timeoutMs: 5000 },
+      {
+        maxRetries: 0,
+        fetchFn: async () => {
+          if (mode === 'ok') {
+            return new Response(
+              JSON.stringify({ model: 'demo', choices: [{ message: { content: '正常回复' } }] }),
+              { status: 200, headers: { 'Content-Type': 'application/json' } },
+            );
+          }
+          return new Response('{"error":{"message":"invalid_model_param"}}', {
+            status: 400,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        },
+      },
+    );
+    const ctx = createCtx(llmClient);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    const okReply = vi.fn(async () => undefined);
+    await handleMessageCreate(
+      fakeClient,
+      {
+        id: 'm-ok-flag',
+        channelId: 'chan-flag-2',
+        content: '<@bot-1> hi',
+        createdTimestamp: Date.now(),
+        author: { id: 'u2', bot: false, username: 'u2' },
+        member: { displayName: 'u2' },
+        guild: { id: 'g1' },
+        mentions: { users: new Map([['bot-1', { id: 'bot-1' }]]) },
+        attachments: new Map(),
+        embeds: [],
+        reference: null,
+        channel: {
+          isTextBased: () => true,
+          isSendable: () => true,
+          sendTyping: vi.fn(async () => undefined),
+          messages: { fetch: vi.fn(async () => new Map()) },
+        },
+        reply: okReply,
+      } as unknown as Message,
+      ctx,
+    );
+    expect(okReply.mock.calls[0]?.[0]).toMatchObject({ failIfNotExists: false });
+
+    mode = '400';
+    const errReply = vi.fn(async () => undefined);
+    await handleMessageCreate(
+      fakeClient,
+      {
+        id: 'm-err-flag',
+        channelId: 'chan-flag-2',
+        content: '<@bot-1> hi again',
+        createdTimestamp: Date.now(),
+        author: { id: 'u3', bot: false, username: 'u3' },
+        member: { displayName: 'u3' },
+        guild: { id: 'g1' },
+        mentions: { users: new Map([['bot-1', { id: 'bot-1' }]]) },
+        attachments: new Map(),
+        embeds: [],
+        reference: null,
+        channel: {
+          isTextBased: () => true,
+          isSendable: () => true,
+          sendTyping: vi.fn(async () => undefined),
+          messages: { fetch: vi.fn(async () => new Map()) },
+        },
+        reply: errReply,
+      } as unknown as Message,
+      ctx,
+    );
+    expect(errReply.mock.calls[0]?.[0]).toMatchObject({ failIfNotExists: false });
+    const warnLine = String(warnSpy.mock.calls[0]?.[0] ?? '');
+    expect(warnLine).toContain('[ai:error] code=bad_request');
+    expect(warnLine).toContain('detail=LLM HTTP 400: {"error":{"message":"invalid_model_param"}}');
+
+    warnSpy.mockRestore();
+    ctx.db.close();
   });
 
   it('resolves <@userId> mentions to display names and applies input/output regex in handleMessageCreate and /ai regex', async () => {

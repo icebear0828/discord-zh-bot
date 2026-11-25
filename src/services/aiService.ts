@@ -110,6 +110,7 @@ export type GenerateAiReplyResult =
       ok: false;
       errorCode: LlmErrorCode;
       errorMessage: string;
+      errorDetail?: string;
     };
 
 export function estimateTextTokens(text: string): number {
@@ -444,6 +445,58 @@ export interface ResolveOutgoingMentionsResult {
 }
 
 const CODE_BLOCK_SEGMENT_RE = /(```[\s\S]*?```)/g;
+const INLINE_CODE_SEGMENT_RE = /(`[^`\n]+`)/g;
+const STANDALONE_USER_TAG_RE = /^<@!?(\d{15,22})>$/;
+
+function grantMentionTag(
+  userId: string,
+  fallbackName: string,
+  allowedSet: Set<string>,
+  allowedOrder: string[],
+  maxMentions: number,
+): string {
+  if (allowedSet.has(userId)) {
+    return `<@${userId}>`;
+  }
+  if (allowedOrder.length < maxMentions) {
+    allowedSet.add(userId);
+    allowedOrder.push(userId);
+    return `<@${userId}>`;
+  }
+  return `@${fallbackName}`;
+}
+
+function resolveInlineCodeMention(
+  part: string,
+  participantById: ReadonlyMap<string, string>,
+  sortedCandidates: ReadonlyArray<{ id: string; name: string; regex: RegExp }>,
+  allowedSet: Set<string>,
+  allowedOrder: string[],
+  maxMentions: number,
+): string {
+  const inner = part.slice(1, -1).trim();
+  const tagMatch = STANDALONE_USER_TAG_RE.exec(inner);
+  if (tagMatch) {
+    const userId = tagMatch[1]!;
+    const primaryName = participantById.get(userId);
+    if (!primaryName) {
+      return '@群友';
+    }
+    return grantMentionTag(userId, primaryName, allowedSet, allowedOrder, maxMentions);
+  }
+
+  if (inner.startsWith('@')) {
+    const mentionTarget = inner.slice(1).toLowerCase();
+    const matched = sortedCandidates.find(
+      (candidate) => candidate.name.toLowerCase() === mentionTarget,
+    );
+    if (matched) {
+      return grantMentionTag(matched.id, matched.name, allowedSet, allowedOrder, maxMentions);
+    }
+  }
+
+  return part;
+}
 
 function resolveOutgoingMentionsPlain(
   segment: string,
@@ -461,15 +514,7 @@ function resolveOutgoingMentionsPlain(
     if (!primaryName) {
       return '@群友';
     }
-    if (allowedSet.has(userId)) {
-      return `<@${userId}>`;
-    }
-    if (allowedOrder.length < maxMentions) {
-      allowedSet.add(userId);
-      allowedOrder.push(userId);
-      return `<@${userId}>`;
-    }
-    return `@${primaryName}`;
+    return grantMentionTag(userId, primaryName, allowedSet, allowedOrder, maxMentions);
   });
 
   // 2. Replace @DisplayName / @Alias with real <@userId> (preserving order, capped at maxMentions)
@@ -488,6 +533,50 @@ function resolveOutgoingMentionsPlain(
   }
 
   return out;
+}
+
+function resolveOutgoingMentionsSegment(
+  segment: string,
+  participantById: ReadonlyMap<string, string>,
+  sortedCandidates: ReadonlyArray<{ id: string; name: string; regex: RegExp }>,
+  allowedSet: Set<string>,
+  allowedOrder: string[],
+  maxMentions: number,
+): string {
+  if (!segment.includes('`')) {
+    return resolveOutgoingMentionsPlain(
+      segment,
+      participantById,
+      sortedCandidates,
+      allowedSet,
+      allowedOrder,
+      maxMentions,
+    );
+  }
+
+  return segment
+    .split(INLINE_CODE_SEGMENT_RE)
+    .map((part) => {
+      if (part.startsWith('`') && part.endsWith('`') && part.length >= 3 && !part.includes('\n')) {
+        return resolveInlineCodeMention(
+          part,
+          participantById,
+          sortedCandidates,
+          allowedSet,
+          allowedOrder,
+          maxMentions,
+        );
+      }
+      return resolveOutgoingMentionsPlain(
+        part,
+        participantById,
+        sortedCandidates,
+        allowedSet,
+        allowedOrder,
+        maxMentions,
+      );
+    })
+    .join('');
 }
 
 export function resolveOutgoingMentions(
@@ -537,7 +626,7 @@ export function resolveOutgoingMentions(
   const allowedOrder: string[] = [];
 
   if (!text.includes('```')) {
-    const resolved = resolveOutgoingMentionsPlain(
+    const resolved = resolveOutgoingMentionsSegment(
       text,
       participantById,
       sortedCandidates,
@@ -554,7 +643,7 @@ export function resolveOutgoingMentions(
       if (part.startsWith('```') && part.endsWith('```') && part.length >= 6) {
         return part;
       }
-      return resolveOutgoingMentionsPlain(
+      return resolveOutgoingMentionsSegment(
         part,
         participantById,
         sortedCandidates,
@@ -1520,12 +1609,14 @@ export class AiService {
           ok: false,
           errorCode: err.code,
           errorMessage: err.userMessage,
+          errorDetail: err.message,
         };
       }
       return {
         ok: false,
         errorCode: 'unknown',
         errorMessage: 'AI 回复时发生未知错误，请稍后再试。',
+        errorDetail: err instanceof Error ? err.message : String(err),
       };
     }
   }

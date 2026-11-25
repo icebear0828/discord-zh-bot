@@ -12,15 +12,42 @@ import { buildWorldBossCard, buildWorldChestCard } from '../ui/worldEventMenuBui
 import { sendLevelUpNotice, syncLevelRewardRoles } from './ready.js';
 
 const AI_USER_COOLDOWN_MS = 5_000;
+export const AI_CHANNEL_MAX_PENDING = 4;
+const AI_QUEUE_TASK_TTL_MS = 90_000;
 const AI_MAX_REPLY_CHAIN_DEPTH = 6;
 const AI_MAX_USER_INPUT_CHARS = 4_000;
 
+interface QueuedAiTask {
+  message: Message;
+  ctx: AppContext;
+  botId: string;
+  guildId: string;
+  userDisplayName: string;
+  userHandle: string;
+  directRef: Message | null;
+  userContent: string;
+  attachments: DiscordAttachmentLike[];
+  enqueuedAt: number;
+  resolve: () => void;
+}
+
+interface ChannelAiQueueState {
+  running: boolean;
+  pending: QueuedAiTask[];
+}
+
 const userAiCooldowns = new Map<string, number>();
-const activeAiChannels = new Set<string>();
+const channelAiQueues = new Map<string, ChannelAiQueueState>();
 
 export function resetAiRuntimeGuards(): void {
   userAiCooldowns.clear();
-  activeAiChannels.clear();
+  for (const state of channelAiQueues.values()) {
+    for (const task of state.pending) {
+      task.resolve();
+    }
+    state.pending.length = 0;
+  }
+  channelAiQueues.clear();
 }
 
 function pruneCooldownMap(nowMs: number): void {
@@ -127,6 +154,155 @@ async function collectDeeperReplyChain(
   };
 }
 
+async function executeAiTask(task: QueuedAiTask): Promise<void> {
+  const { message, ctx, botId, guildId, userDisplayName, userHandle, directRef, userContent, attachments } =
+    task;
+  const cfg = ctx.repos.guildConfig.getOrCreate(guildId);
+  if (!cfg.modules.ai) return;
+
+  let typingTimer: NodeJS.Timeout | null = null;
+  try {
+    // Only fetch deeper reply chain AFTER trigger + guards pass
+    const replyData = directRef
+      ? await collectDeeperReplyChain(directRef, botId, AI_MAX_REPLY_CHAIN_DEPTH)
+      : { chain: [], fetchedMessages: new Map<string, Message>() };
+    const replyChain = replyData.chain;
+
+    const channelWindow: RawContextMessage[] = [];
+    if (cfg.ai.contextWindowMessages > 0 && message.channel.isTextBased()) {
+      try {
+        const fetched = await message.channel.messages.fetch({
+          limit: Math.min(30, cfg.ai.contextWindowMessages + 2),
+          before: message.id,
+        });
+        const lookup = new Map<string, Message>(replyData.fetchedMessages);
+        for (const m of fetched.values()) {
+          lookup.set(m.id, m);
+        }
+        for (const m of fetched.values()) {
+          channelWindow.push(toRawContextMessage(m, botId, lookup));
+        }
+      } catch {
+        // Missing ReadMessageHistory permission — fall back to reply chain only
+      }
+    }
+
+    if (message.channel.isSendable()) {
+      await message.channel.sendTyping().catch(() => undefined);
+    }
+    typingTimer = setInterval(() => {
+      if (message.channel.isSendable()) {
+        void message.channel.sendTyping().catch(() => undefined);
+      }
+    }, 8000);
+
+    const mentionedUsers = extractNonBotMentionedUsers(message, botId);
+    const res = await ctx.services.ai.generateReply(
+      {
+        guildId,
+        channelId: message.channelId,
+        userId: message.author.id,
+        userName: userDisplayName,
+        userHandle,
+        messageId: message.id,
+        userContent,
+        ...(directRef
+          ? {
+              replyToAuthorId: directRef.author.id,
+              replyToAuthorName: getMessageAuthorName(directRef),
+            }
+          : {}),
+        mentionedUsers,
+        replyChain,
+        channelWindow,
+        attachments,
+      },
+      botId,
+    );
+
+    if (!res.ok) {
+      const detailPart = res.errorDetail
+        ? ` detail=${res.errorDetail.replace(/\s+/g, ' ').slice(0, 300)}`
+        : '';
+      console.warn(
+        `[ai:error] code=${res.errorCode} user=${userHandle}(${message.author.id}) guild=${guildId} channel=${message.channelId} msg=${res.errorMessage}${detailPart}`,
+      );
+      await message.reply({
+        content: `⚠️ ${res.errorMessage}`,
+        allowedMentions: { parse: [], repliedUser: true },
+        failIfNotExists: false,
+      });
+      return;
+    }
+
+    console.log(
+      `[ai:ok] model=${res.model} user=${userHandle}(${message.author.id}) guild=${guildId} channel=${message.channelId} tokens=${res.usage.promptTokens}+${res.usage.completionTokens}=${res.usage.totalTokens}${res.usage.estimated ? '(est)' : ''} cost=$${res.usage.costUsd.toFixed(6)} latency=${res.usage.latencyMs}ms attempts=${res.attempts}`,
+    );
+
+    for (let i = 0; i < res.chunks.length; i++) {
+      const chunk = res.chunks[i];
+      if (!chunk) continue;
+      const chunkAllowedUsers = res.allowedMentionUserIds.filter((id) =>
+        chunk.includes(`<@${id}>`),
+      );
+      if (i === 0) {
+        await message.reply({
+          content: chunk,
+          allowedMentions: { parse: [], users: chunkAllowedUsers, repliedUser: true },
+          failIfNotExists: false,
+        });
+      } else if (message.channel.isSendable()) {
+        await message.channel.send({
+          content: chunk,
+          allowedMentions: { parse: [], users: chunkAllowedUsers },
+        });
+      }
+    }
+  } finally {
+    if (typingTimer) {
+      clearInterval(typingTimer);
+    }
+  }
+}
+
+async function drainChannelAiQueue(channelId: string): Promise<void> {
+  const state = channelAiQueues.get(channelId);
+  if (!state || state.running) return;
+  state.running = true;
+
+  try {
+    while (state.pending.length > 0) {
+      const task = state.pending.shift();
+      if (!task) continue;
+
+      const waitedMs = Date.now() - task.enqueuedAt;
+      if (waitedMs > AI_QUEUE_TASK_TTL_MS) {
+        console.info(
+          `[ai:skip] reason=queue_expired waitedMs=${waitedMs} user=${task.userHandle}(${task.message.author.id}) guild=${task.guildId} channel=${task.message.channelId}`,
+        );
+        task.resolve();
+        continue;
+      }
+
+      try {
+        await executeAiTask(task);
+      } catch (err) {
+        console.error('[ai] 处理对话消息失败:', err);
+      } finally {
+        task.resolve();
+      }
+    }
+  } finally {
+    state.running = false;
+    const current = channelAiQueues.get(channelId);
+    if (current === state && state.pending.length === 0) {
+      channelAiQueues.delete(channelId);
+    } else if (current === state && state.pending.length > 0) {
+      void drainChannelAiQueue(channelId);
+    }
+  }
+}
+
 async function handleAiMessage(client: Client, message: Message, ctx: AppContext): Promise<void> {
   if (!message.guild || !message.member) return;
   const botId = client.user?.id;
@@ -190,125 +366,68 @@ async function handleAiMessage(client: Client, message: Message, ctx: AppContext
       await message.reply({
         content: '⚠️ AI 对话功能暂未配置完成，请联系服务器管理员检查服务设置。',
         allowedMentions: { parse: [], repliedUser: true },
+        failIfNotExists: false,
       });
     }
     return;
   }
 
-  // Per-channel concurrency lock & per-user cooldown
+  // Per-user cooldown & bounded per-channel FIFO queue
   const nowMs = Date.now();
   pruneCooldownMap(nowMs);
   const cooldownKey = `${message.guild.id}:${message.author.id}`;
   const lastTriggeredAt = userAiCooldowns.get(cooldownKey) ?? 0;
-  if (nowMs - lastTriggeredAt < AI_USER_COOLDOWN_MS) {
+  const elapsedMs = nowMs - lastTriggeredAt;
+  if (elapsedMs < AI_USER_COOLDOWN_MS) {
+    const remainingMs = AI_USER_COOLDOWN_MS - elapsedMs;
+    console.info(
+      `[ai:skip] reason=cooldown waitMs=${remainingMs} user=${message.author.username}(${message.author.id}) guild=${message.guild.id} channel=${message.channelId}`,
+    );
     return;
   }
-  if (activeAiChannels.has(message.channelId)) {
+
+  let state = channelAiQueues.get(message.channelId);
+  if (!state) {
+    state = { running: false, pending: [] };
+    channelAiQueues.set(message.channelId, state);
+  }
+  if (state.running && state.pending.length >= AI_CHANNEL_MAX_PENDING) {
+    console.info(
+      `[ai:skip] reason=queue_full pending=${state.pending.length} user=${message.author.username}(${message.author.id}) guild=${message.guild.id} channel=${message.channelId}`,
+    );
     return;
   }
 
   userAiCooldowns.set(cooldownKey, nowMs);
-  activeAiChannels.add(message.channelId);
 
-  let typingTimer: NodeJS.Timeout | null = null;
-  try {
-    // Only fetch deeper reply chain AFTER trigger + guards pass
-    const replyData = directRef
-      ? await collectDeeperReplyChain(directRef, botId, AI_MAX_REPLY_CHAIN_DEPTH)
-      : { chain: [], fetchedMessages: new Map<string, Message>() };
-    const replyChain = replyData.chain;
+  let resolveTask!: () => void;
+  const donePromise = new Promise<void>((resolve) => {
+    resolveTask = resolve;
+  });
 
-    const channelWindow: RawContextMessage[] = [];
-    if (cfg.ai.contextWindowMessages > 0 && message.channel.isTextBased()) {
-      try {
-        const fetched = await message.channel.messages.fetch({
-          limit: Math.min(30, cfg.ai.contextWindowMessages + 2),
-          before: message.id,
-        });
-        const lookup = new Map<string, Message>(replyData.fetchedMessages);
-        for (const m of fetched.values()) {
-          lookup.set(m.id, m);
-        }
-        for (const m of fetched.values()) {
-          channelWindow.push(toRawContextMessage(m, botId, lookup));
-        }
-      } catch {
-        // Missing ReadMessageHistory permission — fall back to reply chain only
-      }
-    }
+  state.pending.push({
+    message,
+    ctx,
+    botId,
+    guildId: message.guild.id,
+    userDisplayName: message.member.displayName,
+    userHandle: message.author.username,
+    directRef,
+    userContent,
+    attachments,
+    enqueuedAt: nowMs,
+    resolve: resolveTask,
+  });
 
-    if (message.channel.isSendable()) {
-      await message.channel.sendTyping().catch(() => undefined);
-    }
-    typingTimer = setInterval(() => {
-      if (message.channel.isSendable()) {
-        void message.channel.sendTyping().catch(() => undefined);
-      }
-    }, 8000);
-
-    const mentionedUsers = extractNonBotMentionedUsers(message, botId);
-    const res = await ctx.services.ai.generateReply(
-      {
-        guildId: message.guild.id,
-        channelId: message.channelId,
-        userId: message.author.id,
-        userName: message.member.displayName,
-        userHandle: message.author.username,
-        messageId: message.id,
-        userContent,
-        ...(directRef
-          ? {
-              replyToAuthorId: directRef.author.id,
-              replyToAuthorName: getMessageAuthorName(directRef),
-            }
-          : {}),
-        mentionedUsers,
-        replyChain,
-        channelWindow,
-        attachments,
-      },
-      botId,
+  if (state.running) {
+    console.info(
+      `[ai:queue] pos=${state.pending.length} user=${message.author.username}(${message.author.id}) guild=${message.guild.id} channel=${message.channelId}`,
     );
-
-    if (!res.ok) {
-      console.warn(
-        `[ai:error] code=${res.errorCode} user=${message.author.username}(${message.author.id}) guild=${message.guild.id} channel=${message.channelId} msg=${res.errorMessage}`,
-      );
-      await message.reply({
-        content: `⚠️ ${res.errorMessage}`,
-        allowedMentions: { parse: [], repliedUser: true },
-      });
-      return;
-    }
-
-    console.log(
-      `[ai:ok] model=${res.model} user=${message.author.username}(${message.author.id}) guild=${message.guild.id} channel=${message.channelId} tokens=${res.usage.promptTokens}+${res.usage.completionTokens}=${res.usage.totalTokens}${res.usage.estimated ? '(est)' : ''} cost=$${res.usage.costUsd.toFixed(6)} latency=${res.usage.latencyMs}ms attempts=${res.attempts}`,
-    );
-
-    for (let i = 0; i < res.chunks.length; i++) {
-      const chunk = res.chunks[i];
-      if (!chunk) continue;
-      const chunkAllowedUsers = res.allowedMentionUserIds.filter((id) =>
-        chunk.includes(`<@${id}>`),
-      );
-      if (i === 0) {
-        await message.reply({
-          content: chunk,
-          allowedMentions: { parse: [], users: chunkAllowedUsers, repliedUser: true },
-        });
-      } else if (message.channel.isSendable()) {
-        await message.channel.send({
-          content: chunk,
-          allowedMentions: { parse: [], users: chunkAllowedUsers },
-        });
-      }
-    }
-  } finally {
-    if (typingTimer) {
-      clearInterval(typingTimer);
-    }
-    activeAiChannels.delete(message.channelId);
+  } else {
+    void drainChannelAiQueue(message.channelId);
   }
+
+  await donePromise;
 }
 
 export async function handleMessageCreate(
