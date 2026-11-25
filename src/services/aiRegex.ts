@@ -24,9 +24,8 @@ export const MAX_AI_REGEX_PATTERN_LEN = 200;
 export const MAX_AI_REGEX_REPLACEMENT_LEN = 120;
 
 export const GLOBAL_ANTI_CLICHE_PROMPT = [
-  '## 去 AI 味与反八股禁词铁律',
-  '- 严禁使用网文/翻译腔/AI 八股套词与滥用副词：禁用「极其」「近乎」「一丝」「一抹」「嘴角勾起弧度」「空气突然凝固」「四肢百骸」「生理性」「薄茧」「小兽」「共犯」「总而言之」「不得不说」「某种程度上」等空洞修饰。',
-  '- 用具体直观的口语或动作表达程度与情绪，不要堆砌抽象氛围词。',
+  '## 去 AI 味与反八股',
+  '- 说人话，禁用“极其/近乎/一丝/一抹/嘴角勾起弧度/空气突然凝固/四肢百骸/生理性/总而言之/收到啦/随时待命”等八股文和客服套话。',
 ].join('\n');
 
 export const DEFAULT_AI_REGEX_RULES: ReadonlyArray<AiRegexRule> = [

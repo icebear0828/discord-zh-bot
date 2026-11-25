@@ -403,13 +403,23 @@ describe('aiService helpers & AiMemoryRepo', () => {
     expect(prompt).toContain('[名字]:');
     expect(prompt).toContain('黑吊王');
     expect(prompt).toContain('冰吊王「icebear」');
-    expect(prompt).toContain('去 AI 味与反八股禁词铁律');
+    expect(prompt).toContain('去 AI 味与反八股');
   });
 
   it('normalizes input/history/memories and cleans output cliches while preserving legacy DB vs explicit empty regex rules', async () => {
     const db = createDatabase(':memory:');
     const guildConfigRepo = new GuildConfigRepo(db);
     const aiMemoryRepo = new AiMemoryRepo(db);
+
+    // Seed legacy memory with old alias to ensure read-time normalization
+    aiMemoryRepo.addMemory({
+      guildId: 'g1',
+      scopeType: 'channel',
+      scopeId: 'c1',
+      category: '频道',
+      content: '以前草莓布丁酱赢过一把',
+      createdBy: 'ai',
+    });
 
     // 1. Legacy guild_configs row without regexRules receives default rules
     guildConfigRepo.getOrCreate('g_legacy');
@@ -489,7 +499,8 @@ describe('aiService helpers & AiMemoryRepo', () => {
     }
 
     const sentMsgs = (capturedBody?.['messages'] ?? []) as Array<{ role: string; content: string }>;
-    expect(sentMsgs[0]?.content).toContain('当前正在对你发言的群友：黑吊王');
+    expect(sentMsgs[0]?.content).toContain('当前对你说话的群友：黑吊王');
+    expect(sentMsgs[0]?.content).toContain('以前黑吊王赢过一把');
     expect(sentMsgs[1]?.content).toBe('[黑吊王]: 叫我黑吊王也行');
     expect(sentMsgs[2]?.content).toBe('[黑吊王]: 刚才 @黑吊王 说想吃草莓');
 
@@ -505,7 +516,7 @@ describe('aiService helpers & AiMemoryRepo', () => {
       userMemories: [],
       currentUserName: '黑吊王',
     });
-    expect(promptNoCliche).not.toContain('去 AI 味与反八股禁词铁律');
+    expect(promptNoCliche).not.toContain('去 AI 味与反八股');
 
     db.close();
   });
