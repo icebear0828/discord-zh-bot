@@ -7,6 +7,7 @@ import {
 import { applyZh } from '../../ui/localization.js';
 import {
   buildRobTargetHints,
+  checkRobTargetIsAdmin,
   formatBankRobError,
   formatBankRobResultEmbed,
   formatPocketRobError,
@@ -59,9 +60,20 @@ export const robCommand: CommandDefinition = {
       return;
     }
 
-    const cfg = ctx.repos.guildConfig.getOrCreate(guildCtx.guildId).economy;
-    const targetMember = interaction.guild?.members?.cache?.get(target.id);
-    const targetHints = buildRobTargetHints(target, targetMember);
+    const fullCfg = ctx.repos.guildConfig.getOrCreate(guildCtx.guildId);
+    const cfg = fullCfg.economy;
+    const targetMember =
+      interaction.guild?.members?.cache?.get(target.id) ??
+      (typeof interaction.guild?.members?.fetch === 'function'
+        ? await interaction.guild.members.fetch(target.id).catch(() => null)
+        : null);
+    const isTargetAdmin = checkRobTargetIsAdmin(
+      target.id,
+      targetMember,
+      fullCfg,
+      interaction.guild?.ownerId,
+    );
+    const targetHints = buildRobTargetHints(target, targetMember, isTargetAdmin);
 
     if (mode === 'bank') {
       const bankRes = ctx.services.economy.robBank(

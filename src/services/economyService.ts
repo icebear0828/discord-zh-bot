@@ -8,13 +8,12 @@ import {
   BANK_ROB_STEAL_MIN_RATE,
   BANK_ROB_TARGET_MIN,
   BANK_ROB_TRAP_FINE_RATE,
-  DEFAULT_ROB_PROTECTED_KEYWORDS,
   DEFAULT_SLOTS_VIP_KEYWORDS,
   MAX_SOLO_GAMBLE_BET,
+  ROB_ADMIN_EASTER_EGG_STORIES,
   ROB_ATTACKER_MIN_ASSETS,
   ROB_EASTER_EGG_FINE_RATE,
   ROB_FINE_RATE,
-  ROB_KING_EASTER_EGG_STORIES,
   ROB_LOCKPICK_BONUS,
   ROB_LOCKPICK_CAP,
   ROB_STEAL_MAX_RATE,
@@ -67,12 +66,24 @@ export type WorkResult =
 export interface RobTargetHints {
   displayNames?: readonly string[];
   roleNames?: readonly string[];
+  isAdmin?: boolean;
 }
 
-export function matchesRobProtectedTarget(
-  targetProfile: { equippedTitle: string | null; cardNickname: string | null },
+export function isRobProtectedAdmin(
+  targetId: string,
+  guildCfg: { adminUserIds: readonly string[] },
   targetHints?: RobTargetHints,
-  keywords: readonly string[] = DEFAULT_ROB_PROTECTED_KEYWORDS,
+): boolean {
+  if (targetHints?.isAdmin) {
+    return true;
+  }
+  return guildCfg.adminUserIds.includes(targetId);
+}
+
+function matchesProfileKeywords(
+  targetProfile: { equippedTitle: string | null; cardNickname: string | null },
+  targetHints: RobTargetHints | undefined,
+  keywords: readonly string[],
 ): boolean {
   const loweredKeywords = keywords
     .map((kw) => kw.trim().toLowerCase())
@@ -109,7 +120,7 @@ export function matchesSlotsVipPlayer(
   playerHints?: RobTargetHints,
   keywords: readonly string[] = DEFAULT_SLOTS_VIP_KEYWORDS,
 ): boolean {
-  return matchesRobProtectedTarget(playerProfile, playerHints, keywords);
+  return matchesProfileKeywords(playerProfile, playerHints, keywords);
 }
 
 function renderRobEasterEggStory(
@@ -122,10 +133,10 @@ function renderRobEasterEggStory(
   const raw = rng();
   const r = Number.isFinite(raw) ? Math.min(0.999999, Math.max(0, raw)) : 0;
   const idx = Math.min(
-    ROB_KING_EASTER_EGG_STORIES.length - 1,
-    Math.floor(r * ROB_KING_EASTER_EGG_STORIES.length),
+    ROB_ADMIN_EASTER_EGG_STORIES.length - 1,
+    Math.floor(r * ROB_ADMIN_EASTER_EGG_STORIES.length),
   );
-  const template = ROB_KING_EASTER_EGG_STORIES[idx]!;
+  const template = ROB_ADMIN_EASTER_EGG_STORIES[idx]!;
   return template
     .replaceAll('{attacker}', `<@${attackerId}>`)
     .replaceAll('{target}', `<@${targetId}>`)
@@ -404,7 +415,8 @@ export class EconomyService {
     if (attackerId === targetId) {
       return { ok: false, reason: 'self_target' };
     }
-    const cfg = this.configRepo.getOrCreate(guildId).economy;
+    const guildCfg = this.configRepo.getOrCreate(guildId);
+    const cfg = guildCfg.economy;
 
     return this.db.transaction((): RobResult => {
       const attacker = this.profileRepo.getOrCreate(guildId, attackerId);
@@ -420,7 +432,7 @@ export class EconomyService {
         };
       }
 
-      if (matchesRobProtectedTarget(target, targetHints)) {
+      if (isRobProtectedAdmin(targetId, guildCfg, targetHints)) {
         const attackerTotal = attacker.coins + attacker.bankCoins;
         const rawFine =
           attackerTotal > 0 ? Math.max(1, Math.floor(attackerTotal * ROB_EASTER_EGG_FINE_RATE)) : 0;
@@ -445,7 +457,7 @@ export class EconomyService {
           guildId,
           attackerId,
           -10,
-          '打劫触发王者反噬信用扣分',
+          '打劫管理员触发反噬信用扣分',
           nowMs,
         );
 
@@ -629,7 +641,8 @@ export class EconomyService {
     if (attackerId === targetId) {
       return { ok: false, reason: 'self_target' };
     }
-    const cfg = this.configRepo.getOrCreate(guildId).economy;
+    const guildCfg = this.configRepo.getOrCreate(guildId);
+    const cfg = guildCfg.economy;
 
     return this.db.transaction((): BankRobResult => {
       const attacker = this.profileRepo.getOrCreate(guildId, attackerId);
@@ -645,7 +658,7 @@ export class EconomyService {
         };
       }
 
-      if (matchesRobProtectedTarget(target, targetHints)) {
+      if (isRobProtectedAdmin(targetId, guildCfg, targetHints)) {
         const attackerTotal = attacker.coins + attacker.bankCoins;
         const rawFine =
           attackerTotal > 0 ? Math.max(1, Math.floor(attackerTotal * ROB_EASTER_EGG_FINE_RATE)) : 0;

@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import {
   Events,
+  PermissionFlagsBits,
   type ButtonInteraction,
   type ChatInputCommandInteraction,
   type Client,
@@ -791,7 +792,7 @@ describe('Wave 2 final wiring: persistent repos, expiry timers, and unified menu
     ctx.db.close();
   });
 
-  it('broadcasts royal easter egg publicly in both /rob slash command and /menu rob & rob_bank handlers', async () => {
+  it('broadcasts admin anti-rob easter egg publicly in /rob and /menu handlers while allowing non-admin pudding targets to be robbed', async () => {
     const ctx = createPersistentCtx();
     const cfg = ctx.repos.guildConfig.getOrCreate('g1');
     ctx.repos.guildConfig.updateEconomy('g1', {
@@ -800,6 +801,7 @@ describe('Wave 2 final wiring: persistent repos, expiry timers, and unified menu
       robBankSuccessRate: 1.0,
       robCooldownSec: 0,
     });
+    ctx.repos.guildConfig.updateAdminRoles('g1', ['r-admin']);
 
     // Attacker A: 50 pocket + 950 bank (total 1000 -> 10% = 100: 50 pocket + 50 bank)
     ctx.repos.profile.save({
@@ -807,35 +809,35 @@ describe('Wave 2 final wiring: persistent repos, expiry timers, and unified menu
       coins: 50,
       bankCoins: 950,
     });
-    const kingUser = {
-      id: 'royal-target',
-      username: 'strawberry',
-      displayName: '草莓布丁酱',
+    const adminSlashUser = {
+      id: 'admin-slash',
+      username: 'guild_admin',
+      displayName: '管理员甲',
       bot: false,
       displayAvatarURL: () => 'https://cdn.discordapp.com/embed/avatars/0.png',
     };
-    const kingMember = {
-      id: 'royal-target',
-      displayName: '草莓布丁酱',
-      nickname: '黑吊王',
+    const adminSlashMember = {
+      id: 'admin-slash',
+      displayName: '管理员甲',
+      permissions: { has: (bit: bigint) => bit === PermissionFlagsBits.Administrator },
       roles: {
-        cache: new Map([['r-king', { id: 'r-king', name: '黑吊王' }]]),
+        cache: new Map<string, { id: string; name: string }>(),
       },
     };
 
-    // 1. /rob slash command (pocket mode) -> public non-ephemeral reply with easter egg embed
+    // 1. /rob slash command (pocket mode) on Discord Administrator -> public non-ephemeral reply with admin easter egg
     const slashReply = vi.fn(async (_p: MockPayload & { flags?: number }) => undefined);
     const slashInteraction = {
       guildId: 'g1',
       guild: {
         id: 'g1',
-        members: { cache: new Map([['royal-target', kingMember]]) },
+        members: { cache: new Map([['admin-slash', adminSlashMember]]) },
       },
       user: makeUser('atk-slash'),
       member: { id: 'atk-slash', permissions: makePerms(), roles: { cache: new Map() } },
       inCachedGuild: () => true,
       options: {
-        getUser: () => kingUser,
+        getUser: () => adminSlashUser,
         getString: () => 'pocket',
       },
       reply: slashReply,
@@ -846,13 +848,28 @@ describe('Wave 2 final wiring: persistent repos, expiry timers, and unified menu
     const slashPayload = slashReply.mock.calls[0]![0];
     expect(slashPayload.flags).toBeUndefined();
     expect(slashPayload.allowedMentions).toEqual({ parse: [] });
-    expect(slashPayload.embeds?.[0]?.toJSON().title).toContain('王者反噬');
+    expect(slashPayload.embeds?.[0]?.toJSON().title).toContain('管理员防盗反噬');
     expect(slashPayload.embeds?.[0]?.toJSON().description).toContain('联动划扣银行存款');
     expect(ctx.repos.profile.getOrCreate('g1', 'atk-slash').coins).toBe(0);
     expect(ctx.repos.profile.getOrCreate('g1', 'atk-slash').bankCoins).toBe(900);
-    expect(ctx.repos.profile.getOrCreate('g1', 'royal-target').coins).toBe(100);
+    expect(ctx.repos.profile.getOrCreate('g1', 'admin-slash').coins).toBe(100);
 
-    // 2. /menu rob & rob_bank handlers -> public channel broadcast + private feedback
+    // 2. /menu rob & rob_bank handlers on configured adminRoleIds -> public channel broadcast + private feedback
+    const adminMenuUser = {
+      id: 'admin-menu',
+      username: 'bot_admin',
+      displayName: '管理员乙',
+      bot: false,
+      displayAvatarURL: () => 'https://cdn.discordapp.com/embed/avatars/0.png',
+    };
+    const adminMenuMember = {
+      id: 'admin-menu',
+      displayName: '管理员乙',
+      permissions: makePerms(),
+      roles: {
+        cache: new Map([['r-admin', { id: 'r-admin', name: '管理组' }]]),
+      },
+    };
     ctx.repos.profile.save({
       ...ctx.repos.profile.getOrCreate('g1', 'atk-menu'),
       coins: 100,
@@ -865,14 +882,14 @@ describe('Wave 2 final wiring: persistent repos, expiry timers, and unified menu
     const makeMenuRobSelect = (customId: 'menu:user:rob' | 'menu:user:rob_bank') =>
       ({
         customId,
-        values: ['royal-target'],
-        users: new Map([['royal-target', kingUser]]),
+        values: ['admin-menu'],
+        users: new Map([['admin-menu', adminMenuUser]]),
         guildId: 'g1',
         guild: {
           id: 'g1',
           name: 'Test',
           channels: { cache: new Map([['c1', channel]]) },
-          members: { cache: new Map([['royal-target', kingMember]]) },
+          members: { cache: new Map([['admin-menu', adminMenuMember]]) },
         },
         channelId: 'c1',
         channel,
@@ -902,18 +919,68 @@ describe('Wave 2 final wiring: persistent repos, expiry timers, and unified menu
     await routeInteraction(makeMenuRobSelect('menu:user:rob'), ctx);
     expect(send).toHaveBeenCalledTimes(1);
     const menuPocketBroadcast = send.mock.calls[0]![0];
-    expect(menuPocketBroadcast.content).toContain('王者反噬');
-    expect(menuPocketBroadcast.embeds?.[0]?.toJSON().title).toContain('王者反噬');
+    expect(menuPocketBroadcast.content).toContain('防盗反噬');
+    expect(menuPocketBroadcast.embeds?.[0]?.toJSON().title).toContain('管理员防盗反噬');
     expect(editReply.mock.calls[0]![0].embeds?.[0]?.toJSON().description).toContain('罚没总资产 10%');
 
     // Now atk-menu has 0 pocket + 1800 bank -> rob_bank takes 180 from bank -> target bank gains 180
     await routeInteraction(makeMenuRobSelect('menu:user:rob_bank'), ctx);
     expect(send).toHaveBeenCalledTimes(2);
     const menuBankBroadcast = send.mock.calls[1]![0];
-    expect(menuBankBroadcast.content).toContain('皇家金库');
-    expect(menuBankBroadcast.embeds?.[0]?.toJSON().title).toContain('皇家金库禁令');
+    expect(menuBankBroadcast.content).toContain('防盗禁令');
+    expect(menuBankBroadcast.embeds?.[0]?.toJSON().title).toContain('管理员金库禁令');
     expect(ctx.repos.profile.getOrCreate('g1', 'atk-menu').bankCoins).toBe(1620);
-    expect(ctx.repos.profile.getOrCreate('g1', 'royal-target').bankCoins).toBe(180);
+    expect(ctx.repos.profile.getOrCreate('g1', 'admin-menu').bankCoins).toBe(180);
+
+    // 3. Non-admin named "草莓布丁酱" / role "黑吊王" IS robbable via /rob
+    ctx.repos.profile.save({
+      ...ctx.repos.profile.getOrCreate('g1', 'atk-pudding'),
+      coins: 500,
+      bankCoins: 0,
+    });
+    ctx.repos.profile.save({
+      ...ctx.repos.profile.getOrCreate('g1', 'pudding-normal'),
+      coins: 1000,
+      bankCoins: 0,
+    });
+    const puddingUser = {
+      id: 'pudding-normal',
+      username: 'strawberry',
+      displayName: '草莓布丁酱',
+      bot: false,
+      displayAvatarURL: () => 'https://cdn.discordapp.com/embed/avatars/0.png',
+    };
+    const puddingMember = {
+      id: 'pudding-normal',
+      displayName: '草莓布丁酱',
+      nickname: '黑吊王',
+      permissions: makePerms(),
+      roles: {
+        cache: new Map([['r-king', { id: 'r-king', name: '黑吊王' }]]),
+      },
+    };
+    const puddingReply = vi.fn(async (_p: MockPayload & { flags?: number }) => undefined);
+    const puddingSlash = {
+      guildId: 'g1',
+      guild: {
+        id: 'g1',
+        members: { cache: new Map([['pudding-normal', puddingMember]]) },
+      },
+      user: makeUser('atk-pudding'),
+      member: { id: 'atk-pudding', permissions: makePerms(), roles: { cache: new Map() } },
+      inCachedGuild: () => true,
+      options: {
+        getUser: () => puddingUser,
+        getString: () => 'pocket',
+      },
+      reply: puddingReply,
+    } as unknown as ChatInputCommandInteraction;
+
+    await robCommand.execute(puddingSlash, ctx);
+    expect(puddingReply).toHaveBeenCalledTimes(1);
+    const puddingTitle = puddingReply.mock.calls[0]![0].embeds?.[0]?.toJSON().title ?? '';
+    expect(puddingTitle).not.toContain('反噬');
+    expect(ctx.repos.profile.getOrCreate('g1', 'pudding-normal').coins).toBeLessThan(1000);
 
     ctx.db.close();
   });

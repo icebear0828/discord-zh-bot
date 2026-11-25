@@ -1,5 +1,5 @@
-import { EmbedBuilder, type MessageCreateOptions } from 'discord.js';
-import type { EconomyConfig } from '../config/defaults.js';
+import { EmbedBuilder, PermissionFlagsBits, type MessageCreateOptions } from 'discord.js';
+import type { EconomyConfig, GuildConfig } from '../config/defaults.js';
 import {
   BANK_ROB_ATTACKER_MIN_ASSETS,
   BANK_ROB_TARGET_MIN,
@@ -23,6 +23,7 @@ import type {
   WorkResult,
 } from '../services/economyService.js';
 import type { FortuneDrawResult } from '../services/funService.js';
+import { isBotAdmin } from '../services/permissionService.js';
 import {
   COLORS,
   createErrorEmbed,
@@ -139,16 +140,42 @@ export interface RobTargetUserLike {
 export interface RobTargetMemberLike {
   displayName?: string | null;
   nickname?: string | null;
+  permissions?: {
+    has?: (bit: bigint) => boolean;
+  };
   roles?: {
     cache?: {
+      keys?: () => Iterable<string>;
       values?: () => Iterable<{ name?: string | null }>;
     };
   };
 }
 
+export function checkRobTargetIsAdmin(
+  targetId: string,
+  member: RobTargetMemberLike | null | undefined,
+  guildCfg: Pick<GuildConfig, 'adminRoleIds' | 'adminUserIds'>,
+  guildOwnerId?: string | null,
+): boolean {
+  const isGuildAdmin =
+    (Boolean(guildOwnerId) && guildOwnerId === targetId) ||
+    Boolean(member?.permissions?.has?.(PermissionFlagsBits.Administrator));
+  const hasManageGuild = Boolean(member?.permissions?.has?.(PermissionFlagsBits.ManageGuild));
+  const memberRoleIds = member?.roles?.cache?.keys ? [...member.roles.cache.keys()] : [];
+  return isBotAdmin({
+    isGuildAdmin,
+    hasManageGuild,
+    memberRoleIds,
+    configuredAdminRoleIds: guildCfg.adminRoleIds,
+    userId: targetId,
+    configuredAdminUserIds: guildCfg.adminUserIds,
+  });
+}
+
 export function buildRobTargetHints(
   user?: RobTargetUserLike | null,
   member?: RobTargetMemberLike | null,
+  isAdmin?: boolean,
 ): RobTargetHints {
   const displayNames: string[] = [];
   const pushUnique = (list: string[], value: string | null | undefined): void => {
@@ -169,7 +196,11 @@ export function buildRobTargetHints(
       pushUnique(roleNames, role?.name);
     }
   }
-  return { displayNames, roleNames };
+  return {
+    displayNames,
+    roleNames,
+    ...(isAdmin !== undefined ? { isAdmin } : {}),
+  };
 }
 
 export function formatPocketRobResultEmbed(
@@ -202,13 +233,13 @@ export function formatPocketRobResultEmbed(
   if (res.easterEggTriggered) {
     const story =
       res.easterEggStory ??
-      `👑 试图打劫 <@${targetId}> 触发王者反噬，被当场罚没总资产 10%（**${res.amount}** ${cfg.currencyName}）！`;
+      `🛡️ 试图打劫管理员 <@${targetId}> 触发管理防盗反噬，被当场罚没总资产 10%（**${res.amount}** ${cfg.currencyName}）！`;
     const lines = [
       story,
       `💸 罚没总资产 10%：${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}${fineDetail}`,
       `劫匪当前现金：**${res.attackerBalance}** ${cfg.currencyName}${bankSuffix} ｜ 对方当前现金：**${res.targetBalance}** ${cfg.currencyName}`,
     ];
-    return createErrorEmbed('👑 王者反噬！敢动黑吊王？', lines.join('\n'));
+    return createErrorEmbed('🛡️ 管理员防盗反噬！敢动管理员？', lines.join('\n'));
   }
 
   const lines = [
@@ -248,13 +279,13 @@ export function formatBankRobResultEmbed(
   if (res.easterEggTriggered) {
     const story =
       res.easterEggStory ??
-      `👑 试图强抢 <@${targetId}> 的皇家金库触发王者反噬，被当场罚没总资产 10%（**${res.amount}** ${cfg.currencyName}）！`;
+      `🛡️ 试图强抢管理员 <@${targetId}> 的金库触发管理防盗禁令，被当场罚没总资产 10%（**${res.amount}** ${cfg.currencyName}）！`;
     const lines = [
       story,
       `💸 罚没总资产 10%：${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}${fineDetail}`,
       `劫匪当前现金：**${res.attackerBalance}**（银行 **${res.attackerBankBalance}**）｜ 对方当前金库：**${res.targetBankBalance}** ${cfg.currencyName}`,
     ];
-    return createErrorEmbed('👑 皇家金库禁令触发！敢抢黑吊王？', lines.join('\n'));
+    return createErrorEmbed('🛡️ 管理员金库禁令触发！敢抢管理员？', lines.join('\n'));
   }
 
   const lines = [

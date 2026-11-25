@@ -1,11 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
-  DEFAULT_ROB_PROTECTED_KEYWORDS,
   DEFAULT_SLOTS_VIP_KEYWORDS,
   MAX_SOLO_GAMBLE_BET,
+  ROB_ADMIN_EASTER_EGG_STORIES,
   ROB_ATTACKER_MIN_ASSETS,
   ROB_EASTER_EGG_FINE_RATE,
-  ROB_KING_EASTER_EGG_STORIES,
   SLOTS_VIP_ICE_JACKPOT_CHANCE,
 } from '../../src/config/economyConstants.js';
 import { createDatabase } from '../../src/db/database.js';
@@ -521,7 +520,7 @@ describe('economyService', () => {
     db.close();
   });
 
-  it('triggers 100%-fail 10%-total-asset easter egg when robbing protected targets via title/nickname/role in rob() and robBank()', () => {
+  it('triggers 100%-fail 10%-total-asset easter egg only when robbing admins (and lets non-admin pudding/king targets be robbed)', () => {
     const db = createDatabase(':memory:');
     const configRepo = new GuildConfigRepo(db);
     const profileRepo = new ProfileRepo(db);
@@ -530,11 +529,13 @@ describe('economyService', () => {
     const now = 1_700_000_000_000;
 
     expect(ROB_EASTER_EGG_FINE_RATE).toBe(0.1);
-    expect(DEFAULT_ROB_PROTECTED_KEYWORDS).toContain('黑吊王');
-    expect(DEFAULT_ROB_PROTECTED_KEYWORDS).toContain('草莓布丁酱');
-    expect(ROB_KING_EASTER_EGG_STORIES.length).toBeGreaterThanOrEqual(8);
+    expect(ROB_ADMIN_EASTER_EGG_STORIES.length).toBeGreaterThanOrEqual(8);
+    for (const story of ROB_ADMIN_EASTER_EGG_STORIES) {
+      expect(story).not.toContain('黑吊王');
+      expect(story).not.toContain('草莓布丁');
+    }
 
-    // 1. Target has 0 coins + active shield + armed trap, matched via equippedTitle ("黑吊王")
+    // 1. Target is in configured adminUserIds, has 0 coins + active shield + armed trap
     // Attacker has lockpick + 100% robSuccessRate + 40 pocket + 960 bank (total 1000 -> 10% fine = 100)
     const cfg = configRepo.getOrCreate('g1');
     configRepo.updateEconomy('g1', {
@@ -543,16 +544,16 @@ describe('economyService', () => {
       robBankSuccessRate: 1.0,
       robCooldownSec: 60,
     });
+    configRepo.updateAdminUsers('g1', ['admin1']);
     profileRepo.save({
-      ...profileRepo.getOrCreate('g1', 'king1'),
+      ...profileRepo.getOrCreate('g1', 'admin1'),
       coins: 0,
       bankCoins: 0,
       robShieldUntil: now + 3600_000,
-      equippedTitle: '至高黑吊王',
     });
     chaosRepo.setEffect({
       guildId: 'g1',
-      userId: 'king1',
+      userId: 'admin1',
       effectKey: 'trap_armed',
       charges: 1,
       expiresAt: now + 3600_000,
@@ -574,13 +575,13 @@ describe('economyService', () => {
       bankCoins: 960,
     });
 
-    const pocketEgg = svc.rob('g1', 'thief1', 'king1', now, () => 0.0);
+    const pocketEgg = svc.rob('g1', 'thief1', 'admin1', now, () => 0.0);
     expect(pocketEgg.ok).toBe(true);
     if (pocketEgg.ok) {
       expect(pocketEgg.success).toBe(false);
       expect(pocketEgg.easterEggTriggered).toBe(true);
       expect(pocketEgg.easterEggStory).toContain('<@thief1>');
-      expect(pocketEgg.easterEggStory).toContain('<@king1>');
+      expect(pocketEgg.easterEggStory).toContain('<@admin1>');
       expect(pocketEgg.amount).toBe(100);
       expect(pocketEgg.fineFromPocket).toBe(40);
       expect(pocketEgg.fineFromBank).toBe(60);
@@ -589,15 +590,15 @@ describe('economyService', () => {
       expect(pocketEgg.targetBalance).toBe(100);
     }
     // Trap was NOT wasted, and attacker entered cooldown
-    expect(chaosRepo.getActiveEffect('g1', 'king1', 'trap_armed', now)).not.toBeNull();
-    expect(svc.rob('g1', 'thief1', 'king1', now + 5_000)).toMatchObject({
+    expect(chaosRepo.getActiveEffect('g1', 'admin1', 'trap_armed', now)).not.toBeNull();
+    expect(svc.rob('g1', 'thief1', 'admin1', now + 5_000)).toMatchObject({
       ok: false,
       reason: 'cooldown',
     });
 
-    // 2. robBank matched via targetHints.displayNames ("草莓布丁酱") even when target bank is 0 & shielded
+    // 2. robBank matched via targetHints.isAdmin even when target bank is 0 & shielded
     profileRepo.save({
-      ...profileRepo.getOrCreate('g1', 'king2'),
+      ...profileRepo.getOrCreate('g1', 'admin2'),
       coins: 0,
       bankCoins: 0,
       robShieldUntil: now + 3600_000,
@@ -607,8 +608,8 @@ describe('economyService', () => {
       coins: 200,
       bankCoins: 2300, // total 2500 -> 10% fine = 250 (200 pocket + 50 bank)
     });
-    const bankEgg = svc.robBank('g1', 'thief2', 'king2', now, () => 0.4, {
-      displayNames: ['草莓布丁酱'],
+    const bankEgg = svc.robBank('g1', 'thief2', 'admin2', now, () => 0.4, {
+      isAdmin: true,
     });
     expect(bankEgg.ok).toBe(true);
     if (bankEgg.ok) {
@@ -623,14 +624,14 @@ describe('economyService', () => {
       expect(bankEgg.targetBankBalance).toBe(250);
     }
 
-    // 3. Matched via targetHints.roleNames ("黑吊王亲卫") even when attacker is below min assets (total 50 -> fine 5)
+    // 3. Matched via targetHints.isAdmin even when attacker is below min assets (total 50 -> fine 5)
     profileRepo.save({
       ...profileRepo.getOrCreate('g1', 'thief3'),
       coins: 50,
       bankCoins: 0,
     });
-    const roleEgg = svc.rob('g1', 'thief3', 'king3', now, () => 0.7, {
-      roleNames: ['黑吊王'],
+    const roleEgg = svc.rob('g1', 'thief3', 'admin3', now, () => 0.7, {
+      isAdmin: true,
     });
     expect(roleEgg.ok).toBe(true);
     if (roleEgg.ok) {
@@ -639,6 +640,51 @@ describe('economyService', () => {
       expect(roleEgg.amount).toBe(5);
       expect(roleEgg.attackerBalance).toBe(45);
       expect(roleEgg.targetBalance).toBe(5);
+    }
+
+    // 4. Non-admin with 草莓布丁酱 / 黑吊王 hints is NO LONGER protected and can be robbed normally
+    profileRepo.save({
+      ...profileRepo.getOrCreate('g1', 'pudding'),
+      coins: 1000,
+      bankCoins: 2000,
+      equippedTitle: '至高黑吊王',
+    });
+    profileRepo.save({
+      ...profileRepo.getOrCreate('g1', 'thief4'),
+      coins: 500,
+      bankCoins: 0,
+    });
+    const puddingHints = {
+      displayNames: ['草莓布丁酱'],
+      roleNames: ['黑吊王'],
+      isAdmin: false,
+    };
+    const robPudding = svc.rob('g1', 'thief4', 'pudding', now, () => 0.2, puddingHints);
+    expect(robPudding.ok).toBe(true);
+    if (robPudding.ok) {
+      expect(robPudding.success).toBe(true);
+      expect(robPudding.easterEggTriggered).toBeUndefined();
+      expect(robPudding.amount).toBeGreaterThan(0);
+    }
+
+    profileRepo.save({
+      ...profileRepo.getOrCreate('g1', 'thief5'),
+      coins: 500,
+      bankCoins: 0,
+    });
+    const robPuddingBank = svc.robBank(
+      'g1',
+      'thief5',
+      'pudding',
+      now + (cfg.economy.robTargetShieldSec + 10) * 1000,
+      () => 0.2,
+      puddingHints,
+    );
+    expect(robPuddingBank.ok).toBe(true);
+    if (robPuddingBank.ok) {
+      expect(robPuddingBank.success).toBe(true);
+      expect(robPuddingBank.easterEggTriggered).toBeUndefined();
+      expect(robPuddingBank.amount).toBeGreaterThan(0);
     }
 
     db.close();

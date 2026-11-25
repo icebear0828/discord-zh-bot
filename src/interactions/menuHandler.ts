@@ -58,6 +58,7 @@ import {
 import {
   buildBlackjackPublicReportEmbed,
   buildRobTargetHints,
+  checkRobTargetIsAdmin,
   formatBankRobResultEmbed,
   formatPocketRobResultEmbed,
 } from '../ui/soloFormatters.js';
@@ -2147,9 +2148,20 @@ export async function handleMenuUserSelect(
     }
 
     await interaction.deferUpdate();
-    const cfg = ctx.repos.guildConfig.getOrCreate(guildId).economy;
-    const targetMember = interaction.guild?.members?.cache?.get(targetId);
-    const targetHints = buildRobTargetHints(targetUser, targetMember);
+    const fullCfg = ctx.repos.guildConfig.getOrCreate(guildId);
+    const cfg = fullCfg.economy;
+    const targetMember =
+      interaction.guild?.members?.cache?.get(targetId) ??
+      (typeof interaction.guild?.members?.fetch === 'function'
+        ? await interaction.guild.members.fetch(targetId).catch(() => null)
+        : null);
+    const isTargetAdmin = checkRobTargetIsAdmin(
+      targetId,
+      targetMember,
+      fullCfg,
+      interaction.guild?.ownerId,
+    );
+    const targetHints = buildRobTargetHints(targetUser, targetMember, isTargetAdmin);
     const res = ctx.services.economy.rob(
       guildId,
       actor.id,
@@ -2218,7 +2230,7 @@ export async function handleMenuUserSelect(
         : res.easterEggTriggered
           ? {
               allowedMentions: { parse: [] },
-              content: `👑 频道吃瓜！**${actor.displayName}** 竟敢打劫 **${targetName}**，触发王者反噬被当场罚没 10% 总资产（**${res.amount}** ${cfg.currencyName}）！`,
+              content: `🛡️ 频道吃瓜！**${actor.displayName}** 竟敢打劫管理员 **${targetName}**，触发防盗反噬被当场罚没 10% 总资产（**${res.amount}** ${cfg.currencyName}）！`,
               embeds: [formatPocketRobResultEmbed(res, targetId, cfg)],
             }
           : {
@@ -2253,7 +2265,7 @@ export async function handleMenuUserSelect(
       : res.easterEggTriggered
         ? {
             type: 'error',
-            text: `${res.easterEggStory ?? '👑 触发王者反噬，以下犯上必遭天谴！'}\n💸 罚没总资产 10%（${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}${fineDetail}），你的现金：**${res.attackerBalance}**${bankSuffix}。${warnSuffix}`,
+            text: `${res.easterEggStory ?? '🛡️ 触发管理员防盗反噬，敢动管理员必遭重罚！'}\n💸 罚没总资产 10%（${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}${fineDetail}），你的现金：**${res.attackerBalance}**${bankSuffix}。${warnSuffix}`,
           }
         : {
             type: 'error',
@@ -2298,9 +2310,20 @@ export async function handleMenuUserSelect(
     }
 
     await interaction.deferUpdate();
-    const cfg = ctx.repos.guildConfig.getOrCreate(guildId).economy;
-    const targetMember = interaction.guild?.members?.cache?.get(targetId);
-    const targetHints = buildRobTargetHints(targetUser, targetMember);
+    const fullCfg = ctx.repos.guildConfig.getOrCreate(guildId);
+    const cfg = fullCfg.economy;
+    const targetMember =
+      interaction.guild?.members?.cache?.get(targetId) ??
+      (typeof interaction.guild?.members?.fetch === 'function'
+        ? await interaction.guild.members.fetch(targetId).catch(() => null)
+        : null);
+    const isTargetAdmin = checkRobTargetIsAdmin(
+      targetId,
+      targetMember,
+      fullCfg,
+      interaction.guild?.ownerId,
+    );
+    const targetHints = buildRobTargetHints(targetUser, targetMember, isTargetAdmin);
     const res = ctx.services.economy.robBank(
       guildId,
       actor.id,
@@ -2362,7 +2385,7 @@ export async function handleMenuUserSelect(
         : res.easterEggTriggered
           ? {
               allowedMentions: { parse: [] },
-              content: `👑🏦 频道吃瓜！**${actor.displayName}** 竟敢强抢 **${targetName}** 的皇家金库，触发王者反噬被当场罚没 10% 总资产（**${res.amount}** ${cfg.currencyName}）！`,
+              content: `🛡️🏦 频道吃瓜！**${actor.displayName}** 竟敢强抢管理员 **${targetName}** 的金库，触发防盗禁令被当场罚没 10% 总资产（**${res.amount}** ${cfg.currencyName}）！`,
               embeds: [formatBankRobResultEmbed(res, targetId, cfg)],
             }
           : {
@@ -2396,7 +2419,7 @@ export async function handleMenuUserSelect(
       : res.easterEggTriggered
         ? {
             type: 'error',
-            text: `${res.easterEggStory ?? '👑 触发皇家金库禁令！'}\n💸 罚没总资产 10%（${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}${fineDetail}），你的现金：**${res.attackerBalance}**（银行 **${res.attackerBankBalance}**）。${warnSuffix}`,
+            text: `${res.easterEggStory ?? '🛡️ 触发管理员金库禁令！'}\n💸 罚没总资产 10%（${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}${fineDetail}），你的现金：**${res.attackerBalance}**（银行 **${res.attackerBankBalance}**）。${warnSuffix}`,
           }
         : {
             type: 'error',
