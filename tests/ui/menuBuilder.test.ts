@@ -771,8 +771,11 @@ describe('menuBuilder Discord component constraints & schema integration', () =>
 
     // 3. Single-source constants & custom currency rendering (no hardcoded 星币 or stale numbers)
     const robJson = buildMenuMessage(ctx, 'g1', ACTOR, { page: 'rob' }).embeds[0]!.toJSON();
-    expect(robJson.description).toContain('15%~35%');
-    expect(robJson.description).toContain('1,000');
+    expect(robJson.description).toContain('1%~50%');
+    expect(robJson.description).toContain('无金额上限');
+    expect(robJson.description).not.toContain('15%~35%');
+    expect(robJson.description).not.toContain('上限 1,000');
+    expect(robJson.description).not.toContain('封顶 500');
     expect(robJson.description).not.toContain('2,500');
     expect(robJson.description).not.toContain('≥ 500');
     expect(robJson.description).not.toContain('星币');
@@ -780,6 +783,8 @@ describe('menuBuilder Discord component constraints & schema integration', () =>
     const bankJson = buildMenuMessage(ctx, 'g1', ACTOR, { page: 'bank' }).embeds[0]!.toJSON();
     expect(bankJson.author?.name).toContain('钻石银行');
     expect(bankJson.author?.name).not.toContain('星币');
+    expect(bankJson.description).toContain('1%~50%');
+    expect(bankJson.description).not.toContain('封顶');
 
     // 4. Button disabled states
     ctx.services.economy.claimDaily('g1', 'u2');

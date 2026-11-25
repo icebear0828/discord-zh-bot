@@ -10,6 +10,8 @@ import { WorldEventRepo } from '../../src/db/repositories/worldEventRepo.js';
 import {
   BANK_ROB_ATTACKER_MIN_ASSETS,
   BANK_ROB_LOCKPICK_CAP,
+  BANK_ROB_STEAL_MAX_RATE,
+  BANK_ROB_STEAL_MIN_RATE,
   BANK_ROB_TARGET_MIN,
   BLACKJACK_TTL_MS,
   DUEL_BOUNTY_MIN_BET,
@@ -26,7 +28,8 @@ import {
   PREDICTION_LOCKED_EXPIRE_MS,
   ROB_ATTACKER_MIN_ASSETS,
   ROB_LOCKPICK_CAP,
-  ROB_STEAL_MAX_AMOUNT,
+  ROB_STEAL_MAX_RATE,
+  ROB_STEAL_MIN_RATE,
   ROB_TARGET_MIN_COINS,
   SHOP_MYSTERY_BOX_MIN_PRICE,
 } from '../../src/config/economyConstants.js';
@@ -530,10 +533,13 @@ describe('Wave 1 persistence repositories & economy constants', () => {
   it('exports consistent shared economy constants', () => {
     expect(ROB_TARGET_MIN_COINS).toBe(100);
     expect(ROB_ATTACKER_MIN_ASSETS).toBe(100);
-    expect(ROB_STEAL_MAX_AMOUNT).toBe(1000);
+    expect(ROB_STEAL_MIN_RATE).toBe(0.01);
+    expect(ROB_STEAL_MAX_RATE).toBe(0.5);
     expect(ROB_LOCKPICK_CAP).toBe(0.85);
     expect(BANK_ROB_TARGET_MIN).toBe(100);
     expect(BANK_ROB_ATTACKER_MIN_ASSETS).toBe(100);
+    expect(BANK_ROB_STEAL_MIN_RATE).toBe(0.01);
+    expect(BANK_ROB_STEAL_MAX_RATE).toBe(0.5);
     expect(BANK_ROB_LOCKPICK_CAP).toBe(0.5);
     expect(MAX_SOLO_GAMBLE_BET).toBe(1_000_000);
     expect(BLACKJACK_TTL_MS).toBe(15 * 60_000);

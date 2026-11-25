@@ -2315,7 +2315,7 @@ export async function handleMenuUserSelect(
         cooldown: `打劫冷却中，请等待 **${formatDurationZh((res.retryAfterSec ?? 0) * 1000)}**。`,
         target_shielded: `<@${targetId}> 防盗护盾生效中，剩余 **${formatDurationZh((res.retryAfterSec ?? 0) * 1000)}**。`,
         target_bank_too_poor: `<@${targetId}> 银行金库余额不足 ${BANK_ROB_TARGET_MIN} ${cfg.currencyName}，不值得动手。`,
-        attacker_too_poor: `你的总资产（现金+存款）不足 **${BANK_ROB_ATTACKER_MIN_ASSETS}** ${cfg.currencyName}，不够支付劫金库翻车保底罚金！`,
+        attacker_too_poor: `你的总资产（现金+存款）不足 **${BANK_ROB_ATTACKER_MIN_ASSETS}** ${cfg.currencyName}，无法发起强抢银行金库！`,
       };
       await safeEditOrFollowUp(
         interaction,

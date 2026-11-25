@@ -398,7 +398,7 @@ describe('economyService', () => {
     const bankTargets = profileRepo.listBankRobTargets('g1', 'a1');
     expect(bankTargets.map((t) => t.userId)).toEqual(['t2', 't1']);
 
-    // 2. Success: steals 5%~12% of target bankCoins (capped at 500), applies shield, claims bounty
+    // 2. Success: steals 1%~50% of target bankCoins (no fixed cap), applies shield, claims bounty
     chaosRepo.createBounty({
       guildId: 'g1',
       placerId: 'issuer1',
@@ -406,12 +406,13 @@ describe('economyService', () => {
       amount: 800,
       createdAt: now - 1000,
     });
-    const winRes = svc.robBank('g1', 'a1', 't2', now, () => 0.05); // 0.05 < default 0.20robBankSuccessRate
+    const winRes = svc.robBank('g1', 'a1', 't2', now, () => 0.05); // 0.05 < default 0.20 robBankSuccessRate
     expect(winRes.ok).toBe(true);
     if (winRes.ok) {
       expect(winRes.success).toBe(true);
-      expect(winRes.amount).toBeGreaterThanOrEqual(10);
-      expect(winRes.amount).toBeLessThanOrEqual(500);
+      expect(winRes.amount).toBeGreaterThanOrEqual(50);
+      expect(winRes.amount).toBeLessThanOrEqual(2500);
+      expect(winRes.amount).toBe(172); // floor(5000 * (0.01 + 0.05 * 0.49))
       expect(winRes.bountyClaimed).toBe(800);
       expect(winRes.targetBankBalance).toBe(5000 - winRes.amount);
       expect(winRes.attackerBalance).toBe(250 + winRes.amount + 800);
@@ -639,6 +640,96 @@ describe('economyService', () => {
       expect(roleEgg.attackerBalance).toBe(45);
       expect(roleEgg.targetBalance).toBe(5);
     }
+
+    db.close();
+  });
+
+  it('uses uncapped 1%-50% steal and pure-percentage fines for both rob() and robBank()', () => {
+    const db = createDatabase(':memory:');
+    const configRepo = new GuildConfigRepo(db);
+    const profileRepo = new ProfileRepo(db);
+    const chaosRepo = new ChaosRepo(db);
+    const svc = new EconomyService(db, configRepo, profileRepo, 'Asia/Shanghai', chaosRepo);
+    const now = 1_700_000_000_000;
+
+    const cfg = configRepo.getOrCreate('g1');
+    configRepo.updateEconomy('g1', {
+      ...cfg.economy,
+      robCooldownSec: 0,
+      robTargetShieldSec: 0,
+    });
+
+    const makeSeq = (vals: number[]): (() => number) => {
+      let i = 0;
+      return () => vals[i++] ?? 0.5;
+    };
+
+    // Pocket rob on rich target (100,000 pocket coins)
+    profileRepo.save({ ...profileRepo.getOrCreate('g1', 'a_rich'), coins: 100_000 });
+    profileRepo.save({ ...profileRepo.getOrCreate('g1', 't_rich'), coins: 100_000 });
+
+    const pocketMin = svc.rob('g1', 'a_rich', 't_rich', now, makeSeq([0.0, 0.0]));
+    expect(pocketMin.ok && pocketMin.success && pocketMin.amount).toBe(1_000); // 1%
+
+    profileRepo.save({ ...profileRepo.getOrCreate('g1', 't_rich'), coins: 100_000 });
+    const pocketMax = svc.rob('g1', 'a_rich', 't_rich', now, makeSeq([0.0, 1.0]));
+    expect(pocketMax.ok && pocketMax.success && pocketMax.amount).toBe(50_000); // 50% (old 1,000 cap removed)
+
+    // Pocket rob on minimum target (100 pocket coins) -> 1% = 1 (old 15 floor removed)
+    profileRepo.save({ ...profileRepo.getOrCreate('g1', 't_min'), coins: 100 });
+    const pocketTiny = svc.rob('g1', 'a_rich', 't_min', now, makeSeq([0.0, 0.0]));
+    expect(pocketTiny.ok && pocketTiny.success && pocketTiny.amount).toBe(1);
+
+    // Pocket rob normal fail (15%) & trap fail (30%) on rich attacker (100,000 total assets)
+    profileRepo.save({ ...profileRepo.getOrCreate('g1', 'a_fail'), coins: 100_000, bankCoins: 0 });
+    profileRepo.save({ ...profileRepo.getOrCreate('g1', 't_rich'), coins: 100_000 });
+    const pocketFail = svc.rob('g1', 'a_fail', 't_rich', now, () => 0.99);
+    expect(pocketFail.ok && !pocketFail.success && pocketFail.amount).toBe(15_000); // 15% (old 500 cap removed)
+
+    profileRepo.save({ ...profileRepo.getOrCreate('g1', 'a_trap'), coins: 100_000, bankCoins: 0 });
+    chaosRepo.setEffect({
+      guildId: 'g1',
+      userId: 't_rich',
+      effectKey: 'trap_armed',
+      charges: 1,
+      expiresAt: now + 3600_000,
+      sourceUserId: null,
+      updatedAt: now,
+    });
+    const pocketTrap = svc.rob('g1', 'a_trap', 't_rich', now, () => 0.99);
+    expect(pocketTrap.ok && !pocketTrap.success && pocketTrap.trapped && pocketTrap.amount).toBe(30_000); // 30% (old 1,000 cap removed)
+
+    // Pocket rob fail on minimum attacker (100 total assets) -> 15% = 15 (old 50 floor removed)
+    profileRepo.save({ ...profileRepo.getOrCreate('g1', 'a_min'), coins: 100, bankCoins: 0 });
+    const pocketFailMin = svc.rob('g1', 'a_min', 't_rich', now, () => 0.99);
+    expect(pocketFailMin.ok && !pocketFailMin.success && pocketFailMin.amount).toBe(15);
+
+    // Bank rob on rich target (200,000 bankCoins) -> 1% = 2,000, 50% = 100,000
+    profileRepo.save({ ...profileRepo.getOrCreate('g1', 't_bank'), coins: 0, bankCoins: 200_000 });
+    const bankMin = svc.robBank('g1', 'a_rich', 't_bank', now, makeSeq([0.0, 0.0]));
+    expect(bankMin.ok && bankMin.success && bankMin.amount).toBe(2_000);
+
+    profileRepo.save({ ...profileRepo.getOrCreate('g1', 't_bank'), coins: 0, bankCoins: 200_000 });
+    const bankMax = svc.robBank('g1', 'a_rich', 't_bank', now, makeSeq([0.0, 1.0]));
+    expect(bankMax.ok && bankMax.success && bankMax.amount).toBe(100_000);
+
+    // Bank rob normal fail (30%) & trap fail (50%) on rich attacker (100,000 total assets)
+    profileRepo.save({ ...profileRepo.getOrCreate('g1', 'a_bfail'), coins: 100_000, bankCoins: 0 });
+    const bankFail = svc.robBank('g1', 'a_bfail', 't_bank', now, () => 0.99);
+    expect(bankFail.ok && !bankFail.success && bankFail.amount).toBe(30_000); // 30% (old 2,000 cap removed)
+
+    profileRepo.save({ ...profileRepo.getOrCreate('g1', 'a_btrap'), coins: 100_000, bankCoins: 0 });
+    chaosRepo.setEffect({
+      guildId: 'g1',
+      userId: 't_bank',
+      effectKey: 'trap_armed',
+      charges: 1,
+      expiresAt: now + 3600_000,
+      sourceUserId: null,
+      updatedAt: now,
+    });
+    const bankTrap = svc.robBank('g1', 'a_btrap', 't_bank', now, () => 0.99);
+    expect(bankTrap.ok && !bankTrap.success && bankTrap.trapped && bankTrap.amount).toBe(50_000); // 50% (old 4,000 cap removed)
 
     db.close();
   });

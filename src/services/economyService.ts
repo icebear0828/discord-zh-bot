@@ -1,37 +1,25 @@
 import type Database from 'better-sqlite3';
 import {
   BANK_ROB_ATTACKER_MIN_ASSETS,
-  BANK_ROB_FINE_MAX,
-  BANK_ROB_FINE_MIN,
   BANK_ROB_FINE_RATE,
   BANK_ROB_LOCKPICK_BONUS,
   BANK_ROB_LOCKPICK_CAP,
-  BANK_ROB_STEAL_MAX,
   BANK_ROB_STEAL_MAX_RATE,
-  BANK_ROB_STEAL_MIN,
   BANK_ROB_STEAL_MIN_RATE,
   BANK_ROB_TARGET_MIN,
-  BANK_ROB_TRAP_FINE_MAX,
-  BANK_ROB_TRAP_FINE_MIN,
   BANK_ROB_TRAP_FINE_RATE,
   DEFAULT_ROB_PROTECTED_KEYWORDS,
   DEFAULT_SLOTS_VIP_KEYWORDS,
   MAX_SOLO_GAMBLE_BET,
   ROB_ATTACKER_MIN_ASSETS,
   ROB_EASTER_EGG_FINE_RATE,
-  ROB_FINE_MAX,
-  ROB_FINE_MIN,
   ROB_FINE_RATE,
   ROB_KING_EASTER_EGG_STORIES,
   ROB_LOCKPICK_BONUS,
   ROB_LOCKPICK_CAP,
-  ROB_STEAL_MAX_AMOUNT,
   ROB_STEAL_MAX_RATE,
-  ROB_STEAL_MIN_AMOUNT,
   ROB_STEAL_MIN_RATE,
   ROB_TARGET_MIN_COINS,
-  ROB_TRAP_FINE_MAX,
-  ROB_TRAP_FINE_MIN,
   ROB_TRAP_FINE_RATE,
   SLOTS_VIP_ICE_JACKPOT_CHANCE,
 } from '../config/economyConstants.js';
@@ -525,10 +513,7 @@ export class EconomyService {
       };
 
       if (trappedEffect) {
-        const rawTrapFine = Math.max(
-          ROB_TRAP_FINE_MIN,
-          Math.min(ROB_TRAP_FINE_MAX, Math.floor(attackerTotal * ROB_TRAP_FINE_RATE)),
-        );
+        const rawTrapFine = Math.max(1, Math.floor(attackerTotal * ROB_TRAP_FINE_RATE));
         const fine = applyFine(rawTrapFine);
         const nextTarget = target.coins + fine.actualFine;
 
@@ -569,11 +554,9 @@ export class EconomyService {
         : cfg.robSuccessRate;
       const succeeded = rng() < effectiveRate;
       if (succeeded) {
-        const pct = ROB_STEAL_MIN_RATE + rng() * (ROB_STEAL_MAX_RATE - ROB_STEAL_MIN_RATE);
-        const stolen = Math.max(
-          ROB_STEAL_MIN_AMOUNT,
-          Math.min(ROB_STEAL_MAX_AMOUNT, Math.floor(target.coins * pct)),
-        );
+        const roll = Math.min(1, Math.max(0, rng()));
+        const pct = ROB_STEAL_MIN_RATE + roll * (ROB_STEAL_MAX_RATE - ROB_STEAL_MIN_RATE);
+        const stolen = Math.max(1, Math.floor(target.coins * pct));
         const actualStolen = Math.min(stolen, target.coins);
         const bountyClaimed =
           this.chaosRepo?.claimOpenBounties(guildId, targetId, attackerId, nowMs) ?? 0;
@@ -605,10 +588,7 @@ export class EconomyService {
         };
       }
 
-      const rawFine = Math.max(
-        ROB_FINE_MIN,
-        Math.min(ROB_FINE_MAX, Math.floor(attackerTotal * ROB_FINE_RATE)),
-      );
+      const rawFine = Math.max(1, Math.floor(attackerTotal * ROB_FINE_RATE));
       const fine = applyFine(rawFine);
       const nextTarget = target.coins + fine.actualFine;
 
@@ -751,10 +731,7 @@ export class EconomyService {
       };
 
       if (trappedEffect) {
-        const rawTrapFine = Math.max(
-          BANK_ROB_TRAP_FINE_MIN,
-          Math.min(BANK_ROB_TRAP_FINE_MAX, Math.floor(attackerTotal * BANK_ROB_TRAP_FINE_RATE)),
-        );
+        const rawTrapFine = Math.max(1, Math.floor(attackerTotal * BANK_ROB_TRAP_FINE_RATE));
         const fine = applyFine(rawTrapFine);
         const nextTargetBank = target.bankCoins + fine.actualFine;
 
@@ -799,13 +776,11 @@ export class EconomyService {
       const succeeded = rng() < effectiveRate;
 
       if (succeeded) {
+        const roll = Math.min(1, Math.max(0, rng()));
         const pct =
           BANK_ROB_STEAL_MIN_RATE +
-          rng() * (BANK_ROB_STEAL_MAX_RATE - BANK_ROB_STEAL_MIN_RATE);
-        const stolen = Math.max(
-          BANK_ROB_STEAL_MIN,
-          Math.min(BANK_ROB_STEAL_MAX, Math.floor(target.bankCoins * pct)),
-        );
+          roll * (BANK_ROB_STEAL_MAX_RATE - BANK_ROB_STEAL_MIN_RATE);
+        const stolen = Math.max(1, Math.floor(target.bankCoins * pct));
         const actualStolen = Math.min(stolen, target.bankCoins);
         const bountyClaimed =
           this.chaosRepo?.claimOpenBounties(guildId, targetId, attackerId, nowMs) ?? 0;
@@ -837,10 +812,7 @@ export class EconomyService {
         };
       }
 
-      const rawFine = Math.max(
-        BANK_ROB_FINE_MIN,
-        Math.min(BANK_ROB_FINE_MAX, Math.floor(attackerTotal * BANK_ROB_FINE_RATE)),
-      );
+      const rawFine = Math.max(1, Math.floor(attackerTotal * BANK_ROB_FINE_RATE));
       const fine = applyFine(rawFine);
       const nextTargetBank = target.bankCoins + fine.actualFine;
 

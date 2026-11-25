@@ -124,7 +124,7 @@ export function formatBankRobError(
     case 'target_bank_too_poor':
       return `<@${targetId}> 银行金库存款不足 **${BANK_ROB_TARGET_MIN}** ${cfg.currencyName}，不值得动手。`;
     case 'attacker_too_poor':
-      return `你的总资产（现金+银行）不足 **${BANK_ROB_ATTACKER_MIN_ASSETS}** ${cfg.currencyName}，不够支付劫金库翻车保底罚金！`;
+      return `你的总资产（现金+银行）不足 **${BANK_ROB_ATTACKER_MIN_ASSETS}** ${cfg.currencyName}，无法发起强抢银行金库！`;
     default:
       return '当前无法执行劫金库，请稍后再试。';
   }

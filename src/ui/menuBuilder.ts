@@ -12,20 +12,15 @@ import type { EconomyConfig, ModuleKey } from '../config/defaults.js';
 import {
   BANK_ROB_ATTACKER_MIN_ASSETS,
   BANK_ROB_FINE_RATE,
-  BANK_ROB_STEAL_MAX,
   BANK_ROB_STEAL_MAX_RATE,
   BANK_ROB_STEAL_MIN_RATE,
   BANK_ROB_TARGET_MIN,
-  BANK_ROB_TRAP_FINE_MAX,
   BANK_ROB_TRAP_FINE_RATE,
   ROB_ATTACKER_MIN_ASSETS,
-  ROB_FINE_MAX,
   ROB_FINE_RATE,
-  ROB_STEAL_MAX_AMOUNT,
   ROB_STEAL_MAX_RATE,
   ROB_STEAL_MIN_RATE,
   ROB_TARGET_MIN_COINS,
-  ROB_TRAP_FINE_MAX,
   ROB_TRAP_FINE_RATE,
 } from '../config/economyConstants.js';
 import type { RedPacket, RedPacketClaim } from '../db/repositories/redPacketRepo.js';
@@ -551,7 +546,7 @@ function buildBankView(
     `• 利息状态：${interestStatus}`,
     `• 📜 信用评级：**${creditProfile.account.score}** 分（${creditProfile.tier.label}）`,
     `• ${debtLine}`,
-    `• 银行金库有重兵把守（强抢成功率仅 **${formatRatePercent(cfg.robBankSuccessRate)}**，得手仅刮走 **${formatRatePercent(BANK_ROB_STEAL_MIN_RATE)}~${formatRatePercent(BANK_ROB_STEAL_MAX_RATE)}** 封顶 **${BANK_ROB_STEAL_MAX.toLocaleString('en-US')}**，翻车高额重罚）；游玩游戏、发红包、决斗、转账均使用**口袋现金**。`,
+    `• 银行金库有重兵把守（强抢成功率仅 **${formatRatePercent(cfg.robBankSuccessRate)}**，得手可刮走 **${formatRatePercent(BANK_ROB_STEAL_MIN_RATE)}~${formatRatePercent(BANK_ROB_STEAL_MAX_RATE)}**，翻车按总资产重罚 **${formatRatePercent(BANK_ROB_FINE_RATE)}~${formatRatePercent(BANK_ROB_TRAP_FINE_RATE)}**）；游玩游戏、发红包、决斗、转账均使用**口袋现金**。`,
   ].join('\n');
 
   const embed = new EmbedBuilder()
@@ -711,8 +706,8 @@ function buildRobView(
 
   const description = [
     `${cfg.currencyEmoji} 你的口袋现金：**${profile.coins}** ｜ 🏦 银行存款：**${profile.bankCoins}** ｜ 冷却：${robRemainMs > 0 ? `⏳ ${formatDurationZh(robRemainMs)}` : '✅ 可下手'}`,
-    `• **🥷 偷口袋现金**：成功率 **${formatRatePercent(cfg.robSuccessRate)}**（需自身总资产≥${ROB_ATTACKER_MIN_ASSETS}、目标现金≥${ROB_TARGET_MIN_COINS}；可偷 ${formatRatePercent(ROB_STEAL_MIN_RATE)}~${formatRatePercent(ROB_STEAL_MAX_RATE)} 上限 ${ROB_STEAL_MAX_AMOUNT.toLocaleString('en-US')}；失败罚 ${formatRatePercent(ROB_FINE_RATE)} 最高 ${ROB_FINE_MAX}，踩夹罚 ${formatRatePercent(ROB_TRAP_FINE_RATE)} 最高 ${ROB_TRAP_FINE_MAX.toLocaleString('en-US')}）`,
-    `• **🏦 强抢银行金库**：成功率仅 **${formatRatePercent(cfg.robBankSuccessRate)}**（需自身总资产≥${BANK_ROB_ATTACKER_MIN_ASSETS}、目标存款≥${BANK_ROB_TARGET_MIN}；得手刮走 ${formatRatePercent(BANK_ROB_STEAL_MIN_RATE)}~${formatRatePercent(BANK_ROB_STEAL_MAX_RATE)} 封顶 ${BANK_ROB_STEAL_MAX.toLocaleString('en-US')}；失败重罚 ${formatRatePercent(BANK_ROB_FINE_RATE)}~${formatRatePercent(BANK_ROB_TRAP_FINE_RATE)} 最高 ${BANK_ROB_TRAP_FINE_MAX.toLocaleString('en-US')}，现金不够扣银行存款！）`,
+    `• **🥷 偷口袋现金**：成功率 **${formatRatePercent(cfg.robSuccessRate)}**（需自身总资产≥${ROB_ATTACKER_MIN_ASSETS}、目标现金≥${ROB_TARGET_MIN_COINS}；可偷 **${formatRatePercent(ROB_STEAL_MIN_RATE)}~${formatRatePercent(ROB_STEAL_MAX_RATE)}** 无金额上限；失败罚总资产 **${formatRatePercent(ROB_FINE_RATE)}**，踩夹罚 **${formatRatePercent(ROB_TRAP_FINE_RATE)}**）`,
+    `• **🏦 强抢银行金库**：成功率仅 **${formatRatePercent(cfg.robBankSuccessRate)}**（需自身总资产≥${BANK_ROB_ATTACKER_MIN_ASSETS}、目标存款≥${BANK_ROB_TARGET_MIN}；得手刮走 **${formatRatePercent(BANK_ROB_STEAL_MIN_RATE)}~${formatRatePercent(BANK_ROB_STEAL_MAX_RATE)}** 无金额上限；失败重罚总资产 **${formatRatePercent(BANK_ROB_FINE_RATE)}**，踩夹罚 **${formatRatePercent(BANK_ROB_TRAP_FINE_RATE)}**，现金不够扣银行存款！）`,
     '',
     '**🎯 口袋肥羊榜（现金前 6 名）：**',
     ...targetLines,
