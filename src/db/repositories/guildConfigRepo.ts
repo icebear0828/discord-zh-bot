@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3';
+import { sanitizeStoredUserProfiles } from '../../services/aiProfiles.js';
 import {
   cloneDefaultAiRegexRules,
   sanitizeStoredRegexRules,
@@ -133,11 +134,13 @@ export class GuildConfigRepo {
           const aiRaw = parseRecord<AiConfig>(row.ai_config_json ?? '{}', {
             ...DEFAULT_AI_CONFIG,
             regexRules: cloneDefaultAiRegexRules(),
+            userProfiles: [],
             freeChatChannelIds: [],
             allowedChannelIds: [],
             ignoredChannelIds: [],
           });
           const parsedRules = sanitizeStoredRegexRules(rawAiObj['regexRules']);
+          const parsedProfiles = sanitizeStoredUserProfiles(rawAiObj['userProfiles']);
           const rawInputPrice = rawAiObj['inputPricePer1MUsd'];
           const rawOutputPrice = rawAiObj['outputPricePer1MUsd'];
           return {
@@ -155,6 +158,7 @@ export class GuildConfigRepo {
                 ? rawAiObj['antiClichePromptEnabled']
                 : true,
             regexRules: parsedRules !== undefined ? parsedRules : cloneDefaultAiRegexRules(),
+            userProfiles: parsedProfiles,
             freeChatChannelIds: Array.isArray(aiRaw.freeChatChannelIds)
               ? aiRaw.freeChatChannelIds.filter((id): id is string => typeof id === 'string')
               : [],

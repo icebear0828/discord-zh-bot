@@ -8,11 +8,19 @@ import type {
 } from '../db/repositories/aiMemoryRepo.js';
 import type { GuildConfigRepo } from '../db/repositories/guildConfigRepo.js';
 import {
+  formatAiRelationLabel,
+  MAX_AI_USER_PROFILES,
+  validateAiUserProfileInput,
+  type AiUserProfile,
+  type AiUserRelation,
+} from './aiProfiles.js';
+import {
   applyAiRegexRules,
   cloneDefaultAiRegexRules,
   generateAiRegexRuleId,
   GLOBAL_ANTI_CLICHE_PROMPT,
   MAX_AI_REGEX_RULES,
+  normalizeDiscordCustomEmojis,
   validateAiRegexRuleInput,
   type AiRegexRule,
   type AiRegexRuleInput,
@@ -36,6 +44,11 @@ export interface DiscordAttachmentLike {
   name?: string | null;
 }
 
+export interface ContextMentionedUser {
+  id: string;
+  name: string;
+}
+
 export interface RawContextMessage {
   id: string;
   authorId: string;
@@ -45,6 +58,10 @@ export interface RawContextMessage {
   createdTimestamp: number;
   hasImages?: boolean;
   hasEmbeds?: boolean;
+  replyToMessageId?: string;
+  replyToAuthorId?: string;
+  replyToAuthorName?: string;
+  mentionedUsers?: ContextMentionedUser[];
 }
 
 export interface ExtractedMemoryTag {
@@ -61,6 +78,9 @@ export interface GenerateAiReplyInput {
   userHandle?: string;
   messageId: string;
   userContent: string;
+  replyToAuthorId?: string;
+  replyToAuthorName?: string;
+  mentionedUsers?: ContextMentionedUser[];
   replyChain?: RawContextMessage[];
   channelWindow?: RawContextMessage[];
   attachments?: DiscordAttachmentLike[];
@@ -80,6 +100,7 @@ export type GenerateAiReplyResult =
       ok: true;
       replyText: string;
       chunks: string[];
+      allowedMentionUserIds: string[];
       storedMemoryCount: number;
       model: string;
       attempts: number;
@@ -366,6 +387,158 @@ export function containsPromptInjectionMemoryTag(text: string): boolean {
   return /\[(MEMORY|VOICE|IMAGE|USAGE):/i.test(text);
 }
 
+export function formatSpeakerLabel(params: {
+  displayName: string;
+  profile?: AiUserProfile;
+}): string {
+  const displayName = params.displayName.trim() || '群友';
+  const profile = params.profile;
+  if (!profile) {
+    return displayName;
+  }
+  const relLabel = formatAiRelationLabel(profile.relation);
+  const alias = profile.alias.trim();
+  if (!alias || alias.toLowerCase() === displayName.toLowerCase()) {
+    return `${displayName}(${relLabel})`;
+  }
+  return `${displayName}(${relLabel}·${alias})`;
+}
+
+export interface MentionParticipant {
+  id: string;
+  names: string[];
+}
+
+export interface ResolveOutgoingMentionsResult {
+  text: string;
+  allowedMentionUserIds: string[];
+}
+
+const CODE_BLOCK_SEGMENT_RE = /(```[\s\S]*?```)/g;
+
+function resolveOutgoingMentionsPlain(
+  segment: string,
+  participantById: ReadonlyMap<string, string>,
+  sortedCandidates: ReadonlyArray<{ id: string; name: string; regex: RegExp }>,
+  allowedSet: Set<string>,
+  allowedOrder: string[],
+  maxMentions: number,
+): string {
+  let out = segment.replace(/@(everyone|here)\b/gi, (_m, target: string) => `@\u200b${target}`);
+
+  // 1. Validate existing <@id> or <@!id> tags against participant allowlist
+  out = out.replace(/<@!?(\d{15,22})>/g, (_m, userId: string) => {
+    const primaryName = participantById.get(userId);
+    if (!primaryName) {
+      return '@群友';
+    }
+    if (allowedSet.has(userId)) {
+      return `<@${userId}>`;
+    }
+    if (allowedOrder.length < maxMentions) {
+      allowedSet.add(userId);
+      allowedOrder.push(userId);
+      return `<@${userId}>`;
+    }
+    return `@${primaryName}`;
+  });
+
+  // 2. Replace @DisplayName / @Alias with real <@userId> (preserving order, capped at maxMentions)
+  for (const candidate of sortedCandidates) {
+    out = out.replace(candidate.regex, (fullMatch, prefix: string) => {
+      if (allowedSet.has(candidate.id)) {
+        return `${prefix}<@${candidate.id}>`;
+      }
+      if (allowedOrder.length < maxMentions) {
+        allowedSet.add(candidate.id);
+        allowedOrder.push(candidate.id);
+        return `${prefix}<@${candidate.id}>`;
+      }
+      return fullMatch;
+    });
+  }
+
+  return out;
+}
+
+export function resolveOutgoingMentions(
+  text: string,
+  participants: ReadonlyArray<MentionParticipant>,
+  maxMentions = 2,
+): ResolveOutgoingMentionsResult {
+  if (!text) {
+    return { text, allowedMentionUserIds: [] };
+  }
+
+  const safeCap = Math.max(0, Math.min(5, Math.floor(maxMentions)));
+  const participantById = new Map<string, string>();
+  const candidateEntries: Array<{ id: string; name: string }> = [];
+  const seenPairs = new Set<string>();
+
+  for (const p of participants) {
+    const id = p.id.trim();
+    if (!/^\d{15,22}$/.test(id) && !id) continue;
+    const cleanNames = p.names
+      .map((n) => n.trim())
+      .filter((n) => n.length > 0 && !n.includes('\n') && !n.includes('\r'));
+    if (cleanNames.length === 0) continue;
+    if (!participantById.has(id)) {
+      participantById.set(id, cleanNames[0]!);
+    }
+    for (const name of cleanNames) {
+      const key = `${id}\0${name.toLowerCase()}`;
+      if (seenPairs.has(key)) continue;
+      seenPairs.add(key);
+      candidateEntries.push({ id, name });
+    }
+  }
+
+  candidateEntries.sort((a, b) => b.name.length - a.name.length);
+  const sortedCandidates = candidateEntries.map((entry) => ({
+    ...entry,
+    // Match @name only when not preceded by word/email chars or '<' (already converted <@id>),
+    // and ensure trailing boundary isn't glued to another word char.
+    regex: new RegExp(
+      `(^|[^\\p{L}\\p{N}_<@])@${escapeRegExp(entry.name)}(?=$|[^\\p{L}\\p{N}_])`,
+      'giu',
+    ),
+  }));
+
+  const allowedSet = new Set<string>();
+  const allowedOrder: string[] = [];
+
+  if (!text.includes('```')) {
+    const resolved = resolveOutgoingMentionsPlain(
+      text,
+      participantById,
+      sortedCandidates,
+      allowedSet,
+      allowedOrder,
+      safeCap,
+    );
+    return { text: resolved, allowedMentionUserIds: allowedOrder };
+  }
+
+  const parts = text.split(CODE_BLOCK_SEGMENT_RE);
+  const resolved = parts
+    .map((part) => {
+      if (part.startsWith('```') && part.endsWith('```') && part.length >= 6) {
+        return part;
+      }
+      return resolveOutgoingMentionsPlain(
+        part,
+        participantById,
+        sortedCandidates,
+        allowedSet,
+        allowedOrder,
+        safeCap,
+      );
+    })
+    .join('');
+
+  return { text: resolved, allowedMentionUserIds: allowedOrder };
+}
+
 export function buildSystemPrompt(params: {
   aiCfg: AiConfig;
   guildMemories: AiMemoryRecord[];
@@ -373,6 +546,8 @@ export function buildSystemPrompt(params: {
   userMemories: AiMemoryRecord[];
   currentUserName: string;
   currentUserHandle?: string;
+  currentUserProfile?: AiUserProfile;
+  activeProfiles?: ReadonlyArray<AiUserProfile>;
 }): string {
   const {
     aiCfg,
@@ -381,12 +556,17 @@ export function buildSystemPrompt(params: {
     userMemories,
     currentUserName,
     currentUserHandle,
+    currentUserProfile,
+    activeProfiles = [],
   } = params;
   const trimmedHandle = currentUserHandle?.trim();
-  const speakerDesc =
+  const baseSpeaker =
     trimmedHandle && !currentUserName.toLowerCase().includes(trimmedHandle.toLowerCase())
       ? `${currentUserName}（账号：@${trimmedHandle}）`
       : currentUserName;
+  const speakerDesc = currentUserProfile
+    ? `${baseSpeaker}｜档案：${currentUserProfile.alias}（${formatAiRelationLabel(currentUserProfile.relation)}）`
+    : baseSpeaker;
 
   const sections: string[] = [
     `# 身份设定：${aiCfg.personaName}`,
@@ -397,8 +577,11 @@ export function buildSystemPrompt(params: {
     '',
     '## 群聊规则',
     `- 当前对你说话的群友：${speakerDesc}`,
-    `- 历史消息开头的 \`[昵称]:\` 仅用来区分不同人，你直接输出正文，严禁在开头加 \`[${aiCfg.personaName}]:\`、\`${aiCfg.personaName}：\` 或任何 \`[名字]:\` 前缀，也别把别人的话算到当前人头上。`,
-    '- 默认中文回复，不要发 @everyone 或 @here。',
+    `- 对话流里的 \`[昵称]:\`、\`[A 回复 B]:\`、\`[A 回复 你]:\` 标明了每句话是谁对谁说的；\`你\` 就是「${aiCfg.personaName}」。先分清谁在指使你、谁在骂你、谁是核心偏爱、谁是外人，绝不能搞反主语或把外人认成自家人。`,
+    `- 有人已经 \`@某人\` 点名让你怼或喊谁时，直接对那个人开喷，想点名就写 \`@对方昵称\`（系统会自动变成真实 @ 提及），严禁装傻让人“报名字”。`,
+    `- 直接输出正文，严禁在开头加 \`[${aiCfg.personaName}]:\`、\`${aiCfg.personaName}：\` 或任何 \`[名字]:\` 前缀，不要发 @everyone 或 @here。`,
+    '- 护短和反击要直接对人下嘴，别把“给你撑腰”之类的设定词挂嘴边念出来。',
+    '- 默认中文回复。',
   ];
 
   if (aiCfg.antiClichePromptEnabled !== false) {
@@ -407,6 +590,17 @@ export function buildSystemPrompt(params: {
 
   if (aiCfg.worldbook.trim()) {
     sections.push('', '## 世界书', aiCfg.worldbook.trim());
+  }
+
+  if (activeProfiles.length > 0) {
+    sections.push(
+      '',
+      '## 本轮出场人物档案（按账号精确识别，绝不认错）',
+      ...activeProfiles.map((p) => {
+        const rel = formatAiRelationLabel(p.relation);
+        return p.note ? `- ${p.alias}（关系：${rel}）：${p.note}` : `- ${p.alias}（关系：${rel}）`;
+      }),
+    );
   }
 
   if (guildMemories.length > 0) {
@@ -453,6 +647,7 @@ export function mergeConversationHistory(params: {
   resetAt: number;
   maxMessages: number;
   inputRegexRules?: ReadonlyArray<AiRegexRule>;
+  userProfiles?: ReadonlyArray<AiUserProfile>;
 }): LlmChatMessage[] {
   const {
     replyChain,
@@ -462,9 +657,13 @@ export function mergeConversationHistory(params: {
     resetAt,
     maxMessages,
     inputRegexRules,
+    userProfiles = [],
   } = params;
   if (maxMessages <= 0) return [];
 
+  const profileByUserId = new Map<string, AiUserProfile>(
+    userProfiles.map((p) => [p.userId, p]),
+  );
   const byId = new Map<string, { msg: RawContextMessage; fromReplyChain: boolean }>();
 
   for (const msg of channelWindow) {
@@ -480,7 +679,8 @@ export function mergeConversationHistory(params: {
   for (const item of byId.values()) {
     if (item.msg.isBot && item.msg.hasEmbeds) continue;
     const stripped = stripBotMention(item.msg.content, botId);
-    const text = stripped || (item.msg.hasImages ? '（发送了图片）' : '');
+    const normalizedEmojis = normalizeDiscordCustomEmojis(stripped);
+    const text = normalizedEmojis || (item.msg.hasImages ? '（发送了图片）' : '');
     if (!text) continue;
     cleaned.push({ ...item, text });
   }
@@ -504,20 +704,62 @@ export function mergeConversationHistory(params: {
     }
   }
 
-  return selected.map(({ msg, text }) => {
-    if (msg.authorId === botId) {
-      return { role: 'assistant', content: text };
+  const normalizeName = (rawName: string): string => {
+    const clean = normalizeDiscordCustomEmojis(rawName);
+    if (inputRegexRules && inputRegexRules.length > 0) {
+      return applyAiRegexRules(clean, inputRegexRules, 'input').trim() || clean;
     }
-    const normalizedAuthor =
-      inputRegexRules && inputRegexRules.length > 0
-        ? applyAiRegexRules(msg.authorName, inputRegexRules, 'input').trim() || msg.authorName
-        : msg.authorName;
+    return clean;
+  };
+
+  // Coalesce consecutive non-bot messages into a single role:'user' block
+  // so LLM gateways always see clean user <-> assistant turns without speaker confusion.
+  const result: LlmChatMessage[] = [];
+  let pendingUserLines: string[] = [];
+
+  const flushPendingUser = (): void => {
+    if (pendingUserLines.length === 0) return;
+    result.push({ role: 'user', content: pendingUserLines.join('\n') });
+    pendingUserLines = [];
+  };
+
+  for (const { msg, text } of selected) {
+    if (msg.authorId === botId) {
+      flushPendingUser();
+      const assistantText = normalizeDiscordCustomEmojis(text);
+      result.push({ role: 'assistant', content: assistantText });
+      continue;
+    }
+
+    const authorBase = normalizeName(msg.authorName);
+    const authorLabel = formatSpeakerLabel({
+      displayName: authorBase,
+      profile: profileByUserId.get(msg.authorId),
+    });
+
+    let replyClause = '';
+    if (msg.replyToAuthorId) {
+      if (msg.replyToAuthorId === botId) {
+        replyClause = ' 回复 你';
+      } else {
+        const targetBase = normalizeName(msg.replyToAuthorName || '群友');
+        const targetLabel = formatSpeakerLabel({
+          displayName: targetBase,
+          profile: profileByUserId.get(msg.replyToAuthorId),
+        });
+        replyClause = ` 回复 ${targetLabel}`;
+      }
+    }
+
     const normalizedText =
       inputRegexRules && inputRegexRules.length > 0
         ? applyAiRegexRules(text, inputRegexRules, 'input')
         : text;
-    return { role: 'user', content: `[${normalizedAuthor}]: ${normalizedText}` };
-  });
+    pendingUserLines.push(`[${authorLabel}${replyClause}]: ${normalizedText}`);
+  }
+
+  flushPendingUser();
+  return result;
 }
 
 function inferImageMimeType(att: DiscordAttachmentLike): string {
@@ -781,6 +1023,62 @@ export class AiService {
     });
   }
 
+  listUserProfiles(guildId: string): AiUserProfile[] {
+    return this.guildConfigRepo.getOrCreate(guildId).ai.userProfiles;
+  }
+
+  upsertUserProfile(
+    guildId: string,
+    input: { userId: string; alias: string; relation: AiUserRelation | string; note?: string },
+  ): { ok: true; profile: AiUserProfile; updated: boolean } | { ok: false; error: string } {
+    const validated = validateAiUserProfileInput(input);
+    if (!validated.ok) {
+      return { ok: false, error: validated.error };
+    }
+
+    const cfg = this.guildConfigRepo.getOrCreate(guildId);
+    const existingIdx = cfg.ai.userProfiles.findIndex(
+      (p) => p.userId === validated.profile.userId,
+    );
+    if (existingIdx >= 0) {
+      const next = cfg.ai.userProfiles.map((p, idx) =>
+        idx === existingIdx ? validated.profile : p,
+      );
+      this.guildConfigRepo.updateAi(guildId, { ...cfg.ai, userProfiles: next });
+      return { ok: true, profile: validated.profile, updated: true };
+    }
+
+    if (cfg.ai.userProfiles.length >= MAX_AI_USER_PROFILES) {
+      return {
+        ok: false,
+        error: `人物档案数量已达上限（最多 ${MAX_AI_USER_PROFILES} 条），请先删除不再需要的档案。`,
+      };
+    }
+
+    this.guildConfigRepo.updateAi(guildId, {
+      ...cfg.ai,
+      userProfiles: [...cfg.ai.userProfiles, validated.profile],
+    });
+    return { ok: true, profile: validated.profile, updated: false };
+  }
+
+  deleteUserProfile(
+    guildId: string,
+    userId: string,
+  ): { ok: true; profile: AiUserProfile } | { ok: false; error: string } {
+    const trimmed = userId.trim();
+    const cfg = this.guildConfigRepo.getOrCreate(guildId);
+    const target = cfg.ai.userProfiles.find((p) => p.userId === trimmed);
+    if (!target) {
+      return { ok: false, error: `未找到用户 <@${trimmed}> 的人物档案。` };
+    }
+    this.guildConfigRepo.updateAi(guildId, {
+      ...cfg.ai,
+      userProfiles: cfg.ai.userProfiles.filter((p) => p.userId !== trimmed),
+    });
+    return { ok: true, profile: target };
+  }
+
   async generateReply(
     input: GenerateAiReplyInput,
     botId = 'bot',
@@ -834,8 +1132,63 @@ export class AiService {
         )
       : [];
 
-    const effectiveUserName =
-      applyAiRegexRules(input.userName, aiCfg.regexRules, 'input').trim() || input.userName;
+    const normalizeName = (rawName: string): string => {
+      const clean = normalizeDiscordCustomEmojis(rawName);
+      return applyAiRegexRules(clean, aiCfg.regexRules, 'input').trim() || clean;
+    };
+
+    const profileByUserId = new Map<string, AiUserProfile>(
+      aiCfg.userProfiles.map((p) => [p.userId, p]),
+    );
+    const activeProfileIds = new Set<string>();
+    const participantNamesById = new Map<string, Set<string>>();
+
+    const registerParticipant = (id: string | undefined, ...names: Array<string | undefined>): void => {
+      if (!id || id === botId) return;
+      if (profileByUserId.has(id)) {
+        activeProfileIds.add(id);
+      }
+      let set = participantNamesById.get(id);
+      if (!set) {
+        set = new Set<string>();
+        participantNamesById.set(id, set);
+      }
+      const profile = profileByUserId.get(id);
+      if (profile?.alias.trim()) {
+        set.add(profile.alias.trim());
+      }
+      for (const raw of names) {
+        const trimmed = raw?.trim();
+        if (!trimmed) continue;
+        set.add(trimmed);
+        const norm = normalizeName(trimmed);
+        if (norm) set.add(norm);
+      }
+    };
+
+    registerParticipant(input.userId, input.userName, input.userHandle);
+    registerParticipant(input.replyToAuthorId, input.replyToAuthorName);
+    for (const m of input.mentionedUsers ?? []) {
+      if (m.id !== botId) {
+        registerParticipant(m.id, m.name);
+      }
+    }
+    for (const ctxMsg of [...(input.replyChain ?? []), ...(input.channelWindow ?? [])]) {
+      if (!ctxMsg.isBot && ctxMsg.authorId !== botId) {
+        registerParticipant(ctxMsg.authorId, ctxMsg.authorName);
+      }
+      if (ctxMsg.replyToAuthorId && ctxMsg.replyToAuthorId !== botId) {
+        registerParticipant(ctxMsg.replyToAuthorId, ctxMsg.replyToAuthorName);
+      }
+      for (const m of ctxMsg.mentionedUsers ?? []) {
+        if (m.id !== botId) {
+          registerParticipant(m.id, m.name);
+        }
+      }
+    }
+
+    const activeProfiles = aiCfg.userProfiles.filter((p) => activeProfileIds.has(p.userId));
+    const effectiveUserName = normalizeName(input.userName);
 
     const systemPrompt = buildSystemPrompt({
       aiCfg,
@@ -844,6 +1197,8 @@ export class AiService {
       userMemories,
       currentUserName: effectiveUserName,
       currentUserHandle: input.userHandle,
+      currentUserProfile: profileByUserId.get(input.userId),
+      activeProfiles,
     });
 
     const resetAt = this.aiMemoryRepo.getChannelResetAt(input.guildId, input.channelId);
@@ -855,6 +1210,7 @@ export class AiService {
       resetAt,
       maxMessages: aiCfg.contextWindowMessages,
       inputRegexRules: aiCfg.regexRules,
+      userProfiles: aiCfg.userProfiles,
     });
 
     const imageParts =
@@ -863,10 +1219,61 @@ export class AiService {
         : [];
 
     const rawUserText =
-      input.userContent.trim() || (imageParts.length > 0 ? '请看看这张图片。' : '你好');
+      normalizeDiscordCustomEmojis(input.userContent.trim()) ||
+      (imageParts.length > 0 ? '请看看这张图片。' : '你好');
     const normalizedUserText =
       applyAiRegexRules(rawUserText, aiCfg.regexRules, 'input').trim() || rawUserText;
-    const formattedText = `[${effectiveUserName}]: ${normalizedUserText}`;
+
+    const currentSpeakerLabel = formatSpeakerLabel({
+      displayName: effectiveUserName,
+      profile: profileByUserId.get(input.userId),
+    });
+    let currentReplyClause = '';
+    if (input.replyToAuthorId) {
+      if (input.replyToAuthorId === botId) {
+        currentReplyClause = ' 回复 你';
+      } else {
+        const replyTargetBase = normalizeName(input.replyToAuthorName || '群友');
+        const replyTargetLabel = formatSpeakerLabel({
+          displayName: replyTargetBase,
+          profile: profileByUserId.get(input.replyToAuthorId),
+        });
+        currentReplyClause = ` 回复 ${replyTargetLabel}`;
+      }
+    }
+
+    const nonBotMentions = (input.mentionedUsers ?? []).filter((m) => m.id !== botId);
+    const mentionHintLine =
+      nonBotMentions.length > 0
+        ? `\n（本句点名提到：${nonBotMentions
+            .map((m) => {
+              const name = normalizeName(m.name);
+              const label = formatSpeakerLabel({
+                displayName: name,
+                profile: profileByUserId.get(m.id),
+              });
+              return `@${label}`;
+            })
+            .join('、')}）`
+        : '';
+
+    const currentTurnLine = `[${currentSpeakerLabel}${currentReplyClause}]: ${normalizedUserText}${mentionHintLine}`;
+
+    // Merge trailing history user block into the final user turn so messages strictly alternate
+    let combinedHistory = history;
+    let formattedText = currentTurnLine;
+    const lastHistory = history[history.length - 1];
+    if (lastHistory && lastHistory.role === 'user' && typeof lastHistory.content === 'string') {
+      combinedHistory = history.slice(0, -1);
+      formattedText = [
+        '【刚才频道对话】',
+        lastHistory.content,
+        '',
+        '【当前对你说话】',
+        currentTurnLine,
+      ].join('\n');
+    }
+
     const userMessageContent: string | LlmContentPart[] =
       imageParts.length > 0
         ? [{ type: 'text', text: formattedText }, ...imageParts]
@@ -874,7 +1281,7 @@ export class AiService {
 
     const messages: LlmChatMessage[] = [
       { role: 'system', content: systemPrompt },
-      ...history,
+      ...combinedHistory,
       { role: 'user', content: userMessageContent },
     ];
 
@@ -889,7 +1296,7 @@ export class AiService {
       const latencyMs = Math.max(0, Date.now() - startedAt);
 
       const tags = extractMemoryTags(response.content);
-      const replyText = cleanAiOutput(response.content, aiCfg.personaName, aiCfg.regexRules);
+      const cleanedText = cleanAiOutput(response.content, aiCfg.personaName, aiCfg.regexRules);
 
       let storedMemoryCount = 0;
       if (aiCfg.memoryEnabled && !containsPromptInjectionMemoryTag(rawUserText)) {
@@ -918,9 +1325,17 @@ export class AiService {
         }
       }
 
-      const finalReplyText =
-        replyText ||
+      const mentionParticipants: MentionParticipant[] = [...participantNamesById.entries()].map(
+        ([id, nameSet]) => ({
+          id,
+          names: [...nameSet],
+        }),
+      );
+      const baseReplyText =
+        cleanedText ||
         (storedMemoryCount > 0 ? EMPTY_AI_MEMORY_ONLY_FALLBACK : EMPTY_AI_REPLY_FALLBACK);
+      const resolvedMentions = resolveOutgoingMentions(baseReplyText, mentionParticipants, 2);
+      const finalReplyText = resolvedMentions.text;
       const chunks = splitDiscordMessage(finalReplyText);
 
       const reportedPrompt = response.usage?.promptTokens;
@@ -972,6 +1387,7 @@ export class AiService {
         ok: true,
         replyText: finalReplyText,
         chunks,
+        allowedMentionUserIds: resolvedMentions.allowedMentionUserIds,
         storedMemoryCount,
         model: response.model,
         attempts: response.attempts,

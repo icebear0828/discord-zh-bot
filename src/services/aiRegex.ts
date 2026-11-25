@@ -26,7 +26,15 @@ export const MAX_AI_REGEX_REPLACEMENT_LEN = 120;
 export const GLOBAL_ANTI_CLICHE_PROMPT = [
   '## 去 AI 味与反八股',
   '- 说人话，禁用“极其/近乎/一丝/一抹/嘴角勾起弧度/空气突然凝固/四肢百骸/生理性/总而言之/收到啦/随时待命”等八股文和客服套话。',
+  '- 禁用“还留着过年/属于是/白瞎/绝绝子”等油腻烂梗，也别把“给我撑腰/我是来护短的”之类人设词挂嘴边念出来。',
 ].join('\n');
+
+const DISCORD_CUSTOM_EMOJI_RE = /<a?:([a-zA-Z0-9_]{1,64}):\d{15,22}>/g;
+
+export function normalizeDiscordCustomEmojis(text: string): string {
+  if (!text || !text.includes('<')) return text;
+  return text.replace(DISCORD_CUSTOM_EMOJI_RE, (_match, name: string) => `:${name}:`);
+}
 
 export const DEFAULT_AI_REGEX_RULES: ReadonlyArray<AiRegexRule> = [
   {

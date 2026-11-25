@@ -74,6 +74,7 @@ import {
   tryHandleAiMenuChannelSelect,
   tryHandleAiMenuModal,
   tryHandleAiMenuStringSelect,
+  tryHandleAiMenuUserSelect,
 } from './aiMenuHandler.js';
 import {
   tryHandleGamesMenuButton,
@@ -1986,6 +1987,20 @@ export async function handleMenuUserSelect(
     return;
   }
   const targetUser = interaction.users.get(targetId) ?? interaction.users.first();
+
+  if (
+    await tryHandleAiMenuUserSelect(
+      interaction,
+      ctx,
+      guildId,
+      actor,
+      parts,
+      targetId,
+      Boolean(targetUser?.bot),
+    )
+  ) {
+    return;
+  }
 
   if (
     await tryHandleGamesMenuUserSelect(

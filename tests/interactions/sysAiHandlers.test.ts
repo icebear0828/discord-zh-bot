@@ -1032,8 +1032,11 @@ describe('messageCreate isolation, world event guards, and AI safety/rate-limits
       ctx,
     );
 
-    expect(capturedMessages[1]?.content).toBe('[路人]: 刚才 @黑吊王 发红包了');
-    expect(capturedMessages[2]?.content).toBe('[路人甲]: 看看 @黑吊王 买草莓没');
+    expect(capturedMessages).toHaveLength(2);
+    expect(capturedMessages[1]?.role).toBe('user');
+    expect(capturedMessages[1]?.content).toContain('[路人]: 刚才 @黑吊王 发红包了');
+    expect(capturedMessages[1]?.content).toContain('[路人甲]: 看看 @黑吊王 买草莓没');
+    expect(capturedMessages[1]?.content).toContain('本句点名提到：@黑吊王');
     const replyPayload = (replyFn.mock.calls[0] as unknown as [{ content: string }])[0];
     expect(replyPayload.content).toBe('黑吊王这波特别稳，草莓留着自己吃');
 
@@ -1154,6 +1157,95 @@ describe('messageCreate isolation, world event guards, and AI safety/rate-limits
     const usageEmbed = (okUsageReply.mock.calls[0] as unknown as [MockPayload])[0].embeds?.[0]?.toJSON();
     expect(usageEmbed?.title).toContain('AI 近 24 小时用量统计');
     expect(usageEmbed?.description).toContain('demo');
+
+    // /ai profile permission & CRUD
+    const deniedProfileReply = vi.fn(async () => undefined);
+    await aiCommand.execute(
+      {
+        guildId: 'g1',
+        channelId: 'chat-ch',
+        inCachedGuild: () => true,
+        user: { id: 'u-asker' },
+        member: makeMember('u-asker'),
+        options: {
+          getSubcommandGroup: () => 'profile',
+          getSubcommand: () => 'list',
+        },
+        reply: deniedProfileReply,
+      } as unknown as ChatInputCommandInteraction,
+      ctx,
+    );
+    expect(
+      (deniedProfileReply.mock.calls[0] as unknown as [MockPayload])[0].embeds?.[0]?.toJSON().title,
+    ).toContain('权限不足');
+
+    const profileSetReply = vi.fn(async () => undefined);
+    await aiCommand.execute(
+      {
+        guildId: 'g1',
+        channelId: 'chat-ch',
+        inCachedGuild: () => true,
+        user: { id: 'admin-1' },
+        member: makeMember('admin-1', { admin: true }),
+        options: {
+          getSubcommandGroup: () => 'profile',
+          getSubcommand: () => 'set',
+          getUser: () => ({ id: '100000000000000001' }),
+          getString: (name: string) => {
+            if (name === 'relation') return 'vip';
+            if (name === 'alias') return '冰吊王';
+            if (name === 'note') return '核心偏爱大佬';
+            return null;
+          },
+        },
+        reply: profileSetReply,
+      } as unknown as ChatInputCommandInteraction,
+      ctx,
+    );
+    expect(
+      (profileSetReply.mock.calls[0] as unknown as [MockPayload])[0].embeds?.[0]?.toJSON().title,
+    ).toContain('已新增人物档案');
+    expect(ctx.services.ai.listUserProfiles('g1')).toHaveLength(1);
+
+    const profileListReply = vi.fn(async () => undefined);
+    await aiCommand.execute(
+      {
+        guildId: 'g1',
+        channelId: 'chat-ch',
+        inCachedGuild: () => true,
+        user: { id: 'admin-1' },
+        member: makeMember('admin-1', { admin: true }),
+        options: {
+          getSubcommandGroup: () => 'profile',
+          getSubcommand: () => 'list',
+        },
+        reply: profileListReply,
+      } as unknown as ChatInputCommandInteraction,
+      ctx,
+    );
+    expect(
+      (profileListReply.mock.calls[0] as unknown as [MockPayload])[0].embeds?.[0]?.toJSON()
+        .description,
+    ).toContain('冰吊王');
+
+    const profileDelReply = vi.fn(async () => undefined);
+    await aiCommand.execute(
+      {
+        guildId: 'g1',
+        channelId: 'chat-ch',
+        inCachedGuild: () => true,
+        user: { id: 'admin-1' },
+        member: makeMember('admin-1', { admin: true }),
+        options: {
+          getSubcommandGroup: () => 'profile',
+          getSubcommand: () => 'delete',
+          getUser: () => ({ id: '100000000000000001' }),
+        },
+        reply: profileDelReply,
+      } as unknown as ChatInputCommandInteraction,
+      ctx,
+    );
+    expect(ctx.services.ai.listUserProfiles('g1')).toHaveLength(0);
 
     ctx.db.close();
   });

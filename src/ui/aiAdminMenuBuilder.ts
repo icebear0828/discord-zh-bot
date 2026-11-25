@@ -6,8 +6,13 @@ import {
   EmbedBuilder,
   StringSelectMenuBuilder,
   StringSelectMenuOptionBuilder,
+  UserSelectMenuBuilder,
 } from 'discord.js';
 import { AI_PERSONA_PRESETS } from '../config/defaults.js';
+import {
+  formatAiRelationBadge,
+  MAX_AI_USER_PROFILES,
+} from '../services/aiProfiles.js';
 import { MAX_AI_REGEX_RULES, type AiRegexRuleScope } from '../services/aiRegex.js';
 import { COLORS, type AppContext } from './embeds.js';
 import {
@@ -38,6 +43,7 @@ const REGEX_SCOPE_LABELS: Record<AiRegexRuleScope, string> = {
 };
 
 const REGEX_PAGE_SIZE = 10;
+const PROFILE_PAGE_SIZE = 10;
 
 function formatUsd(amount: number): string {
   if (!Number.isFinite(amount) || amount <= 0) return '$0.0000';
@@ -50,8 +56,9 @@ export function buildAdminAiView(
   guildId: string,
   actor: MenuActor,
   feedback: MenuFeedback | undefined,
-  tab: 'basic' | 'channels' | 'regex' | 'usage' = 'basic',
+  tab: 'basic' | 'channels' | 'regex' | 'usage' | 'profiles' = 'basic',
   regexPage = 1,
+  profilePage = 1,
 ): BuiltMenuMessage {
   const cfg = ctx.repos.guildConfig.getOrCreate(guildId);
   const ai = cfg.ai;
@@ -62,6 +69,87 @@ export function buildAdminAiView(
   const memCounts = ctx.services.ai.countMemories(guildId);
   const enabledRegexCount = ai.regexRules.filter((r) => r.enabled).length;
   const usage24h = ctx.services.ai.getUsageSummary(guildId, 24);
+
+  if (tab === 'profiles') {
+    const paged = paginateSlice(ai.userProfiles, profilePage, PROFILE_PAGE_SIZE);
+    const lines =
+      paged.slice.length > 0
+        ? paged.slice.map((p) => {
+            const badge = formatAiRelationBadge(p.relation);
+            const noteStr = p.note ? `\n  备注：${p.note}` : '';
+            return `• ${badge} <@${p.userId}> · **${p.alias}**${noteStr}`;
+          })
+        : ['当前还没有配置任何人物档案，请在下方直接选择一名群友添加。'];
+
+    const description = [
+      `👥 **已绑定人物档案**：**${ai.userProfiles.length}/${MAX_AI_USER_PROFILES}** 人`,
+      `📌 **说明**：按 Discord 账号 ID 精确绑定称呼、关系档位（核心偏爱 / 熟人 / 重点怼）与态度备注，群友改昵称也不会认错人，且仅在本轮对话出场时自动注入。`,
+      '',
+      ...lines,
+    ].join('\n');
+
+    const embed = new EmbedBuilder()
+      .setColor(resolveColor(COLORS.PRIMARY, feedback))
+      .setAuthor({ name: `${actor.displayName} · AI 精确人物关系档案`, iconURL: actor.avatarUrl })
+      .setTitle(`👤 AI 人物档案管理（第 ${paged.page}/${paged.totalPages} 页）`)
+      .setDescription(withFeedback(truncateText(description, 4000), feedback))
+      .setFooter({ text: '🔒 仅管理员可见；也可在频道用 /ai 档案 查看/设置/删除' })
+      .setTimestamp();
+
+    const components: MenuComponentRow[] = [
+      new ActionRowBuilder<UserSelectMenuBuilder>().addComponents(
+        new UserSelectMenuBuilder()
+          .setCustomId('menu:user:admin_ai_profile_pick')
+          .setPlaceholder('👤 选择一名群友新增或编辑人物档案...')
+          .setMinValues(1)
+          .setMaxValues(1),
+      ),
+    ];
+
+    if (paged.slice.length > 0) {
+      components.push(
+        new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+          new StringSelectMenuBuilder()
+            .setCustomId(`menu:admin_ai_profile_delete:${paged.page}`)
+            .setPlaceholder('🗑️ 选择一条人物档案移除...')
+            .addOptions(
+              paged.slice.map((p) =>
+                new StringSelectMenuOptionBuilder()
+                  .setLabel(truncateText(`${formatAiRelationBadge(p.relation)} ${p.alias}`, 100))
+                  .setValue(p.userId)
+                  .setDescription(truncateText(`ID: ${p.userId}${p.note ? ` | ${p.note}` : ''}`, 100)),
+              ),
+            ),
+        ),
+      );
+    }
+
+    const navButtons = [];
+    if (paged.totalPages > 1) {
+      navButtons.push(
+        makeButton(
+          `menu:nav:admin_ai:profiles:${Math.max(1, paged.page - 1)}`,
+          '⬅️ 上页',
+          ButtonStyle.Secondary,
+          paged.page <= 1,
+        ),
+        makeButton(
+          `menu:nav:admin_ai:profiles:${Math.min(paged.totalPages, paged.page + 1)}`,
+          '➡️ 下页',
+          ButtonStyle.Secondary,
+          paged.page >= paged.totalPages,
+        ),
+      );
+    }
+    navButtons.push(
+      makeButton('menu:nav:admin_ai:basic', '🎭 人设与参数', ButtonStyle.Primary),
+      makeButton('menu:nav:admin', '⬅️ 管理后台', ButtonStyle.Secondary),
+      makeButton('menu:nav:home', '🏠 主菜单', ButtonStyle.Secondary),
+    );
+    components.push(buttonRow(...navButtons));
+
+    return { embeds: [embed], components };
+  }
 
   if (tab === 'usage') {
     const usage7d = ctx.services.ai.getUsageSummary(guildId, 24 * 7);
@@ -268,6 +356,7 @@ export function buildAdminAiView(
     `🤖 **当前模型**：\`${effectiveModel}\`${ai.modelOverride ? '（后台覆盖）' : '（默认）'} ｜ 温度 **${ai.temperature}** ｜ MaxTokens **${ai.maxTokens}**`,
     `💬 **上下文与记忆**：滑窗 **${ai.contextWindowMessages}** 条 ｜ 记忆抽取 ${ai.memoryEnabled ? `✅ 开（每域上限 ${ai.maxMemoriesPerScope} 条）` : '⛔ 关'} ｜ 图片识图 ${ai.visionEnabled ? '✅ 开' : '⛔ 关'}`,
     `🔧 **正则替换与反八股**：启用 **${enabledRegexCount}/${ai.regexRules.length}** 条规则 ｜ 反八股提示词 ${ai.antiClichePromptEnabled ? '✅ 开' : '⛔ 关'}`,
+    `👤 **人物关系档案**：已绑定 **${ai.userProfiles.length}/${MAX_AI_USER_PROFILES}** 人`,
     `📊 **近 24h 用量**：**${usage24h.totalCalls}** 次（失败 ${usage24h.errorCalls}） ｜ **${usage24h.totalTokens.toLocaleString('en-US')}** Tokens ｜ 估算 **${formatUsd(usage24h.estimatedCostUsd)}**`,
     `🧠 **SQLite 记忆库**：共 **${memCounts.total}** 条（用户 ${memCounts.user} / 频道 ${memCounts.channel} / 全服 ${memCounts.guild}）`,
     `🗨️ **免 @ 直聊频道**：${freeText}`,
@@ -387,11 +476,11 @@ export function buildAdminAiView(
       makeButton('menu:admin:ai_reset_config', '♻️ 恢复默认', ButtonStyle.Danger),
     ),
     buttonRow(
-      makeButton('menu:nav:admin_ai:usage', '📊 用量与计费', ButtonStyle.Primary),
+      makeButton('menu:nav:admin_ai:profiles', '👤 人物档案', ButtonStyle.Primary),
       makeButton('menu:nav:admin_ai:regex', '🔧 正则与反八股', ButtonStyle.Primary),
-      makeButton('menu:nav:admin_ai:channels', '🔕 屏蔽与全部频道', ButtonStyle.Primary),
+      makeButton('menu:nav:admin_ai:usage', '📊 用量与计费', ButtonStyle.Primary),
+      makeButton('menu:nav:admin_ai:channels', '🔕 频道范围', ButtonStyle.Primary),
       makeButton('menu:nav:admin', '⬅️ 管理后台', ButtonStyle.Secondary),
-      makeButton('menu:nav:home', '🏠 主菜单', ButtonStyle.Secondary),
     ),
   ];
 

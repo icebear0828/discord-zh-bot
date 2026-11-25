@@ -2066,6 +2066,7 @@ export function buildMenuMessage(
         feedback,
         view.tab ?? 'basic',
         view.regexPage ?? 1,
+        view.profilePage ?? 1,
       );
     case 'admin_credit_rpg':
       return buildAdminCreditRpgView(ctx, guildId, actor, feedback);

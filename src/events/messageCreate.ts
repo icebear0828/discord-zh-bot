@@ -3,6 +3,7 @@ import { sendToChannel } from '../interactions/menuHelpers.js';
 import { resolveDiscordUserMentions } from '../services/aiRegex.js';
 import {
   stripBotMention,
+  type ContextMentionedUser,
   type DiscordAttachmentLike,
   type RawContextMessage,
 } from '../services/aiService.js';
@@ -41,22 +42,53 @@ function resolveMessageUserMentionName(msg: Message, userId: string): string | n
   return fromUser?.trim() ? fromUser.trim() : null;
 }
 
-function toRawContextMessage(msg: Message, botId: string): RawContextMessage {
+function getMessageAuthorName(msg: Message): string {
+  return msg.member?.displayName ?? msg.author.displayName ?? msg.author.username;
+}
+
+function extractNonBotMentionedUsers(msg: Message, botId: string): ContextMentionedUser[] {
+  const users = msg.mentions?.users;
+  if (!users || users.size === 0) return [];
+  const list: ContextMentionedUser[] = [];
+  for (const user of users.values()) {
+    if (user.id === botId || user.bot) continue;
+    const name =
+      resolveMessageUserMentionName(msg, user.id) ?? user.displayName ?? user.username ?? user.id;
+    list.push({ id: user.id, name });
+  }
+  return list;
+}
+
+function toRawContextMessage(
+  msg: Message,
+  botId: string,
+  refLookup?: ReadonlyMap<string, Message>,
+): RawContextMessage {
   const hasImages = [...msg.attachments.values()].some((att) =>
     Boolean(att.contentType?.startsWith('image/')),
   );
   const content = resolveDiscordUserMentions(msg.content, botId, (userId) =>
     resolveMessageUserMentionName(msg, userId),
   );
+  const replyToMessageId = msg.reference?.messageId;
+  const replyTarget = replyToMessageId ? refLookup?.get(replyToMessageId) : undefined;
   return {
     id: msg.id,
     authorId: msg.author.id,
-    authorName: msg.member?.displayName ?? msg.author.displayName ?? msg.author.username,
+    authorName: getMessageAuthorName(msg),
     isBot: msg.author.bot,
     content,
     createdTimestamp: msg.createdTimestamp,
     hasImages,
     hasEmbeds: Array.isArray(msg.embeds) && msg.embeds.length > 0,
+    ...(replyToMessageId ? { replyToMessageId } : {}),
+    ...(replyTarget
+      ? {
+          replyToAuthorId: replyTarget.author.id,
+          replyToAuthorName: getMessageAuthorName(replyTarget),
+        }
+      : {}),
+    mentionedUsers: extractNonBotMentionedUsers(msg, botId),
   };
 }
 
@@ -73,21 +105,26 @@ async function collectDeeperReplyChain(
   directRef: Message,
   botId: string,
   maxDepth = AI_MAX_REPLY_CHAIN_DEPTH,
-): Promise<RawContextMessage[]> {
-  const chain: RawContextMessage[] = [toRawContextMessage(directRef, botId)];
+): Promise<{ chain: RawContextMessage[]; fetchedMessages: Map<string, Message> }> {
+  const fetchedMessages = new Map<string, Message>([[directRef.id, directRef]]);
+  const orderedMessages: Message[] = [directRef];
   let current: Message | null = directRef;
 
   for (let i = 1; i < maxDepth && current?.reference?.messageId; i++) {
     try {
       const referenced = await current.fetchReference();
-      chain.unshift(toRawContextMessage(referenced, botId));
+      fetchedMessages.set(referenced.id, referenced);
+      orderedMessages.unshift(referenced);
       current = referenced;
     } catch {
       break;
     }
   }
 
-  return chain;
+  return {
+    chain: orderedMessages.map((m) => toRawContextMessage(m, botId, fetchedMessages)),
+    fetchedMessages,
+  };
 }
 
 async function handleAiMessage(client: Client, message: Message, ctx: AppContext): Promise<void> {
@@ -176,9 +213,10 @@ async function handleAiMessage(client: Client, message: Message, ctx: AppContext
   let typingTimer: NodeJS.Timeout | null = null;
   try {
     // Only fetch deeper reply chain AFTER trigger + guards pass
-    const replyChain = directRef
+    const replyData = directRef
       ? await collectDeeperReplyChain(directRef, botId, AI_MAX_REPLY_CHAIN_DEPTH)
-      : [];
+      : { chain: [], fetchedMessages: new Map<string, Message>() };
+    const replyChain = replyData.chain;
 
     const channelWindow: RawContextMessage[] = [];
     if (cfg.ai.contextWindowMessages > 0 && message.channel.isTextBased()) {
@@ -187,8 +225,12 @@ async function handleAiMessage(client: Client, message: Message, ctx: AppContext
           limit: Math.min(30, cfg.ai.contextWindowMessages + 2),
           before: message.id,
         });
+        const lookup = new Map<string, Message>(replyData.fetchedMessages);
         for (const m of fetched.values()) {
-          channelWindow.push(toRawContextMessage(m, botId));
+          lookup.set(m.id, m);
+        }
+        for (const m of fetched.values()) {
+          channelWindow.push(toRawContextMessage(m, botId, lookup));
         }
       } catch {
         // Missing ReadMessageHistory permission — fall back to reply chain only
@@ -204,6 +246,7 @@ async function handleAiMessage(client: Client, message: Message, ctx: AppContext
       }
     }, 8000);
 
+    const mentionedUsers = extractNonBotMentionedUsers(message, botId);
     const res = await ctx.services.ai.generateReply(
       {
         guildId: message.guild.id,
@@ -213,6 +256,13 @@ async function handleAiMessage(client: Client, message: Message, ctx: AppContext
         userHandle: message.author.username,
         messageId: message.id,
         userContent,
+        ...(directRef
+          ? {
+              replyToAuthorId: directRef.author.id,
+              replyToAuthorName: getMessageAuthorName(directRef),
+            }
+          : {}),
+        mentionedUsers,
         replyChain,
         channelWindow,
         attachments,
@@ -238,15 +288,18 @@ async function handleAiMessage(client: Client, message: Message, ctx: AppContext
     for (let i = 0; i < res.chunks.length; i++) {
       const chunk = res.chunks[i];
       if (!chunk) continue;
+      const chunkAllowedUsers = res.allowedMentionUserIds.filter((id) =>
+        chunk.includes(`<@${id}>`),
+      );
       if (i === 0) {
         await message.reply({
           content: chunk,
-          allowedMentions: { parse: [], repliedUser: true },
+          allowedMentions: { parse: [], users: chunkAllowedUsers, repliedUser: true },
         });
       } else if (message.channel.isSendable()) {
         await message.channel.send({
           content: chunk,
-          allowedMentions: { parse: [] },
+          allowedMentions: { parse: [], users: chunkAllowedUsers },
         });
       }
     }

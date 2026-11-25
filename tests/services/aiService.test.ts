@@ -15,9 +15,11 @@ import {
   loadImageParts,
   MAX_AI_IMAGE_BYTES,
   mergeConversationHistory,
+  resolveOutgoingMentions,
   shouldTriggerAi,
   splitDiscordMessage,
 } from '../../src/services/aiService.js';
+import { normalizeDiscordCustomEmojis } from '../../src/services/aiRegex.js';
 import { LlmClient } from '../../src/services/llmClient.js';
 
 describe('aiService helpers & AiMemoryRepo', () => {
@@ -499,10 +501,12 @@ describe('aiService helpers & AiMemoryRepo', () => {
     }
 
     const sentMsgs = (capturedBody?.['messages'] ?? []) as Array<{ role: string; content: string }>;
+    expect(sentMsgs).toHaveLength(2);
     expect(sentMsgs[0]?.content).toContain('当前对你说话的群友：黑吊王');
     expect(sentMsgs[0]?.content).toContain('以前黑吊王赢过一把');
-    expect(sentMsgs[1]?.content).toBe('[黑吊王]: 叫我黑吊王也行');
-    expect(sentMsgs[2]?.content).toBe('[黑吊王]: 刚才 @黑吊王 说想吃草莓');
+    expect(sentMsgs[1]?.role).toBe('user');
+    expect(sentMsgs[1]?.content).toContain('[黑吊王]: 叫我黑吊王也行');
+    expect(sentMsgs[1]?.content).toContain('[黑吊王]: 刚才 @黑吊王 说想吃草莓');
 
     const mems = aiService.listMemories('g1', 'user', 'u_vip');
     expect(mems[0]?.content).toBe('黑吊王爱喝乌龙茶');
@@ -743,6 +747,213 @@ describe('aiService helpers & AiMemoryRepo', () => {
 
     expect(aiService.clearUsageLogs('g1')).toBe(3);
     expect(aiService.getUsageSummary('g1', 24).totalCalls).toBe(0);
+
+    db.close();
+  });
+
+  it('normalizes Discord custom emojis, preserves reply targets, and coalesces consecutive user turns', () => {
+    expect(normalizeDiscordCustomEmojis('笑死 <:emoji_61:157300000000000001> <a:dance:157300000000000002>')).toBe(
+      '笑死 :emoji_61: :dance:',
+    );
+
+    const history = mergeConversationHistory({
+      botId: 'bot1',
+      currentMessageId: 'm_cur',
+      resetAt: 0,
+      maxMessages: 10,
+      userProfiles: [
+        { userId: 'u_ice', alias: '冰吊王', relation: 'vip', note: '核心偏爱' },
+        { userId: 'u_angel', alias: '天使', relation: 'rival', note: '爱挑衅' },
+      ],
+      replyChain: [],
+      channelWindow: [
+        {
+          id: 'm1',
+          authorId: 'u_ice',
+          authorName: 'icebear',
+          isBot: false,
+          content: '有人骂你 @天使本性',
+          createdTimestamp: 1000,
+        },
+        {
+          id: 'm2',
+          authorId: 'u_angel',
+          authorName: '天使本性',
+          isBot: false,
+          content: '<:emoji_61:157300000000000001>',
+          createdTimestamp: 1100,
+        },
+        {
+          id: 'm3',
+          authorId: 'bot1',
+          authorName: '黑吊姬',
+          isBot: true,
+          content: '天使本性你嘴放干净点',
+          createdTimestamp: 1200,
+        },
+        {
+          id: 'm4',
+          authorId: 'u_angel',
+          authorName: '天使本性',
+          isBot: false,
+          content: '鸡巴',
+          createdTimestamp: 1300,
+          replyToAuthorId: 'bot1',
+          replyToAuthorName: '黑吊姬',
+        },
+        {
+          id: 'm5',
+          authorId: 'u_ice',
+          authorName: 'icebear',
+          isBot: false,
+          content: '<:fennunailong:157300000000000003>',
+          createdTimestamp: 1400,
+        },
+      ],
+    });
+
+    expect(history).toEqual([
+      {
+        role: 'user',
+        content: [
+          '[icebear(核心偏爱·冰吊王)]: 有人骂你 @天使本性',
+          '[天使本性(重点怼·天使)]: :emoji_61:',
+        ].join('\n'),
+      },
+      {
+        role: 'assistant',
+        content: '天使本性你嘴放干净点',
+      },
+      {
+        role: 'user',
+        content: [
+          '[天使本性(重点怼·天使) 回复 你]: 鸡巴',
+          '[icebear(核心偏爱·冰吊王)]: :fennunailong:',
+        ].join('\n'),
+      },
+    ]);
+  });
+
+  it('resolves outgoing @mentions using context allowlist, caps at 2 pings, blocks forged tags & @everyone', () => {
+    const participants = [
+      { id: '100000000000000001', names: ['icebear', '冰吊王'] },
+      { id: '100000000000000002', names: ['天使本性', '天使'] },
+      { id: '100000000000000003', names: ['无根水'] },
+    ];
+
+    const res = resolveOutgoingMentions(
+      [
+        '@天使本性 你算哪根葱，别拿 @冰吊王 撒气，顺便问下 @无根水 笑啥？',
+        '别伪造 <@999999999999999999> 和 @everyone @here，邮箱 test@天使本性.com 也别改',
+        '```ts',
+        'const x = "@天使本性";',
+        '```',
+      ].join('\n'),
+      participants,
+      2,
+    );
+
+    expect(res.allowedMentionUserIds).toEqual(['100000000000000002', '100000000000000001']);
+    expect(res.text).toContain('<@100000000000000002> 你算哪根葱');
+    expect(res.text).toContain('别拿 <@100000000000000001> 撒气');
+    // 3rd participant exceeds cap=2 -> stays plain text without <@id>
+    expect(res.text).toContain('顺便问下 @无根水 笑啥？');
+    // Forged mention outside allowlist stripped
+    expect(res.text).not.toContain('<@999999999999999999>');
+    // @everyone / @here broken with zero-width space
+    expect(res.text).not.toMatch(/@(everyone|here)/);
+    // Email and code block preserved untouched
+    expect(res.text).toContain('test@天使本性.com');
+    expect(res.text).toContain('const x = "@天使本性";');
+  });
+
+  it('injects only active user profiles into prompt and preserves reply/mention targets in generateReply', async () => {
+    const db = createDatabase(':memory:');
+    const guildConfigRepo = new GuildConfigRepo(db);
+    const aiMemoryRepo = new AiMemoryRepo(db);
+
+    let capturedBody: Record<string, unknown> | null = null;
+    const llmClient = new LlmClient(
+      {
+        baseUrl: 'https://gateway.local/v1',
+        apiKey: 'sk-test',
+        model: 'demo-model',
+        timeoutMs: 10_000,
+      },
+      {
+        fetchFn: async (_url, init) => {
+          capturedBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+          return new Response(
+            JSON.stringify({
+              model: 'demo-model',
+              choices: [{ message: { content: '@天使本性 别在这找存在感，滚去一边待着' } }],
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          );
+        },
+      },
+    );
+
+    const aiService = new AiService(guildConfigRepo, aiMemoryRepo, llmClient);
+    aiService.upsertUserProfile('g1', {
+      userId: '100000000000000001',
+      alias: '冰吊王',
+      relation: 'vip',
+      note: '核心老大，无条件偏心',
+    });
+    aiService.upsertUserProfile('g1', {
+      userId: '100000000000000099',
+      alias: '未出场路人',
+      relation: 'friend',
+      note: '不应注入到本轮prompt',
+    });
+
+    const res = await aiService.generateReply(
+      {
+        guildId: 'g1',
+        channelId: 'c1',
+        userId: '100000000000000001',
+        userName: 'icebear',
+        userHandle: 'icebear',
+        messageId: 'm_cur',
+        userContent: '宝宝有人骂你，你给我顶回去 @天使本性',
+        mentionedUsers: [{ id: '100000000000000002', name: '天使本性' }],
+        channelWindow: [
+          {
+            id: 'm_prev',
+            authorId: '100000000000000002',
+            authorName: '天使本性',
+            isBot: false,
+            content: '<:emoji_61:157300000000000001>',
+            createdTimestamp: 1000,
+          },
+          {
+            id: 'm_bot',
+            authorId: 'bot1',
+            authorName: '黑吊姬',
+            isBot: true,
+            content: '谁找我',
+            createdTimestamp: 1100,
+          },
+        ],
+      },
+      'bot1',
+    );
+
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.allowedMentionUserIds).toEqual(['100000000000000002']);
+      expect(res.replyText).toBe('<@100000000000000002> 别在这找存在感，滚去一边待着');
+    }
+
+    const sentMsgs = (capturedBody?.['messages'] ?? []) as Array<{ role: string; content: string }>;
+    // System prompt includes active VIP profile and excludes absent profile
+    expect(sentMsgs[0]?.content).toContain('冰吊王（关系：核心偏爱）：核心老大，无条件偏心');
+    expect(sentMsgs[0]?.content).not.toContain('未出场路人');
+    // Strict alternation: system -> user -> assistant -> user (no consecutive user messages)
+    expect(sentMsgs.map((m) => m.role)).toEqual(['system', 'user', 'assistant', 'user']);
+    expect(sentMsgs[3]?.content).toContain('[icebear(核心偏爱·冰吊王)]: 宝宝有人骂你，你给我顶回去 @天使本性');
+    expect(sentMsgs[3]?.content).toContain('本句点名提到：@天使本性');
 
     db.close();
   });

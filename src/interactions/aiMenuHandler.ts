@@ -7,13 +7,20 @@ import {
   type ChannelSelectMenuInteraction,
   type ModalSubmitInteraction,
   type StringSelectMenuInteraction,
+  type UserSelectMenuInteraction,
 } from 'discord.js';
 import {
   AI_PERSONA_PRESETS,
   DEFAULT_AI_CONFIG,
   type AiConfig,
   type AiPersonaPresetKey,
+  type AiUserProfile,
 } from '../config/defaults.js';
+import {
+  formatAiRelationBadge,
+  MAX_AI_USER_ALIAS_LEN,
+  MAX_AI_USER_NOTE_LEN,
+} from '../services/aiProfiles.js';
 import {
   cloneDefaultAiRegexRules,
   isValidAiRegexScope,
@@ -174,6 +181,42 @@ function buildAiPricingModal(ai: AiConfig): ModalBuilder {
     );
 }
 
+function buildAiUserProfileModal(
+  targetUserId: string,
+  defaultDisplayName: string,
+  existing?: AiUserProfile,
+): ModalBuilder {
+  const noteField = new TextInputBuilder()
+    .setCustomId('note')
+    .setLabel(truncateText(`一句话态度备注（可选，最多${MAX_AI_USER_NOTE_LEN}字）`, 45))
+    .setStyle(TextInputStyle.Short)
+    .setMaxLength(MAX_AI_USER_NOTE_LEN)
+    .setPlaceholder('例如：本服老大，有人怼他直接反击')
+    .setRequired(false);
+  if (existing?.note) {
+    noteField.setValue(truncateText(existing.note, MAX_AI_USER_NOTE_LEN));
+  }
+
+  return new ModalBuilder()
+    .setCustomId(`menu:modal_sub:admin_ai_profile_save:${targetUserId}`)
+    .setTitle(truncateText(`👤 配置人物档案：${existing?.alias || defaultDisplayName}`, 45))
+    .addComponents(
+      prefilledField(
+        'alias',
+        truncateText(`称呼（1~${MAX_AI_USER_ALIAS_LEN}字）`, 45),
+        truncateText(existing?.alias || defaultDisplayName, MAX_AI_USER_ALIAS_LEN),
+        MAX_AI_USER_ALIAS_LEN,
+      ),
+      prefilledField(
+        'relation',
+        truncateText('关系档位（vip 核心偏爱 / friend 熟人 / rival 重点怼）', 45),
+        existing?.relation || 'vip',
+        10,
+      ),
+      new ActionRowBuilder<TextInputBuilder>().addComponents(noteField),
+    );
+}
+
 export async function tryHandleAiMenuButton(
   interaction: ButtonInteraction,
   ctx: AppContext,
@@ -191,18 +234,25 @@ export async function tryHandleAiMenuButton(
       return true;
     }
     const tabRaw = parts[3];
-    const tab: 'basic' | 'channels' | 'regex' | 'usage' =
+    const tab: 'basic' | 'channels' | 'regex' | 'usage' | 'profiles' =
       tabRaw === 'channels'
         ? 'channels'
         : tabRaw === 'regex'
           ? 'regex'
           : tabRaw === 'usage'
             ? 'usage'
-            : 'basic';
+            : tabRaw === 'profiles'
+              ? 'profiles'
+              : 'basic';
     const parsedPage = parts[4] ? Number.parseInt(parts[4], 10) : 1;
-    const regexPage = Number.isFinite(parsedPage) && parsedPage > 0 ? parsedPage : 1;
+    const safePage = Number.isFinite(parsedPage) && parsedPage > 0 ? parsedPage : 1;
     await interaction.update(
-      buildMenuMessage(ctx, guildId, actor, { page: 'admin_ai', tab, regexPage }),
+      buildMenuMessage(ctx, guildId, actor, {
+        page: 'admin_ai',
+        tab,
+        regexPage: tab === 'regex' ? safePage : 1,
+        profilePage: tab === 'profiles' ? safePage : 1,
+      }),
     );
     return true;
   }
@@ -346,6 +396,7 @@ export async function tryHandleAiMenuButton(
         ...DEFAULT_AI_CONFIG,
         antiClichePromptEnabled: true,
         regexRules: cloneDefaultAiRegexRules(),
+        userProfiles: cfg.ai.userProfiles,
         freeChatChannelIds: [],
         allowedChannelIds: [],
         ignoredChannelIds: [],
@@ -356,7 +407,10 @@ export async function tryHandleAiMenuButton(
           guildId,
           actor,
           { page: 'admin_ai' },
-          { type: 'success', text: '已将 AI 人设、正则与频道配置恢复为默认设置（历史记忆库保留）。' },
+          {
+            type: 'success',
+            text: '已将 AI 人设、正则与频道配置恢复为默认设置（人物档案与历史记忆库已保留）。',
+          },
         ),
       );
       return true;
@@ -478,6 +532,48 @@ export async function tryHandleAiMenuStringSelect(
           ? {
               type: 'success',
               text: `已删除正则规则 \`${res.rule.id}\`（${res.rule.label}）。`,
+            }
+          : { type: 'error', text: res.error },
+      ),
+    );
+    return true;
+  }
+
+  if (parts[1] === 'admin_ai_profile_delete') {
+    if (!actor.isAdmin) {
+      await interaction.update(
+        buildMenuMessage(ctx, guildId, actor, { page: 'home' }, ADMIN_DENIED_FEEDBACK),
+      );
+      return true;
+    }
+
+    const parsedPage = parts[2] ? Number.parseInt(parts[2], 10) : 1;
+    const profilePage = Number.isFinite(parsedPage) && parsedPage > 0 ? parsedPage : 1;
+    const targetUserId = interaction.values[0];
+    if (!targetUserId) {
+      await interaction.update(
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'admin_ai', tab: 'profiles', profilePage },
+          { type: 'error', text: '未选择任何人物档案。' },
+        ),
+      );
+      return true;
+    }
+
+    const res = ctx.services.ai.deleteUserProfile(guildId, targetUserId);
+    await interaction.update(
+      buildMenuMessage(
+        ctx,
+        guildId,
+        actor,
+        { page: 'admin_ai', tab: 'profiles', profilePage },
+        res.ok
+          ? {
+              type: 'success',
+              text: `已删除 <@${res.profile.userId}>（**${res.profile.alias}**）的人物档案。`,
             }
           : { type: 'error', text: res.error },
       ),
@@ -620,6 +716,53 @@ export async function tryHandleAiMenuChannelSelect(
   return true;
 }
 
+export async function tryHandleAiMenuUserSelect(
+  interaction: UserSelectMenuInteraction,
+  ctx: AppContext,
+  guildId: string,
+  actor: MenuActor,
+  parts: readonly string[],
+  targetId: string,
+  targetIsBot: boolean,
+): Promise<boolean> {
+  if (parts[1] !== 'user' || parts[2] !== 'admin_ai_profile_pick') {
+    return false;
+  }
+
+  if (!actor.isAdmin) {
+    await interaction.update(
+      buildMenuMessage(ctx, guildId, actor, { page: 'home' }, ADMIN_DENIED_FEEDBACK),
+    );
+    return true;
+  }
+
+  if (targetIsBot) {
+    await interaction.update(
+      buildMenuMessage(
+        ctx,
+        guildId,
+        actor,
+        { page: 'admin_ai', tab: 'profiles', profilePage: 1 },
+        { type: 'error', text: '只能为真实群友配置人物档案，不能选择机器人账号。' },
+      ),
+    );
+    return true;
+  }
+
+  const targetUser = interaction.users.get(targetId) ?? interaction.users.first();
+  const member = interaction.members?.get?.(targetId);
+  const memberDisplayName =
+    member && 'displayName' in member && typeof member.displayName === 'string'
+      ? member.displayName
+      : undefined;
+  const fallbackName =
+    memberDisplayName?.trim() || targetUser?.displayName?.trim() || targetUser?.username || '群友';
+  const existing = ctx.services.ai.listUserProfiles(guildId).find((p) => p.userId === targetId);
+
+  await interaction.showModal(buildAiUserProfileModal(targetId, fallbackName, existing));
+  return true;
+}
+
 export async function tryHandleAiMenuModal(
   interaction: ModalSubmitInteraction,
   ctx: AppContext,
@@ -635,7 +778,8 @@ export async function tryHandleAiMenuModal(
     modalType !== 'admin_ai_persona' &&
     modalType !== 'admin_ai_params' &&
     modalType !== 'admin_ai_regex_add' &&
-    modalType !== 'admin_ai_pricing'
+    modalType !== 'admin_ai_pricing' &&
+    modalType !== 'admin_ai_profile_save'
   ) {
     return false;
   }
@@ -644,6 +788,36 @@ export async function tryHandleAiMenuModal(
     await respondFromModal(
       interaction,
       buildMenuMessage(ctx, guildId, actor, { page: 'home' }, ADMIN_DENIED_FEEDBACK),
+    );
+    return true;
+  }
+
+  if (modalType === 'admin_ai_profile_save') {
+    const targetUserId = parts[3] ?? '';
+    const alias = interaction.fields.getTextInputValue('alias');
+    const relation = interaction.fields.getTextInputValue('relation');
+    const note = interaction.fields.getTextInputValue('note');
+
+    const res = ctx.services.ai.upsertUserProfile(guildId, {
+      userId: targetUserId,
+      alias,
+      relation,
+      note,
+    });
+    await respondFromModal(
+      interaction,
+      buildMenuMessage(
+        ctx,
+        guildId,
+        actor,
+        { page: 'admin_ai', tab: 'profiles', profilePage: 1 },
+        res.ok
+          ? {
+              type: 'success',
+              text: `${res.updated ? '已更新' : '已新增'} ${formatAiRelationBadge(res.profile.relation)} <@${res.profile.userId}> · **${res.profile.alias}**`,
+            }
+          : { type: 'error', text: res.error },
+      ),
     );
     return true;
   }

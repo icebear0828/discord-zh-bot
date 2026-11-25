@@ -5,6 +5,12 @@ import {
 } from 'discord.js';
 import type { AiMemoryRecord, AiMemoryScopeType } from '../../db/repositories/aiMemoryRepo.js';
 import {
+  formatAiRelationBadge,
+  MAX_AI_USER_ALIAS_LEN,
+  MAX_AI_USER_NOTE_LEN,
+  type AiUserRelation,
+} from '../../services/aiProfiles.js';
+import {
   isValidAiRegexScope,
   MAX_AI_REGEX_LABEL_LEN,
   MAX_AI_REGEX_PATTERN_LEN,
@@ -41,6 +47,12 @@ const REGEX_SCOPE_CHOICES: ReadonlyArray<{ name: string; value: AiRegexRuleScope
 const REGEX_TEST_STAGE_CHOICES: ReadonlyArray<{ name: string; value: 'input' | 'output' }> = [
   { name: '输出阶段（反八股 + 双向代称）', value: 'output' },
   { name: '输入阶段（输入归一化 + 双向代称）', value: 'input' },
+];
+
+const USER_RELATION_CHOICES: ReadonlyArray<{ name: string; value: AiUserRelation }> = [
+  { name: '👑 核心偏爱（护短偏心）', value: 'vip' },
+  { name: '🤝 熟人（正常熟悉）', value: 'friend' },
+  { name: '🎯 重点怼（优先开喷）', value: 'rival' },
 ];
 
 function formatScopeLabel(scope: AiMemoryScopeType): string {
@@ -393,6 +405,87 @@ export const aiCommand: CommandDefinition = {
             ),
           '用量',
           '管理员查看 AI Token 用量与费用估算',
+        ),
+      )
+      .addSubcommandGroup((group) =>
+        applyZh(
+          group
+            .setName('profile')
+            .setDescription('管理员管理 AI 精确人物关系档案（按账号绑定，绝不认错人）')
+            .addSubcommand((sub) =>
+              applyZh(
+                sub.setName('list').setDescription('查看已配置的人物关系档案列表'),
+                '查看',
+                '查看已配置的人物关系档案列表',
+              ),
+            )
+            .addSubcommand((sub) =>
+              applyZh(
+                sub
+                  .setName('set')
+                  .setDescription('新增或更新一名群友的 AI 人物关系档案')
+                  .addUserOption((opt) =>
+                    applyZh(
+                      opt.setName('user').setDescription('选择目标群友').setRequired(true),
+                      '群友',
+                      '选择要绑定档案的 Discord 群友',
+                    ),
+                  )
+                  .addStringOption((opt) =>
+                    applyZh(
+                      opt
+                        .setName('relation')
+                        .setDescription('关系档位')
+                        .addChoices(...USER_RELATION_CHOICES)
+                        .setRequired(true),
+                      '关系',
+                      '选择核心偏爱、熟人或重点怼',
+                    ),
+                  )
+                  .addStringOption((opt) =>
+                    applyZh(
+                      opt
+                        .setName('alias')
+                        .setDescription(`AI 认识的称呼（1~${MAX_AI_USER_ALIAS_LEN}字）`)
+                        .setMinLength(1)
+                        .setMaxLength(MAX_AI_USER_ALIAS_LEN)
+                        .setRequired(true),
+                      '称呼',
+                      `AI 怎么称呼 TA（1~${MAX_AI_USER_ALIAS_LEN}字）`,
+                    ),
+                  )
+                  .addStringOption((opt) =>
+                    applyZh(
+                      opt
+                        .setName('note')
+                        .setDescription(`一句话态度或背景备注（可选，最多${MAX_AI_USER_NOTE_LEN}字）`)
+                        .setMaxLength(MAX_AI_USER_NOTE_LEN),
+                      '备注',
+                      `一句话态度或背景备注（最多${MAX_AI_USER_NOTE_LEN}字）`,
+                    ),
+                  ),
+                '设置',
+                '新增或更新一名群友的 AI 人物关系档案',
+              ),
+            )
+            .addSubcommand((sub) =>
+              applyZh(
+                sub
+                  .setName('delete')
+                  .setDescription('删除一名群友的 AI 人物关系档案')
+                  .addUserOption((opt) =>
+                    applyZh(
+                      opt.setName('user').setDescription('选择要移除档案的群友').setRequired(true),
+                      '群友',
+                      '选择要移除档案的 Discord 群友',
+                    ),
+                  ),
+                '删除',
+                '删除一名群友的 AI 人物关系档案',
+              ),
+            ),
+          '档案',
+          '管理员管理 AI 精确人物关系档案',
         ),
       ),
     'ai',
@@ -754,6 +847,98 @@ export const aiCommand: CommandDefinition = {
                 ].join('\n'),
                 4096,
               ),
+            ),
+          ],
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+      return;
+    }
+
+    if (group === 'profile') {
+      if (!isAdmin) {
+        await interaction.reply({
+          embeds: [
+            createErrorEmbed(
+              '🔒 权限不足',
+              '只有服务器管理员或 Bot 管理员才能管理 AI 人物关系档案。',
+            ),
+          ],
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
+      if (sub === 'list') {
+        const profiles = ctx.services.ai.listUserProfiles(guildId);
+        const lines =
+          profiles.length > 0
+            ? profiles.map((p) => {
+                const badge = formatAiRelationBadge(p.relation);
+                const noteText = p.note ? ` — ${p.note}` : '';
+                return `• ${badge} <@${p.userId}> · **${p.alias}**${noteText}`;
+              })
+            : ['当前尚未配置任何人物档案，可使用 `/ai 档案 设置` 或 `/菜单 → 管理后台 → AI 管理` 添加。'];
+
+        await interaction.reply({
+          embeds: [
+            createInfoEmbed(
+              `👤 AI 人物关系档案（共 ${profiles.length} 人）`,
+              truncateText(lines.join('\n'), 4096),
+            ),
+          ],
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
+      if (sub === 'set') {
+        const target = interaction.options.getUser('user', true);
+        const relation = interaction.options.getString('relation', true);
+        const alias = interaction.options.getString('alias', true);
+        const note = interaction.options.getString('note') ?? '';
+
+        const res = ctx.services.ai.upsertUserProfile(guildId, {
+          userId: target.id,
+          alias,
+          relation,
+          note,
+        });
+        if (!res.ok) {
+          await interaction.reply({
+            embeds: [createErrorEmbed('❌ 保存人物档案失败', res.error)],
+            flags: MessageFlags.Ephemeral,
+          });
+          return;
+        }
+        const badge = formatAiRelationBadge(res.profile.relation);
+        await interaction.reply({
+          embeds: [
+            createSuccessEmbed(
+              res.updated ? '✅ 已更新人物档案' : '✅ 已新增人物档案',
+              `${badge} <@${res.profile.userId}> · 称呼：**${res.profile.alias}**${res.profile.note ? `\n备注：${res.profile.note}` : ''}`,
+            ),
+          ],
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
+      if (sub === 'delete') {
+        const target = interaction.options.getUser('user', true);
+        const res = ctx.services.ai.deleteUserProfile(guildId, target.id);
+        if (!res.ok) {
+          await interaction.reply({
+            embeds: [createErrorEmbed('❓ 删除失败', res.error)],
+            flags: MessageFlags.Ephemeral,
+          });
+          return;
+        }
+        await interaction.reply({
+          embeds: [
+            createSuccessEmbed(
+              '🗑️ 已移除人物档案',
+              `已删除 <@${res.profile.userId}>（**${res.profile.alias}**）的人物关系档案。`,
             ),
           ],
           flags: MessageFlags.Ephemeral,

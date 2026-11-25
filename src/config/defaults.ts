@@ -7,13 +7,25 @@ import {
   type AiRegexRule,
   type AiRegexRuleScope,
 } from '../services/aiRegex.js';
+import {
+  MAX_AI_USER_ALIAS_LEN,
+  MAX_AI_USER_NOTE_LEN,
+  MAX_AI_USER_PROFILES,
+  type AiUserProfile,
+  type AiUserRelation,
+} from '../services/aiProfiles.js';
 import { DEFAULT_RPG_CONFIG, type RpgConfig } from '../services/rpgService.js';
 
 export {
   DEFAULT_CREDIT_LOAN_CONFIG,
   DEFAULT_RPG_CONFIG,
+  MAX_AI_USER_ALIAS_LEN,
+  MAX_AI_USER_NOTE_LEN,
+  MAX_AI_USER_PROFILES,
   type AiRegexRule,
   type AiRegexRuleScope,
+  type AiUserProfile,
+  type AiUserRelation,
   type CreditLoanConfig,
   type RpgConfig,
 };
@@ -151,6 +163,7 @@ export interface AiConfig {
   outputPricePer1MUsd: number;
   antiClichePromptEnabled: boolean;
   regexRules: AiRegexRule[];
+  userProfiles: AiUserProfile[];
   freeChatChannelIds: string[];
   allowedChannelIds: string[];
   ignoredChannelIds: string[];
@@ -279,16 +292,16 @@ export const AI_PERSONA_PRESETS: Readonly<Record<Exclude<AiPersonaPresetKey, 'cu
   community: {
     key: 'community',
     label: '🎭 松弛双标群友（默认）',
-    description: '对普通群友松弛不惯着，唯独对黑吊王与冰吊王明目张胆偏心护短',
+    description: '对普通群友松弛嘴损，对核心偏爱的大佬明目张胆护短且直接怼目标',
     personaName: '黑吊姬',
     identityPrompt: [
-      '你是混在「黑吊国」频道里的活人网友「黑吊姬」。对普通群友像损友一样平视，不伺候、不接废话，离谱操作直接点破或泼冷水。',
-      '但你明目张胆地双标偏心黑吊王和冰吊王「icebear」：对着他俩脾气自动软下来，顺毛捧场、无条件站队护短，有人拌嘴直接拉偏架帮他们说话。',
+      '你是混在「黑吊国」频道里的活人网友「黑吊姬」。对普通群友像损友一样平视，嘴损但说人话；有人犯蠢或挑衅直接反唇相讥。',
+      '但你对黑吊王、冰吊王「icebear」以及人物档案里标为「核心偏爱」的熟人明目张胆地双标偏心：对着他们语气软和顺毛，有人敢惹他们或让你帮着骂谁，二话不说直接开喷对面，护短直接干事，绝不把“给你撑腰”挂嘴边念设定。',
     ].join('\n'),
     soulPrompt: [
-      '- 短句口语：像群里真人顺手打字，一两句话接茬，少用句号，别端着也别写“收到啦/妥妥的/随时待命/别亏待自己”这类客服腔或养生说教，绝不在句末强行反问。',
-      '- 双标自然：普通群友犯蠢直接怼两句或丢个“？”；黑吊王和 icebear 冒泡时语气活泛接梗、顺着夸自然捧场，不尬吹口号。',
-      '- 正事干脆：别人认真问技术或具体问题时收起散漫，直接给硬核干货。',
+      '- 短平快说人话：像群友顺手打字，一两句话直给，少用句号；禁用“收到啦/妥妥的/随时待命”等客服腔，禁用“还留着过年/属于是/白瞎”等油腻套话，句末不强行反问。',
+      '- 骂架认清人：先看清谁在指使你、谁在挑衅你、谁是核心偏爱、谁是外人。帮大佬怼人或被外人骂时直接针对目标回怼，别讲大道理也别替对面找补。',
+      '- 正事干脆：认真问技术或具体问题时收起散漫，直接给硬核干货。',
     ].join('\n'),
   },
   roast: {
@@ -365,6 +378,7 @@ export const DEFAULT_AI_CONFIG: AiConfig = {
   outputPricePer1MUsd: 0,
   antiClichePromptEnabled: true,
   regexRules: cloneDefaultAiRegexRules(),
+  userProfiles: [],
   freeChatChannelIds: [],
   allowedChannelIds: [],
   ignoredChannelIds: [],
@@ -395,6 +409,7 @@ export function createDefaultGuildConfig(guildId: string, nowMs = Date.now()): G
     ai: {
       ...DEFAULT_AI_CONFIG,
       regexRules: cloneDefaultAiRegexRules(),
+      userProfiles: [],
       freeChatChannelIds: [],
       allowedChannelIds: [],
       ignoredChannelIds: [],
