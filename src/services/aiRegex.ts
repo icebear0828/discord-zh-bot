@@ -39,10 +39,10 @@ export function normalizeDiscordCustomEmojis(text: string): string {
 export const DEFAULT_AI_REGEX_RULES: ReadonlyArray<AiRegexRule> = [
   {
     id: 'alias_heidiowang',
-    label: '布丁酱代称→黑吊王',
-    pattern: '草莓布丁酱|布丁酱',
+    label: '布丁酱/黑吊王→黑屌王',
+    pattern: '草莓布丁酱|布丁酱|黑吊王',
     flags: 'gi',
-    replacement: '黑吊王',
+    replacement: '黑屌王',
     scope: 'both',
     enabled: true,
   },

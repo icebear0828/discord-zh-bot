@@ -117,7 +117,7 @@ function buildAiRegexAddModal(): ModalBuilder {
           .setStyle(TextInputStyle.Short)
           .setMinLength(1)
           .setMaxLength(MAX_AI_REGEX_LABEL_LEN)
-          .setPlaceholder('例如：布丁酱代称→黑吊王')
+          .setPlaceholder('例如：布丁酱/黑吊王→黑屌王')
           .setRequired(true),
       ),
       new ActionRowBuilder<TextInputBuilder>().addComponents(
@@ -127,7 +127,7 @@ function buildAiRegexAddModal(): ModalBuilder {
           .setStyle(TextInputStyle.Short)
           .setMinLength(1)
           .setMaxLength(MAX_AI_REGEX_PATTERN_LEN)
-          .setPlaceholder('例如：草莓布丁酱|布丁酱')
+          .setPlaceholder('例如：草莓布丁酱|布丁酱|黑吊王')
           .setRequired(true),
       ),
       new ActionRowBuilder<TextInputBuilder>().addComponents(
@@ -136,7 +136,7 @@ function buildAiRegexAddModal(): ModalBuilder {
           .setLabel(truncateText(`替换为（留空表示删除，最多${MAX_AI_REGEX_REPLACEMENT_LEN}字）`, 45))
           .setStyle(TextInputStyle.Short)
           .setMaxLength(MAX_AI_REGEX_REPLACEMENT_LEN)
-          .setPlaceholder('例如：黑吊王')
+          .setPlaceholder('例如：黑屌王')
           .setRequired(false),
       ),
       new ActionRowBuilder<TextInputBuilder>().addComponents(
@@ -189,7 +189,7 @@ function buildAiUserProfileModal(
   const noteField = new TextInputBuilder()
     .setCustomId('note')
     .setLabel(truncateText(`一句话态度备注（可选，最多${MAX_AI_USER_NOTE_LEN}字）`, 45))
-    .setStyle(TextInputStyle.Short)
+    .setStyle(TextInputStyle.Paragraph)
     .setMaxLength(MAX_AI_USER_NOTE_LEN)
     .setPlaceholder('例如：本服老大，有人怼他直接反击')
     .setRequired(false);

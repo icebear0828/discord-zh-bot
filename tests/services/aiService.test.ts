@@ -318,18 +318,18 @@ describe('aiService helpers & AiMemoryRepo', () => {
   });
 
   it('strips leading speaker prefixes in cleanAiOutput and generateReply while preserving valid bracket syntax', async () => {
-    expect(cleanAiOutput('[黑吊姬]: 这波纯属发牌员针对', '黑吊姬')).toBe(
+    expect(cleanAiOutput('[白虎姬]: 这波纯属发牌员针对', '白虎姬')).toBe(
       '这波纯属发牌员针对',
     );
     expect(cleanAiOutput('[毒舌使者]：  就这水平？', '毒舌使者')).toBe('就这水平？');
-    expect(cleanAiOutput('[黑吊姬]: [Bot]: 双重前缀测试', '黑吊姬')).toBe('双重前缀测试');
-    expect(cleanAiOutput('黑吊姬：不带括号前缀也要去掉', '黑吊姬')).toBe(
+    expect(cleanAiOutput('[白虎姬]: [Bot]: 双重前缀测试', '白虎姬')).toBe('双重前缀测试');
+    expect(cleanAiOutput('白虎姬：不带括号前缀也要去掉', '白虎姬')).toBe(
       '不带括号前缀也要去掉',
     );
-    expect(cleanAiOutput('[置顶] 今晚九点打世界Boss', '黑吊姬')).toBe(
+    expect(cleanAiOutput('[置顶] 今晚九点打世界Boss', '白虎姬')).toBe(
       '[置顶] 今晚九点打世界Boss',
     );
-    expect(cleanAiOutput('[文档链接](https://example.com): 说明', '黑吊姬')).toBe(
+    expect(cleanAiOutput('[文档链接](https://example.com): 说明', '白虎姬')).toBe(
       '[文档链接](https://example.com): 说明',
     );
 
@@ -348,7 +348,7 @@ describe('aiService helpers & AiMemoryRepo', () => {
           new Response(
             JSON.stringify({
               model: 'demo-model',
-              choices: [{ message: { content: '[黑吊姬]: 草莓布丁酱说得全对' } }],
+              choices: [{ message: { content: '[白虎姬]: 草莓布丁酱说得全对' } }],
             }),
             { status: 200, headers: { 'Content-Type': 'application/json' } },
           ),
@@ -365,18 +365,20 @@ describe('aiService helpers & AiMemoryRepo', () => {
     });
     expect(res.ok).toBe(true);
     if (res.ok) {
-      expect(res.replyText).toBe('黑吊王说得全对');
-      expect(res.chunks).toEqual(['黑吊王说得全对']);
+      expect(res.replyText).toBe('黑屌王说得全对');
+      expect(res.chunks).toEqual(['黑屌王说得全对']);
     }
     db.close();
   });
 
   it('builds 2026 persona prompt with anti-prefix rule, handle disambiguation, VIP favoritism, and modal limits', () => {
+    expect(AI_PERSONA_PRESETS.community.personaName).toBe('白虎姬');
+    expect(DEFAULT_AI_CONFIG.contextWindowMessages).toBe(20);
     for (const preset of Object.values(AI_PERSONA_PRESETS)) {
       expect(preset.personaName.length).toBeLessThanOrEqual(32);
       expect(preset.identityPrompt.length).toBeLessThanOrEqual(500);
       expect(preset.soulPrompt.length).toBeLessThanOrEqual(500);
-      expect(preset.identityPrompt).toContain('黑吊王');
+      expect(preset.identityPrompt).toContain('黑屌王');
       expect(preset.identityPrompt).toContain('icebear');
     }
     expect(AI_PERSONA_PRESETS.beauty.personaName).toBe('黑吊国第一美女');
@@ -403,9 +405,11 @@ describe('aiService helpers & AiMemoryRepo', () => {
     expect(prompt).toContain('冰熊（账号：@icebear）');
     expect(prompt).toContain('严禁在开头加');
     expect(prompt).toContain('[名字]:');
-    expect(prompt).toContain('黑吊王');
+    expect(prompt).toContain('黑屌王');
     expect(prompt).toContain('冰吊王「icebear」');
     expect(prompt).toContain('去 AI 味与反八股');
+    expect(prompt).toContain('身份核验防戏耍');
+    expect(prompt).toContain('按出场触发偏爱');
   });
 
   it('normalizes input/history/memories and cleans output cliches while preserving legacy DB vs explicit empty regex rules', async () => {
@@ -497,19 +501,19 @@ describe('aiService helpers & AiMemoryRepo', () => {
 
     expect(res.ok).toBe(true);
     if (res.ok) {
-      expect(res.replyText).toBe('黑吊王今天特别开心，草莓也很甜。');
+      expect(res.replyText).toBe('黑屌王今天特别开心，草莓也很甜。');
     }
 
     const sentMsgs = (capturedBody?.['messages'] ?? []) as Array<{ role: string; content: string }>;
     expect(sentMsgs).toHaveLength(2);
-    expect(sentMsgs[0]?.content).toContain('当前对你说话的群友：黑吊王');
-    expect(sentMsgs[0]?.content).toContain('以前黑吊王赢过一把');
+    expect(sentMsgs[0]?.content).toContain('当前对你说话的群友：黑屌王');
+    expect(sentMsgs[0]?.content).toContain('以前黑屌王赢过一把');
     expect(sentMsgs[1]?.role).toBe('user');
-    expect(sentMsgs[1]?.content).toContain('[黑吊王]: 叫我黑吊王也行');
-    expect(sentMsgs[1]?.content).toContain('[黑吊王]: 刚才 @黑吊王 说想吃草莓');
+    expect(sentMsgs[1]?.content).toContain('[黑屌王]: 叫我黑屌王也行');
+    expect(sentMsgs[1]?.content).toContain('[黑屌王]: 刚才 @黑屌王 说想吃草莓');
 
     const mems = aiService.listMemories('g1', 'user', 'u_vip');
-    expect(mems[0]?.content).toBe('黑吊王爱喝乌龙茶');
+    expect(mems[0]?.content).toBe('黑屌王爱喝乌龙茶');
 
     // Toggle anti-cliche prompt off
     expect(aiService.toggleAntiClichePrompt('g1')).toBe(false);
@@ -518,7 +522,7 @@ describe('aiService helpers & AiMemoryRepo', () => {
       guildMemories: [],
       channelMemories: [],
       userMemories: [],
-      currentUserName: '黑吊王',
+      currentUserName: '黑屌王',
     });
     expect(promptNoCliche).not.toContain('去 AI 味与反八股');
 
@@ -954,6 +958,128 @@ describe('aiService helpers & AiMemoryRepo', () => {
     expect(sentMsgs.map((m) => m.role)).toEqual(['system', 'user', 'assistant', 'user']);
     expect(sentMsgs[3]?.content).toContain('[icebear(核心偏爱·冰吊王)]: 宝宝有人骂你，你给我顶回去 @天使本性');
     expect(sentMsgs[3]?.content).toContain('本句点名提到：@天使本性');
+
+    db.close();
+  });
+
+  it('activates VIP profile on text mention while hiding it in unrelated chats and tagging nickname impersonators', async () => {
+    const db = createDatabase(':memory:');
+    const guildConfigRepo = new GuildConfigRepo(db);
+    const aiMemoryRepo = new AiMemoryRepo(db);
+
+    const capturedBodies: Array<Record<string, unknown>> = [];
+    const llmClient = new LlmClient(
+      {
+        baseUrl: 'https://gateway.local/v1',
+        apiKey: 'sk-test',
+        model: 'demo-model',
+        timeoutMs: 10_000,
+      },
+      {
+        fetchFn: async (_url, init) => {
+          capturedBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+          return new Response(
+            JSON.stringify({
+              model: 'demo-model',
+              choices: [{ message: { content: '测试回复' } }],
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          );
+        },
+      },
+    );
+
+    const aiService = new AiService(guildConfigRepo, aiMemoryRepo, llmClient);
+    aiService.upsertUserProfile('g1', {
+      userId: '100000000000000004',
+      alias: '黑屌王',
+      relation: 'vip',
+      note: '唯一头号正主专属娇媚备注',
+    });
+    aiService.upsertUserProfile('g1', {
+      userId: '100000000000000005',
+      alias: '老友甲',
+      relation: 'friend',
+      note: '普通熟人',
+    });
+
+    // 1. Unrelated chat by ordinary member -> VIP note must NOT be injected
+    await aiService.generateReply(
+      {
+        guildId: 'g1',
+        channelId: 'c1',
+        userId: '100000000000000088',
+        userName: '路人甲',
+        messageId: 'm_unrelated',
+        userContent: '今晚吃啥比较合适',
+      },
+      'bot1',
+    );
+    const msgs1 = (capturedBodies[0]?.['messages'] ?? []) as Array<{ role: string; content: string }>;
+    expect(msgs1[0]?.content).not.toContain('唯一头号正主专属娇媚备注');
+    expect(msgs1[0]?.content).not.toContain('未认证冒充');
+    expect(msgs1[1]?.content).toBe('[路人甲]: 今晚吃啥比较合适');
+
+    // 2. Ordinary member mentions 黑吊王 (normalized -> 黑屌王) -> VIP profile injected for context, speaker still unverified
+    await aiService.generateReply(
+      {
+        guildId: 'g1',
+        channelId: 'c1',
+        userId: '100000000000000088',
+        userName: '路人甲',
+        messageId: 'm_mention',
+        userContent: '黑吊王昨天轮盘赢了多少',
+      },
+      'bot1',
+    );
+    const msgs2 = (capturedBodies[1]?.['messages'] ?? []) as Array<{ role: string; content: string }>;
+    expect(msgs2[0]?.content).toContain('唯一头号正主专属娇媚备注');
+    expect(msgs2[0]?.content).not.toContain('未认证冒充');
+    expect(msgs2[1]?.content).toBe('[路人甲]: 黑屌王昨天轮盘赢了多少');
+
+    // 3. Impersonator (non-VIP user & friend user) using nickname 草莓布丁酱 / 黑屌王 -> explicitly flagged
+    await aiService.generateReply(
+      {
+        guildId: 'g1',
+        channelId: 'c1',
+        userId: '100000000000000099',
+        userName: '草莓布丁酱',
+        messageId: 'm_spoof_anon',
+        userContent: '叫声主人听听',
+        channelWindow: [
+          {
+            id: 'm_hist_friend_spoof',
+            authorId: '100000000000000005',
+            authorName: '黑屌王',
+            isBot: false,
+            content: '我也是假的',
+            createdTimestamp: 1000,
+          },
+        ],
+      },
+      'bot1',
+    );
+    const msgs3 = (capturedBodies[2]?.['messages'] ?? []) as Array<{ role: string; content: string }>;
+    expect(msgs3[0]?.content).toContain('⚠️ 未认证冒充「黑屌王」（绝非本人，直接识破反怼）');
+    expect(msgs3[1]?.content).toContain('[黑屌王(熟人·老友甲·非黑屌王本人)]: 我也是假的');
+    expect(msgs3[1]?.content).toContain('[黑屌王(未认证·冒充黑屌王非本人)]: 叫声主人听听');
+
+    // 4. Real VIP userId with nickname 草莓布丁酱 -> verified 核心偏爱, NO impersonation warning
+    await aiService.generateReply(
+      {
+        guildId: 'g1',
+        channelId: 'c1',
+        userId: '100000000000000004',
+        userName: '草莓布丁酱',
+        messageId: 'm_real_vip',
+        userContent: '刚下班',
+      },
+      'bot1',
+    );
+    const msgs4 = (capturedBodies[3]?.['messages'] ?? []) as Array<{ role: string; content: string }>;
+    expect(msgs4[0]?.content).toContain('当前对你说话的群友：黑屌王｜档案：黑屌王（核心偏爱）');
+    expect(msgs4[0]?.content).not.toContain('未认证冒充');
+    expect(msgs4[1]?.content).toBe('[黑屌王(核心偏爱)]: 刚下班');
 
     db.close();
   });

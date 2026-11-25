@@ -10,17 +10,17 @@ import {
 } from '../../src/services/aiRegex.js';
 
 describe('aiRegex module', () => {
-  it('replaces 草莓布丁酱 and 布丁酱 with 黑吊王 in both input and output without touching standalone 草莓', () => {
+  it('replaces 草莓布丁酱, 布丁酱, and 黑吊王 with 黑屌王 in both input and output without touching standalone 草莓, 黑吊国, 黑吊币, or 冰吊王', () => {
     const rules = cloneDefaultAiRegexRules();
 
-    const inputText = '@草莓布丁酱 刚才和 布丁酱 买了一箱草莓和草莓蛋糕';
+    const inputText = '@草莓布丁酱 刚才和 布丁酱 以及 黑吊王 在黑吊国用黑吊币买了一箱草莓和草莓蛋糕，冰吊王也在';
     expect(applyAiRegexRules(inputText, rules, 'input')).toBe(
-      '@黑吊王 刚才和 黑吊王 买了一箱草莓和草莓蛋糕',
+      '@黑屌王 刚才和 黑屌王 以及 黑屌王 在黑吊国用黑吊币买了一箱草莓和草莓蛋糕，冰吊王也在',
     );
 
-    const outputText = '草莓布丁酱说的没错，不过草莓味冰淇淋确实好吃，布丁酱也喜欢';
+    const outputText = '草莓布丁酱说的没错，不过草莓味冰淇淋确实好吃，布丁酱和黑吊王也喜欢';
     expect(applyAiRegexRules(outputText, rules, 'output')).toBe(
-      '黑吊王说的没错，不过草莓味冰淇淋确实好吃，黑吊王也喜欢',
+      '黑屌王说的没错，不过草莓味冰淇淋确实好吃，黑屌王和黑屌王也喜欢',
     );
   });
 
@@ -49,8 +49,8 @@ describe('aiRegex module', () => {
 
   it('only runs input rules on input stage and output rules on output stage', () => {
     const rules = cloneDefaultAiRegexRules();
-    expect(applyAiRegexRules('极其近乎草莓布丁酱', rules, 'input')).toBe('极其近乎黑吊王');
-    expect(applyAiRegexRules('极其近乎草莓布丁酱', rules, 'output')).toBe('特别几乎黑吊王');
+    expect(applyAiRegexRules('极其近乎草莓布丁酱', rules, 'input')).toBe('极其近乎黑屌王');
+    expect(applyAiRegexRules('极其近乎草莓布丁酱', rules, 'output')).toBe('特别几乎黑屌王');
   });
 
   it('validates regex inputs and rejects malformed, empty-matching, or ReDoS-prone patterns', () => {

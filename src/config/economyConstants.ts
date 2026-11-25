@@ -17,6 +17,7 @@ export const DEFAULT_SLOTS_VIP_KEYWORDS = [
   '冰吊王',
   '冰冰冰',
   '草莓布丁酱',
+  '黑屌王',
   '黑吊王',
 ] as const;
 export const SLOTS_VIP_ICE_JACKPOT_CHANCE = 0.5;
@@ -35,7 +36,7 @@ export interface RobAdminPersonaRule {
 
 export const ROB_ADMIN_PERSONA_RULES: readonly RobAdminPersonaRule[] = [
   { key: 'ice', keywords: ['icebear', '冰吊王', '冰冰冰'] },
-  { key: 'boss', keywords: ['黑吊王', '草莓布丁', '布丁酱'] },
+  { key: 'boss', keywords: ['黑屌王', '黑吊王', '草莓布丁', '布丁酱'] },
   { key: 'senpai', keywords: ['114514'] },
 ] as const;
 

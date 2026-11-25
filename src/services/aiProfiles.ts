@@ -16,7 +16,7 @@ export interface AiUserProfileInput {
 
 export const MAX_AI_USER_PROFILES = 50;
 export const MAX_AI_USER_ALIAS_LEN = 24;
-export const MAX_AI_USER_NOTE_LEN = 100;
+export const MAX_AI_USER_NOTE_LEN = 200;
 
 const VALID_RELATIONS: ReadonlySet<string> = new Set(['vip', 'friend', 'rival']);
 const DISCORD_SNOWFLAKE_RE = /^\d{15,22}$/;
