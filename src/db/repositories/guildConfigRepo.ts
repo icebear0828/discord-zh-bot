@@ -15,6 +15,7 @@ import {
   DEFAULT_RPG_CONFIG,
   DEFAULT_TICKET_CONFIG,
   DEFAULT_WELCOME_CONFIG,
+  type AiChannelOverride,
   type AiConfig,
   type CreditLoanConfig,
   type EconomyConfig,
@@ -62,6 +63,42 @@ function parseStringArray(raw: string): string[] {
 function parseRecord<T extends object>(raw: string, defaults: T): T {
   const obj = parseJsonObject(raw);
   return { ...defaults, ...obj } as T;
+}
+
+function sanitizeChannelOverrides(raw: unknown): Record<string, AiChannelOverride> {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    return {};
+  }
+  const result: Record<string, AiChannelOverride> = {};
+  for (const [channelId, val] of Object.entries(raw as Record<string, unknown>)) {
+    if (!channelId.trim() || typeof val !== 'object' || val === null || Array.isArray(val)) {
+      continue;
+    }
+    const item = val as Record<string, unknown>;
+    const presetId =
+      typeof item['presetId'] === 'string' && item['presetId'].trim()
+        ? item['presetId'].trim()
+        : undefined;
+    const cardId =
+      typeof item['cardId'] === 'string' && item['cardId'].trim()
+        ? item['cardId'].trim()
+        : undefined;
+    const modelOverride =
+      typeof item['modelOverride'] === 'string' && item['modelOverride'].trim()
+        ? item['modelOverride'].trim()
+        : item['modelOverride'] === null
+          ? null
+          : undefined;
+
+    if (presetId || cardId || modelOverride !== undefined) {
+      result[channelId] = {
+        ...(presetId ? { presetId } : {}),
+        ...(cardId ? { cardId } : {}),
+        ...(modelOverride !== undefined ? { modelOverride } : {}),
+      };
+    }
+  }
+  return result;
 }
 
 export class GuildConfigRepo {
@@ -143,8 +180,19 @@ export class GuildConfigRepo {
           const parsedProfiles = sanitizeStoredUserProfiles(rawAiObj['userProfiles']);
           const rawInputPrice = rawAiObj['inputPricePer1MUsd'];
           const rawOutputPrice = rawAiObj['outputPricePer1MUsd'];
+          const rawActivePresetId = rawAiObj['activePresetId'];
+          const rawActiveCardId = rawAiObj['activeCardId'];
           return {
             ...aiRaw,
+            activePresetId:
+              typeof rawActivePresetId === 'string' && rawActivePresetId.trim()
+                ? rawActivePresetId.trim()
+                : null,
+            activeCardId:
+              typeof rawActiveCardId === 'string' && rawActiveCardId.trim()
+                ? rawActiveCardId.trim()
+                : null,
+            channelOverrides: sanitizeChannelOverrides(rawAiObj['channelOverrides']),
             inputPricePer1MUsd:
               typeof rawInputPrice === 'number' && Number.isFinite(rawInputPrice) && rawInputPrice >= 0
                 ? rawInputPrice

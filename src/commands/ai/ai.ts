@@ -1,9 +1,11 @@
 import {
+  AttachmentBuilder,
   MessageFlags,
   SlashCommandBuilder,
   type ChatInputCommandInteraction,
 } from 'discord.js';
 import type { AiMemoryRecord, AiMemoryScopeType } from '../../db/repositories/aiMemoryRepo.js';
+import { slugifyPackId } from '../../services/aiPackStore.js';
 import {
   formatAiRelationBadge,
   MAX_AI_USER_ALIAS_LEN,
@@ -53,6 +55,20 @@ const USER_RELATION_CHOICES: ReadonlyArray<{ name: string; value: AiUserRelation
   { name: '👑 核心偏爱（护短偏心）', value: 'vip' },
   { name: '🤝 熟人（正常熟悉）', value: 'friend' },
   { name: '🎯 重点怼（优先开喷）', value: 'rival' },
+];
+
+const PACK_BIND_SCOPE_CHOICES: ReadonlyArray<{ name: string; value: 'guild' | 'channel' }> = [
+  { name: '🌐 全服默认生效 (guild)', value: 'guild' },
+  { name: '🧪 仅当前频道独立覆盖测试 (channel)', value: 'channel' },
+];
+
+const PACK_IMPORT_ACTIVATE_CHOICES: ReadonlyArray<{
+  name: string;
+  value: 'none' | 'channel' | 'guild';
+}> = [
+  { name: '📥 仅入库保存（不改变当前挂载）', value: 'none' },
+  { name: '🧪 立即挂载到当前频道测试', value: 'channel' },
+  { name: '🌐 立即设为全服默认', value: 'guild' },
 ];
 
 function formatScopeLabel(scope: AiMemoryScopeType): string {
@@ -486,6 +502,354 @@ export const aiCommand: CommandDefinition = {
             ),
           '档案',
           '管理员管理 AI 精确人物关系档案',
+        ),
+      )
+      .addSubcommandGroup((group) =>
+        applyZh(
+          group
+            .setName('preset')
+            .setDescription('管理员管理 AI 破限预设包（导入导出、版本切换与回滚）')
+            .addSubcommand((sub) =>
+              applyZh(
+                sub.setName('list').setDescription('查看可用破限预设列表及挂载状态'),
+                '查看',
+                '查看可用破限预设列表及挂载状态',
+              ),
+            )
+            .addSubcommand((sub) =>
+              applyZh(
+                sub
+                  .setName('use')
+                  .setDescription('切换全服或当前频道挂载的破限预设')
+                  .addStringOption((opt) =>
+                    applyZh(
+                      opt
+                        .setName('id')
+                        .setDescription('破限预设编号（可通过 /ai 预设 查看 获取）')
+                        .setMinLength(1)
+                        .setMaxLength(64)
+                        .setRequired(true),
+                      '编号',
+                      '要挂载的破限预设 ID',
+                    ),
+                  )
+                  .addStringOption((opt) =>
+                    applyZh(
+                      opt
+                        .setName('scope')
+                        .setDescription('生效范围（默认 guild 全服生效）')
+                        .addChoices(...PACK_BIND_SCOPE_CHOICES),
+                      '范围',
+                      '选择全服默认或仅当前频道覆盖测试',
+                    ),
+                  ),
+                '切换',
+                '切换全服或当前频道挂载的破限预设',
+              ),
+            )
+            .addSubcommand((sub) =>
+              applyZh(
+                sub
+                  .setName('import')
+                  .setDescription('上传 JSON 附件导入破限预设（支持自研格式与酒馆预设自动转换）')
+                  .addAttachmentOption((opt) =>
+                    applyZh(
+                      opt
+                        .setName('file')
+                        .setDescription('上传 .json 破限预设文件')
+                        .setRequired(true),
+                      '文件',
+                      '上传 .json 格式的预设文件（支持酒馆 ST 预设）',
+                    ),
+                  )
+                  .addStringOption((opt) =>
+                    applyZh(
+                      opt
+                        .setName('id')
+                        .setDescription('可选指定预设 ID（不填自动从文件推导）')
+                        .setMaxLength(64),
+                      '编号',
+                      '可选指定保存的预设 ID',
+                    ),
+                  )
+                  .addStringOption((opt) =>
+                    applyZh(
+                      opt
+                        .setName('activate')
+                        .setDescription('导入后是否立即挂载生效（默认仅入库）')
+                        .addChoices(...PACK_IMPORT_ACTIVATE_CHOICES),
+                      '立即生效',
+                      '导入后仅入库、挂载当前频道或设为全服默认',
+                    ),
+                  ),
+                '导入',
+                '上传 JSON 附件导入破限预设（支持酒馆预设自动转换）',
+              ),
+            )
+            .addSubcommand((sub) =>
+              applyZh(
+                sub
+                  .setName('export')
+                  .setDescription('导出指定或当前生效的破限预设为 JSON 文件')
+                  .addStringOption((opt) =>
+                    applyZh(
+                      opt
+                        .setName('id')
+                        .setDescription('预设 ID（留空则导出本频道当前生效预设）')
+                        .setMaxLength(64),
+                      '编号',
+                      '要导出的预设 ID（留空导出当前生效预设）',
+                    ),
+                  ),
+                '导出',
+                '导出指定或当前生效的破限预设为 JSON 文件',
+              ),
+            )
+            .addSubcommand((sub) =>
+              applyZh(
+                sub
+                  .setName('rollback')
+                  .setDescription('将指定破限预设一键回滚到上一历史快照版本')
+                  .addStringOption((opt) =>
+                    applyZh(
+                      opt
+                        .setName('id')
+                        .setDescription('要回滚的预设 ID')
+                        .setMinLength(1)
+                        .setMaxLength(64)
+                        .setRequired(true),
+                      '编号',
+                      '要回滚的预设 ID',
+                    ),
+                  ),
+                '回滚',
+                '将指定破限预设一键回滚到上一历史快照版本',
+              ),
+            ),
+          '预设',
+          '管理员管理 AI 破限预设包',
+        ),
+      )
+      .addSubcommandGroup((group) =>
+        applyZh(
+          group
+            .setName('card')
+            .setDescription('管理员管理 AI 角色人设卡与蓝绿灯世界书')
+            .addSubcommand((sub) =>
+              applyZh(
+                sub.setName('list').setDescription('查看可用角色卡列表及挂载状态'),
+                '查看',
+                '查看可用角色卡列表及挂载状态',
+              ),
+            )
+            .addSubcommand((sub) =>
+              applyZh(
+                sub
+                  .setName('use')
+                  .setDescription('切换全服或当前频道挂载的角色卡')
+                  .addStringOption((opt) =>
+                    applyZh(
+                      opt
+                        .setName('id')
+                        .setDescription('角色卡编号（可通过 /ai 角色卡 查看 获取）')
+                        .setMinLength(1)
+                        .setMaxLength(64)
+                        .setRequired(true),
+                      '编号',
+                      '要挂载的角色卡 ID',
+                    ),
+                  )
+                  .addStringOption((opt) =>
+                    applyZh(
+                      opt
+                        .setName('scope')
+                        .setDescription('生效范围（默认 guild 全服生效）')
+                        .addChoices(...PACK_BIND_SCOPE_CHOICES),
+                      '范围',
+                      '选择全服默认或仅当前频道覆盖测试',
+                    ),
+                  ),
+                '切换',
+                '切换全服或当前频道挂载的角色卡',
+              ),
+            )
+            .addSubcommand((sub) =>
+              applyZh(
+                sub
+                  .setName('import')
+                  .setDescription('上传 JSON 附件导入角色卡（支持自研格式与酒馆 V2/V3 角色卡）')
+                  .addAttachmentOption((opt) =>
+                    applyZh(
+                      opt
+                        .setName('file')
+                        .setDescription('上传 .json 角色卡文件')
+                        .setRequired(true),
+                      '文件',
+                      '上传 .json 格式的角色卡（支持酒馆 V2/V3 含世界书）',
+                    ),
+                  )
+                  .addStringOption((opt) =>
+                    applyZh(
+                      opt
+                        .setName('id')
+                        .setDescription('可选指定角色卡 ID（不填自动从文件推导）')
+                        .setMaxLength(64),
+                      '编号',
+                      '可选指定保存的角色卡 ID',
+                    ),
+                  )
+                  .addStringOption((opt) =>
+                    applyZh(
+                      opt
+                        .setName('activate')
+                        .setDescription('导入后是否立即挂载生效（默认仅入库）')
+                        .addChoices(...PACK_IMPORT_ACTIVATE_CHOICES),
+                      '立即生效',
+                      '导入后仅入库、挂载当前频道或设为全服默认',
+                    ),
+                  ),
+                '导入',
+                '上传 JSON 附件导入角色卡（支持酒馆角色卡自动转换）',
+              ),
+            )
+            .addSubcommand((sub) =>
+              applyZh(
+                sub
+                  .setName('export')
+                  .setDescription('导出指定或当前生效的角色卡为 JSON 文件')
+                  .addStringOption((opt) =>
+                    applyZh(
+                      opt
+                        .setName('id')
+                        .setDescription('角色卡 ID（留空则导出本频道当前生效角色卡）')
+                        .setMaxLength(64),
+                      '编号',
+                      '要导出的角色卡 ID（留空导出当前生效角色卡）',
+                    ),
+                  ),
+                '导出',
+                '导出指定或当前生效的角色卡为 JSON 文件',
+              ),
+            )
+            .addSubcommand((sub) =>
+              applyZh(
+                sub
+                  .setName('rollback')
+                  .setDescription('将指定角色卡一键回滚到上一历史快照版本')
+                  .addStringOption((opt) =>
+                    applyZh(
+                      opt
+                        .setName('id')
+                        .setDescription('要回滚的角色卡 ID')
+                        .setMinLength(1)
+                        .setMaxLength(64)
+                        .setRequired(true),
+                      '编号',
+                      '要回滚的角色卡 ID',
+                    ),
+                  ),
+                '回滚',
+                '将指定角色卡一键回滚到上一历史快照版本',
+              ),
+            ),
+          '角色卡',
+          '管理员管理 AI 角色人设卡与世界书',
+        ),
+      )
+      .addSubcommandGroup((group) =>
+        applyZh(
+          group
+            .setName('debug')
+            .setDescription('破限组专属：频道沙盒覆盖、Dry-Run 报文预览与原始 CoT 检视')
+            .addSubcommand((sub) =>
+              applyZh(
+                sub
+                  .setName('override')
+                  .setDescription('为当前频道设置或清空独立测试覆盖（不影响大群聊天）')
+                  .addStringOption((opt) =>
+                    applyZh(
+                      opt
+                        .setName('preset')
+                        .setDescription('仅在本频道挂载的破限预设 ID')
+                        .setMaxLength(64),
+                      '预设',
+                      '仅在本频道测试的破限预设 ID',
+                    ),
+                  )
+                  .addStringOption((opt) =>
+                    applyZh(
+                      opt
+                        .setName('card')
+                        .setDescription('仅在本频道挂载的角色卡 ID')
+                        .setMaxLength(64),
+                      '角色卡',
+                      '仅在本频道测试的角色卡 ID',
+                    ),
+                  )
+                  .addStringOption((opt) =>
+                    applyZh(
+                      opt
+                        .setName('model')
+                        .setDescription('仅在本频道使用的模型名称')
+                        .setMaxLength(100),
+                      '模型',
+                      '仅在本频道测试的模型名称',
+                    ),
+                  )
+                  .addBooleanOption((opt) =>
+                    applyZh(
+                      opt
+                        .setName('clear')
+                        .setDescription('设为 true 清除本频道所有独立覆盖恢复跟随全服'),
+                      '清除覆盖',
+                      '清除当前频道的测试覆盖并恢复全服默认',
+                    ),
+                  ),
+                '频道挂载',
+                '为当前频道设置或清空独立测试覆盖',
+              ),
+            )
+            .addSubcommand((sub) =>
+              applyZh(
+                sub
+                  .setName('dryrun')
+                  .setDescription('模拟编译一句发言并私密导出发给网关的完整 messages JSON')
+                  .addStringOption((opt) =>
+                    applyZh(
+                      opt
+                        .setName('text')
+                        .setDescription('模拟用户发送的测试文本（1~1000字）')
+                        .setMinLength(1)
+                        .setMaxLength(1000)
+                        .setRequired(true),
+                      '测试发言',
+                      '模拟用户发送的测试消息文本',
+                    ),
+                  ),
+                '预览报文',
+                '模拟编译发言并导出发往网关的完整 messages JSON',
+              ),
+            )
+            .addSubcommand((sub) =>
+              applyZh(
+                sub
+                  .setName('last')
+                  .setDescription('私密查看本频道最近一次回复的原始未清洗内容与 CoT 思维链'),
+                '上次报文',
+                '查看本频道最近一次回复的原始未清洗输出与 CoT 思维链',
+              ),
+            )
+            .addSubcommand((sub) =>
+              applyZh(
+                sub
+                  .setName('reload')
+                  .setDescription('重新扫描磁盘 data/ai-packs 目录加载最新预设与角色卡'),
+                '重载磁盘',
+                '重新扫描磁盘私有目录加载最新预设与角色卡',
+              ),
+            ),
+          '调试',
+          '破限组专属频道覆盖与原始报文检视',
         ),
       ),
     'ai',
@@ -939,6 +1303,609 @@ export const aiCommand: CommandDefinition = {
             createSuccessEmbed(
               '🗑️ 已移除人物档案',
               `已删除 <@${res.profile.userId}>（**${res.profile.alias}**）的人物关系档案。`,
+            ),
+          ],
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+      return;
+    }
+
+    if (group === 'preset' || group === 'card' || group === 'debug') {
+      if (!isAdmin) {
+        await interaction.reply({
+          embeds: [
+            createErrorEmbed(
+              '🔒 权限不足',
+              '只有服务器管理员或 Bot 管理员才能管理破限预设、角色卡与调试报文。',
+            ),
+          ],
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
+      if (group === 'preset') {
+        const binding = ctx.services.ai.resolveEffectiveBinding(guildId, interaction.channelId);
+
+        if (sub === 'list') {
+          const presets = ctx.services.ai.listPresets();
+          const lines = presets.map((p) => {
+            const isGuild = (cfg.ai.activePresetId || 'default-chat') === p.id;
+            const isChan = binding.channelOverride?.presetId === p.id;
+            const tags = [
+              isGuild ? '🌐全服默认' : '',
+              isChan ? '🧪本频道覆盖' : '',
+            ]
+              .filter(Boolean)
+              .join(' ');
+            const tagBadge = tags ? ` — **${tags}**` : '';
+            const histCount = ctx.services.ai.listPackHistory('preset', p.id).length;
+            return `• \`${p.id}\` **${p.name}** \`v${p.version}\`（Prompt块 ${p.prompts.length} · 历史快照 ${histCount}）${tagBadge}`;
+          });
+
+          await interaction.reply({
+            embeds: [
+              createInfoEmbed(
+                `🔓 AI 破限预设库（共 ${presets.length} 套）`,
+                truncateText(
+                  [
+                    `当前频道生效预设：\`${binding.preset.id}\`（**${binding.preset.name}** \`v${binding.preset.version}\`）`,
+                    '',
+                    ...lines,
+                  ].join('\n'),
+                  4096,
+                ),
+              ),
+            ],
+            flags: MessageFlags.Ephemeral,
+          });
+          return;
+        }
+
+        if (sub === 'use') {
+          const id = interaction.options.getString('id', true).trim();
+          const scope = interaction.options.getString('scope') === 'channel' ? 'channel' : 'guild';
+          if (scope === 'channel') {
+            const res = ctx.services.ai.setChannelOverride(guildId, interaction.channelId, {
+              presetId: id,
+            });
+            if (!res.ok) {
+              await interaction.reply({
+                embeds: [createErrorEmbed('❌ 切换预设失败', res.error)],
+                flags: MessageFlags.Ephemeral,
+              });
+              return;
+            }
+            await interaction.reply({
+              embeds: [
+                createSuccessEmbed(
+                  '🧪 已挂载当前频道测试预设',
+                  `频道 <#${interaction.channelId}> 已独立挂载破限预设 \`${id}\`（不影响其他频道）。`,
+                ),
+              ],
+              flags: MessageFlags.Ephemeral,
+            });
+            return;
+          }
+
+          const res = ctx.services.ai.setGuildActivePreset(guildId, id);
+          if (!res.ok) {
+            await interaction.reply({
+              embeds: [createErrorEmbed('❌ 切换预设失败', res.error)],
+              flags: MessageFlags.Ephemeral,
+            });
+            return;
+          }
+          await interaction.reply({
+            embeds: [
+              createSuccessEmbed(
+                '🌐 已更新全服默认破限预设',
+                `全服默认破限预设已切换为 \`${res.preset.id}\`（**${res.preset.name}** \`v${res.preset.version}\`）。`,
+              ),
+            ],
+            flags: MessageFlags.Ephemeral,
+          });
+          return;
+        }
+
+        if (sub === 'import') {
+          await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+          const att = interaction.options.getAttachment('file', true);
+          const customId = interaction.options.getString('id')?.trim();
+          const activate = interaction.options.getString('activate') ?? 'none';
+
+          const dl = await ctx.services.ai.downloadTextAttachment(att.url);
+          if (!dl.ok) {
+            await interaction.editReply({
+              embeds: [createErrorEmbed('❌ 下载预设附件失败', dl.error)],
+            });
+            return;
+          }
+
+          const baseName = (att.name ?? 'preset').replace(/\.json$/i, '');
+          const fallbackId = customId || slugifyPackId(baseName, 'preset');
+          const imported = ctx.services.ai.importPresetJson(
+            dl.text,
+            customId ? { fallbackId: customId } : { fallbackId, fallbackName: baseName },
+          );
+          if (!imported.ok) {
+            await interaction.editReply({
+              embeds: [createErrorEmbed('❌ 导入破限预设失败', imported.error)],
+            });
+            return;
+          }
+
+          let finalPack = imported.pack;
+          if (customId && finalPack.id !== slugifyPackId(customId, 'preset')) {
+            const store = ctx.services.ai.getPackStore();
+            const forcedId = slugifyPackId(customId, 'preset');
+            if (store) {
+              const savedAgain = store.savePreset({ ...finalPack, id: forcedId });
+              if (savedAgain.ok) {
+                finalPack = savedAgain.pack;
+              }
+            }
+          }
+
+          let bindNote = '仅入库保存（未改动当前挂载）';
+          if (activate === 'channel') {
+            ctx.services.ai.setChannelOverride(guildId, interaction.channelId, {
+              presetId: finalPack.id,
+            });
+            bindNote = `已挂载至当前频道 <#${interaction.channelId}> 独立测试`;
+          } else if (activate === 'guild') {
+            ctx.services.ai.setGuildActivePreset(guildId, finalPack.id);
+            bindNote = '已设为全服默认破限预设';
+          }
+
+          const srcLabel =
+            imported.sourceFormat === 'sillytavern_preset'
+              ? '酒馆 SillyTavern 预设（自动转换）'
+              : '自研标准 Preset JSON';
+
+          await interaction.editReply({
+            embeds: [
+              createSuccessEmbed(
+                '✅ 已导入破限预设',
+                [
+                  `• **编号**：\`${finalPack.id}\` ｜ **名称**：**${finalPack.name}** \`v${finalPack.version}\``,
+                  `• **来源格式**：${srcLabel}`,
+                  `• **编排块数**：**${finalPack.prompts.length}** 块 ｜ **Prefill**：${finalPack.assistantPrefill.enabled ? '✅ 开启' : '关闭'}`,
+                  `• **历史快照**：${imported.archivedPrevious ? '已自动备份覆盖前旧版本（可一键回滚）' : '全新入库'}`,
+                  `• **挂载状态**：${bindNote}`,
+                ].join('\n'),
+              ),
+            ],
+          });
+          return;
+        }
+
+        if (sub === 'export') {
+          const id = interaction.options.getString('id')?.trim();
+          const pack = ctx.services.ai.exportPreset(guildId, id, interaction.channelId);
+          if (!pack) {
+            await interaction.reply({
+              embeds: [createErrorEmbed('❓ 未找到预设', `找不到编号为 \`${id}\` 的破限预设。`)],
+              flags: MessageFlags.Ephemeral,
+            });
+            return;
+          }
+          const jsonBuf = Buffer.from(`${JSON.stringify(pack, null, 2)}\n`, 'utf8');
+          const file = new AttachmentBuilder(jsonBuf, {
+            name: `${pack.id}-v${pack.version}.preset.json`,
+          });
+          await interaction.reply({
+            embeds: [
+              createSuccessEmbed(
+                `📤 已导出破限预设：${pack.name}`,
+                `编号 \`${pack.id}\`（\`v${pack.version}\`），请下载下方 JSON 附件保存或提交 Git。`,
+              ),
+            ],
+            files: [file],
+            flags: MessageFlags.Ephemeral,
+          });
+          return;
+        }
+
+        if (sub === 'rollback') {
+          const id = interaction.options.getString('id', true).trim();
+          const res = ctx.services.ai.rollbackPreset(id);
+          if (!res.ok) {
+            await interaction.reply({
+              embeds: [createErrorEmbed('❌ 回滚预设失败', res.error)],
+              flags: MessageFlags.Ephemeral,
+            });
+            return;
+          }
+          await interaction.reply({
+            embeds: [
+              createSuccessEmbed(
+                '⏪ 已回滚破限预设',
+                `预设 \`${res.restored.id}\` 已恢复至上一版本：**${res.restored.name}** \`v${res.restored.version}\`。`,
+              ),
+            ],
+            flags: MessageFlags.Ephemeral,
+          });
+        }
+        return;
+      }
+
+      if (group === 'card') {
+        const binding = ctx.services.ai.resolveEffectiveBinding(guildId, interaction.channelId);
+
+        if (sub === 'list') {
+          const cards = ctx.services.ai.listCards();
+          const lines = cards.map((c) => {
+            const isGuild = cfg.ai.activeCardId === c.id;
+            const isChan = binding.channelOverride?.cardId === c.id;
+            const tags = [isGuild ? '🌐全服默认' : '', isChan ? '🧪本频道覆盖' : '']
+              .filter(Boolean)
+              .join(' ');
+            const tagBadge = tags ? ` — **${tags}**` : '';
+            const histCount = ctx.services.ai.listPackHistory('card', c.id).length;
+            return `• \`${c.id}\` **${c.personaName}**（${c.name} \`v${c.version}\` · 词条 ${c.lorebookEntries.length} · 快照 ${histCount}）${tagBadge}`;
+          });
+
+          await interaction.reply({
+            embeds: [
+              createInfoEmbed(
+                `🎭 AI 角色人设卡库（共 ${cards.length} 张）`,
+                truncateText(
+                  [
+                    `当前频道生效角色：**${binding.card.personaName}**（卡 \`${binding.card.id}\` \`v${binding.card.version}\`）`,
+                    '',
+                    ...lines,
+                  ].join('\n'),
+                  4096,
+                ),
+              ),
+            ],
+            flags: MessageFlags.Ephemeral,
+          });
+          return;
+        }
+
+        if (sub === 'use') {
+          const id = interaction.options.getString('id', true).trim();
+          const scope = interaction.options.getString('scope') === 'channel' ? 'channel' : 'guild';
+          if (scope === 'channel') {
+            const res = ctx.services.ai.setChannelOverride(guildId, interaction.channelId, {
+              cardId: id,
+            });
+            if (!res.ok) {
+              await interaction.reply({
+                embeds: [createErrorEmbed('❌ 切换角色卡失败', res.error)],
+                flags: MessageFlags.Ephemeral,
+              });
+              return;
+            }
+            await interaction.reply({
+              embeds: [
+                createSuccessEmbed(
+                  '🧪 已挂载当前频道测试角色卡',
+                  `频道 <#${interaction.channelId}> 已独立挂载角色卡 \`${id}\`（不影响其他频道）。`,
+                ),
+              ],
+              flags: MessageFlags.Ephemeral,
+            });
+            return;
+          }
+
+          const res = ctx.services.ai.setGuildActiveCard(guildId, id);
+          if (!res.ok) {
+            await interaction.reply({
+              embeds: [createErrorEmbed('❌ 切换角色卡失败', res.error)],
+              flags: MessageFlags.Ephemeral,
+            });
+            return;
+          }
+          await interaction.reply({
+            embeds: [
+              createSuccessEmbed(
+                '🌐 已更新全服默认角色卡',
+                `全服默认角色卡已切换为 \`${res.card.id}\`（角色名：**${res.card.personaName}** \`v${res.card.version}\`）。`,
+              ),
+            ],
+            flags: MessageFlags.Ephemeral,
+          });
+          return;
+        }
+
+        if (sub === 'import') {
+          await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+          const att = interaction.options.getAttachment('file', true);
+          const customId = interaction.options.getString('id')?.trim();
+          const activate = interaction.options.getString('activate') ?? 'none';
+
+          const dl = await ctx.services.ai.downloadTextAttachment(att.url);
+          if (!dl.ok) {
+            await interaction.editReply({
+              embeds: [createErrorEmbed('❌ 下载角色卡附件失败', dl.error)],
+            });
+            return;
+          }
+
+          const baseName = (att.name ?? 'card').replace(/\.json$/i, '');
+          const fallbackId = customId || slugifyPackId(baseName, 'card');
+          const imported = ctx.services.ai.importCardJson(
+            dl.text,
+            customId ? { fallbackId: customId } : { fallbackId, fallbackName: baseName },
+          );
+          if (!imported.ok) {
+            await interaction.editReply({
+              embeds: [createErrorEmbed('❌ 导入角色卡失败', imported.error)],
+            });
+            return;
+          }
+
+          let finalCard = imported.pack;
+          if (customId && finalCard.id !== slugifyPackId(customId, 'card')) {
+            const store = ctx.services.ai.getPackStore();
+            const forcedId = slugifyPackId(customId, 'card');
+            if (store) {
+              const savedAgain = store.saveCard({ ...finalCard, id: forcedId });
+              if (savedAgain.ok) {
+                finalCard = savedAgain.pack;
+              }
+            }
+          }
+
+          let bindNote = '仅入库保存（未改动当前挂载）';
+          if (activate === 'channel') {
+            ctx.services.ai.setChannelOverride(guildId, interaction.channelId, {
+              cardId: finalCard.id,
+            });
+            bindNote = `已挂载至当前频道 <#${interaction.channelId}> 独立测试`;
+          } else if (activate === 'guild') {
+            ctx.services.ai.setGuildActiveCard(guildId, finalCard.id);
+            bindNote = '已设为全服默认角色卡';
+          }
+
+          const srcLabel =
+            imported.sourceFormat === 'sillytavern_card'
+              ? '酒馆 SillyTavern 角色卡（自动转换）'
+              : '自研标准 Card JSON';
+
+          await interaction.editReply({
+            embeds: [
+              createSuccessEmbed(
+                '✅ 已导入角色人设卡',
+                [
+                  `• **编号**：\`${finalCard.id}\` ｜ **角色名**：**${finalCard.personaName}** \`v${finalCard.version}\``,
+                  `• **来源格式**：${srcLabel}`,
+                  `• **世界书词条**：**${finalCard.lorebookEntries.length}** 条 ｜ **局部正则**：**${finalCard.regexRules.length}** 条`,
+                  `• **历史快照**：${imported.archivedPrevious ? '已自动备份覆盖前旧版本（可一键回滚）' : '全新入库'}`,
+                  `• **挂载状态**：${bindNote}`,
+                ].join('\n'),
+              ),
+            ],
+          });
+          return;
+        }
+
+        if (sub === 'export') {
+          const id = interaction.options.getString('id')?.trim();
+          const pack = ctx.services.ai.exportCard(guildId, id, interaction.channelId);
+          if (!pack) {
+            await interaction.reply({
+              embeds: [createErrorEmbed('❓ 未找到角色卡', `找不到编号为 \`${id}\` 的角色卡。`)],
+              flags: MessageFlags.Ephemeral,
+            });
+            return;
+          }
+          const jsonBuf = Buffer.from(`${JSON.stringify(pack, null, 2)}\n`, 'utf8');
+          const file = new AttachmentBuilder(jsonBuf, {
+            name: `${pack.id}-v${pack.version}.card.json`,
+          });
+          await interaction.reply({
+            embeds: [
+              createSuccessEmbed(
+                `📤 已导出角色卡：${pack.personaName}`,
+                `编号 \`${pack.id}\`（\`v${pack.version}\`），请下载下方 JSON 附件保存或提交 Git。`,
+              ),
+            ],
+            files: [file],
+            flags: MessageFlags.Ephemeral,
+          });
+          return;
+        }
+
+        if (sub === 'rollback') {
+          const id = interaction.options.getString('id', true).trim();
+          const res = ctx.services.ai.rollbackCard(id);
+          if (!res.ok) {
+            await interaction.reply({
+              embeds: [createErrorEmbed('❌ 回滚角色卡失败', res.error)],
+              flags: MessageFlags.Ephemeral,
+            });
+            return;
+          }
+          await interaction.reply({
+            embeds: [
+              createSuccessEmbed(
+                '⏪ 已回滚角色卡',
+                `角色卡 \`${res.restored.id}\` 已恢复至上一版本：**${res.restored.personaName}** \`v${res.restored.version}\`。`,
+              ),
+            ],
+            flags: MessageFlags.Ephemeral,
+          });
+        }
+        return;
+      }
+
+      if (sub === 'override') {
+        const shouldClear = interaction.options.getBoolean('clear') === true;
+        if (shouldClear) {
+          const cleared = ctx.services.ai.clearChannelOverride(guildId, interaction.channelId);
+          await interaction.reply({
+            embeds: [
+              createSuccessEmbed(
+                '🧹 已清除频道独立覆盖',
+                cleared
+                  ? `频道 <#${interaction.channelId}> 的测试覆盖已移除，已恢复跟随全服默认配置。`
+                  : `频道 <#${interaction.channelId}> 当前没有独立覆盖配置。`,
+              ),
+            ],
+            flags: MessageFlags.Ephemeral,
+          });
+          return;
+        }
+
+        const presetId = interaction.options.getString('preset')?.trim() || undefined;
+        const cardId = interaction.options.getString('card')?.trim() || undefined;
+        const modelOverride = interaction.options.getString('model')?.trim() || undefined;
+
+        if (!presetId && !cardId && !modelOverride) {
+          const current = ctx.services.ai.resolveEffectiveBinding(guildId, interaction.channelId);
+          await interaction.reply({
+            embeds: [
+              createInfoEmbed(
+                '🧪 当前频道 AI 挂载状态',
+                [
+                  `• **独立覆盖状态**：${current.isChannelOverridden ? '✅ 已开启频道沙盒覆盖' : '跟随全服默认'}`,
+                  `• **生效破限预设**：\`${current.preset.id}\`（${current.preset.name} \`v${current.preset.version}\`）`,
+                  `• **生效角色卡**：\`${current.card.id}\`（**${current.card.personaName}** \`v${current.card.version}\`）`,
+                  `• **生效模型**：\`${current.effectiveModel || '未配置'}\``,
+                ].join('\n'),
+              ),
+            ],
+            flags: MessageFlags.Ephemeral,
+          });
+          return;
+        }
+
+        const res = ctx.services.ai.setChannelOverride(guildId, interaction.channelId, {
+          ...(presetId ? { presetId } : {}),
+          ...(cardId ? { cardId } : {}),
+          ...(modelOverride ? { modelOverride } : {}),
+        });
+        if (!res.ok) {
+          await interaction.reply({
+            embeds: [createErrorEmbed('❌ 设置频道覆盖失败', res.error)],
+            flags: MessageFlags.Ephemeral,
+          });
+          return;
+        }
+
+        const updated = ctx.services.ai.resolveEffectiveBinding(guildId, interaction.channelId);
+        await interaction.reply({
+          embeds: [
+            createSuccessEmbed(
+              '🧪 已更新当前频道测试覆盖',
+              [
+                `频道 <#${interaction.channelId}> 当前独立生效组合：`,
+                `• **破限预设**：\`${updated.preset.id}\` \`v${updated.preset.version}\``,
+                `• **角色卡**：\`${updated.card.id}\`（**${updated.card.personaName}** \`v${updated.card.version}\`）`,
+                `• **模型**：\`${updated.effectiveModel || '未配置'}\``,
+              ].join('\n'),
+            ),
+          ],
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
+      if (sub === 'dryrun') {
+        const text = interaction.options.getString('text', true);
+        const preview = ctx.services.ai.previewCompiledPrompt(guildId, {
+          channelId: interaction.channelId,
+          userId: member.id,
+          userName: member.displayName,
+          userHandle: interaction.user.username,
+          userContent: text,
+        });
+
+        const payloadJson = `${JSON.stringify(preview, null, 2)}\n`;
+        const file = new AttachmentBuilder(Buffer.from(payloadJson, 'utf8'), {
+          name: `dryrun-${preview.presetId}-${preview.cardId}.json`,
+        });
+
+        const loreText =
+          preview.triggeredLorebookIds.length > 0
+            ? preview.triggeredLorebookIds.map((id) => `\`${id}\``).join('、')
+            : '无（仅常驻设定）';
+
+        await interaction.reply({
+          embeds: [
+            createInfoEmbed(
+              '🔍 Dry-Run 破限编译报文预览',
+              truncateText(
+                [
+                  `• **挂载预设**：\`${preview.presetId}\`（${preview.presetName} \`v${preview.presetVersion}\`）`,
+                  `• **挂载角色卡**：\`${preview.cardId}\`（**${preview.personaName}** \`v${preview.cardVersion}\`）`,
+                  `• **目标模型**：\`${preview.model}\` ｜ 温度 **${preview.sampling.temperature}** ｜ MaxTokens **${preview.sampling.maxTokens}**`,
+                  `• **消息块序列**：${preview.messages.map((m) => `\`${m.role}\``).join(' → ')}（共 ${preview.messages.length} 块）`,
+                  `• **命中世界书词条**：${loreText}`,
+                  '',
+                  '完整 `messages[]` 与采样参数已打包为下方私密 JSON 附件供逐字核查。',
+                ].join('\n'),
+                4096,
+              ),
+            ),
+          ],
+          files: [file],
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
+      if (sub === 'last') {
+        const trace = ctx.services.ai.getLastChannelDebugTrace(guildId, interaction.channelId);
+        if (!trace) {
+          await interaction.reply({
+            embeds: [
+              createInfoEmbed(
+                '📭 暂无调试报文记录',
+                '本频道自上次启动以来尚未产生 AI 回复记录。先触发一次对话后再查看。',
+              ),
+            ],
+            flags: MessageFlags.Ephemeral,
+          });
+          return;
+        }
+
+        const file = new AttachmentBuilder(
+          Buffer.from(`${JSON.stringify(trace, null, 2)}\n`, 'utf8'),
+          { name: `last-trace-${interaction.channelId}.json` },
+        );
+
+        const cotPreview = trace.extractedCot
+          ? `\`\`\`\n${truncateText(trace.extractedCot, 1200)}\n\`\`\``
+          : '*(本次输出未包含 CoT 思维链标签)*';
+
+        await interaction.reply({
+          embeds: [
+            createInfoEmbed(
+              '🔬 本频道最近一次原始报文与 CoT 检视',
+              truncateText(
+                [
+                  `• **预设 / 角色卡**：\`${trace.presetId}@v${trace.presetVersion}\` + \`${trace.cardId}@v${trace.cardVersion}\`（**${trace.personaName}**）`,
+                  `• **实际模型**：\`${trace.model}\` ｜ **命中词条**：${trace.triggeredLorebookIds.length > 0 ? trace.triggeredLorebookIds.map((x) => `\`${x}\``).join('、') : '无'}`,
+                  '',
+                  '**🧠 剥离出的 CoT 思维链**',
+                  cotPreview,
+                  '',
+                  '**📝 网关原始输出片段**',
+                  `\`\`\`\n${truncateText(trace.rawResponse, 800)}\n\`\`\``,
+                ].join('\n'),
+                4096,
+              ),
+            ),
+          ],
+          files: [file],
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
+      if (sub === 'reload') {
+        const stats = ctx.services.ai.reloadPacks();
+        await interaction.reply({
+          embeds: [
+            createSuccessEmbed(
+              '🔄 已重新扫描磁盘预设库',
+              `已从 \`data/ai-packs/\` 刷新加载：**${stats.presets}** 套破限预设、**${stats.cards}** 张角色人设卡。`,
             ),
           ],
           flags: MessageFlags.Ephemeral,

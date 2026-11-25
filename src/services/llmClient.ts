@@ -25,6 +25,9 @@ export interface LlmChatRequest {
   messages: LlmChatMessage[];
   temperature?: number;
   maxTokens?: number;
+  topP?: number;
+  frequencyPenalty?: number;
+  presencePenalty?: number;
   timeoutMs?: number;
 }
 
@@ -332,6 +335,13 @@ export class LlmClient {
             messages: request.messages,
             ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
             ...(request.maxTokens !== undefined ? { max_tokens: request.maxTokens } : {}),
+            ...(request.topP !== undefined ? { top_p: request.topP } : {}),
+            ...(request.frequencyPenalty !== undefined
+              ? { frequency_penalty: request.frequencyPenalty }
+              : {}),
+            ...(request.presencePenalty !== undefined
+              ? { presence_penalty: request.presencePenalty }
+              : {}),
           }),
           signal: AbortSignal.timeout(timeoutMs),
         });

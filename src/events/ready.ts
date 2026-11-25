@@ -609,8 +609,13 @@ export function registerReadyEvent(client: Client, ctx: AppContext): BackgroundS
     console.log(`[bot] 已登录为 ${readyClient.user.tag}，正在守护 ${readyClient.guilds.cache.size} 个服务器`);
     readyClient.user.setActivity('输入 /菜单 开始游玩 | /帮助', { type: ActivityType.Watching });
 
-    // Sync invite cache for all guilds
+    // Sync invite cache & migrate legacy AI persona configs into ai-packs for all guilds
     for (const guild of readyClient.guilds.cache.values()) {
+      try {
+        ctx.services.ai.migrateLegacyGuildConfigToPacks(guild.id);
+      } catch (err) {
+        console.error(`[ai:migrate:${guild.id}]`, err);
+      }
       try {
         const invites = await guild.invites.fetch();
         ctx.services.invite.syncGuildInvites(

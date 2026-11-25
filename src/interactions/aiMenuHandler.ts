@@ -117,7 +117,7 @@ function buildAiRegexAddModal(): ModalBuilder {
           .setStyle(TextInputStyle.Short)
           .setMinLength(1)
           .setMaxLength(MAX_AI_REGEX_LABEL_LEN)
-          .setPlaceholder('例如：布丁酱/黑吊王→黑屌王')
+          .setPlaceholder('例如：昵称简称归一化')
           .setRequired(true),
       ),
       new ActionRowBuilder<TextInputBuilder>().addComponents(
@@ -127,7 +127,7 @@ function buildAiRegexAddModal(): ModalBuilder {
           .setStyle(TextInputStyle.Short)
           .setMinLength(1)
           .setMaxLength(MAX_AI_REGEX_PATTERN_LEN)
-          .setPlaceholder('例如：草莓布丁酱|布丁酱|黑吊王')
+          .setPlaceholder('例如：旧昵称A|旧昵称B')
           .setRequired(true),
       ),
       new ActionRowBuilder<TextInputBuilder>().addComponents(
@@ -136,7 +136,7 @@ function buildAiRegexAddModal(): ModalBuilder {
           .setLabel(truncateText(`替换为（留空表示删除，最多${MAX_AI_REGEX_REPLACEMENT_LEN}字）`, 45))
           .setStyle(TextInputStyle.Short)
           .setMaxLength(MAX_AI_REGEX_REPLACEMENT_LEN)
-          .setPlaceholder('例如：黑屌王')
+          .setPlaceholder('例如：标准称呼')
           .setRequired(false),
       ),
       new ActionRowBuilder<TextInputBuilder>().addComponents(
@@ -592,7 +592,28 @@ export async function tryHandleAiMenuStringSelect(
     return true;
   }
 
-  const selected = interaction.values[0] as Exclude<AiPersonaPresetKey, 'custom'> | undefined;
+  const rawSelected = interaction.values[0];
+  if (rawSelected?.startsWith('card:')) {
+    const cardId = rawSelected.slice('card:'.length);
+    const res = ctx.services.ai.setGuildActiveCard(guildId, cardId);
+    await interaction.update(
+      buildMenuMessage(
+        ctx,
+        guildId,
+        actor,
+        { page: 'admin_ai' },
+        res.ok
+          ? {
+              type: 'success',
+              text: `已切换全服角色卡为：**${res.card.personaName}**（\`${res.card.id}@v${res.card.version}\`）。`,
+            }
+          : { type: 'error', text: res.error },
+      ),
+    );
+    return true;
+  }
+
+  const selected = rawSelected as Exclude<AiPersonaPresetKey, 'custom'> | undefined;
   const preset = selected ? AI_PERSONA_PRESETS[selected] : undefined;
   if (!preset) {
     await interaction.update(
@@ -608,9 +629,36 @@ export async function tryHandleAiMenuStringSelect(
   }
 
   const cfg = ctx.repos.guildConfig.getOrCreate(guildId);
+  const matchingDiskCard = ctx.services.ai.getPackStore()?.getCard(preset.key) ?? null;
+  if (matchingDiskCard) {
+    ctx.repos.guildConfig.updateAi(guildId, {
+      ...cfg.ai,
+      preset: preset.key,
+      activeCardId: matchingDiskCard.id,
+      personaName: matchingDiskCard.personaName,
+      identityPrompt: matchingDiskCard.identityPrompt,
+      soulPrompt: matchingDiskCard.soulPrompt,
+      worldbook: matchingDiskCard.worldbook || cfg.ai.worldbook,
+    });
+    await interaction.update(
+      buildMenuMessage(
+        ctx,
+        guildId,
+        actor,
+        { page: 'admin_ai' },
+        {
+          type: 'success',
+          text: `已切换 AI 角色卡为：**${matchingDiskCard.name}**（\`v${matchingDiskCard.version}\`）。`,
+        },
+      ),
+    );
+    return true;
+  }
+
   ctx.repos.guildConfig.updateAi(guildId, {
     ...cfg.ai,
     preset: preset.key,
+    activeCardId: null,
     personaName: preset.personaName,
     identityPrompt: preset.identityPrompt,
     soulPrompt: preset.soulPrompt,
@@ -935,6 +983,7 @@ export async function tryHandleAiMenuModal(
     ctx.repos.guildConfig.updateAi(guildId, {
       ...cfg.ai,
       preset: 'custom',
+      activeCardId: null,
       personaName,
       identityPrompt,
       soulPrompt,

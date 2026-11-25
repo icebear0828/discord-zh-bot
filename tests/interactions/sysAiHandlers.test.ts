@@ -1354,6 +1354,13 @@ describe('messageCreate isolation, world event guards, and AI safety/rate-limits
       },
     );
     const ctx = createCtx(llmClient);
+    ctx.services.ai.addRegexRule('g1', {
+      label: '测试代称归一化',
+      pattern: '草莓布丁酱|布丁酱',
+      replacement: '黑屌王',
+      scope: 'both',
+      flags: 'gi',
+    });
     const replyFn = vi.fn(async () => undefined);
     const fakeClient = { user: { id: 'bot-1' } } as unknown as Client;
 

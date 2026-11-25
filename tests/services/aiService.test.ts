@@ -348,41 +348,47 @@ describe('aiService helpers & AiMemoryRepo', () => {
           new Response(
             JSON.stringify({
               model: 'demo-model',
-              choices: [{ message: { content: '[白虎姬]: 草莓布丁酱说得全对' } }],
+              choices: [{ message: { content: '[星奈]: 草莓船长说得全对' } }],
             }),
             { status: 200, headers: { 'Content-Type': 'application/json' } },
           ),
       },
     );
     const aiService = new AiService(guildConfigRepo, aiMemoryRepo, llmClient);
+    aiService.addRegexRule('g1', {
+      label: '船长代称',
+      pattern: '草莓船长',
+      replacement: '舰长',
+      scope: 'both',
+      flags: 'gi',
+    });
     const res = await aiService.generateReply({
       guildId: 'g1',
       channelId: 'c1',
       userId: 'u_vip',
-      userName: '草莓布丁酱',
+      userName: '草莓船长',
       messageId: 'm_vip',
       userContent: '今天手气怎么样',
     });
     expect(res.ok).toBe(true);
     if (res.ok) {
-      expect(res.replyText).toBe('黑屌王说得全对');
-      expect(res.chunks).toEqual(['黑屌王说得全对']);
+      expect(res.replyText).toBe('舰长说得全对');
+      expect(res.chunks).toEqual(['舰长说得全对']);
     }
     db.close();
   });
 
-  it('builds 2026 persona prompt with anti-prefix rule, handle disambiguation, VIP favoritism, and modal limits', () => {
-    expect(AI_PERSONA_PRESETS.community.personaName).toBe('白虎姬');
+  it('builds sanitized default persona prompt with anti-prefix rule, handle disambiguation, VIP favoritism, and modal limits', () => {
+    expect(AI_PERSONA_PRESETS.community.personaName).toBe('星奈');
     expect(DEFAULT_AI_CONFIG.contextWindowMessages).toBe(20);
     for (const preset of Object.values(AI_PERSONA_PRESETS)) {
       expect(preset.personaName.length).toBeLessThanOrEqual(32);
       expect(preset.identityPrompt.length).toBeLessThanOrEqual(500);
       expect(preset.soulPrompt.length).toBeLessThanOrEqual(500);
-      expect(preset.identityPrompt).toContain('黑屌王');
-      expect(preset.identityPrompt).toContain('icebear');
+      expect(preset.identityPrompt).toContain('核心偏爱');
     }
-    expect(AI_PERSONA_PRESETS.beauty.personaName).toBe('黑吊国第一美女');
-    expect(AI_PERSONA_PRESETS.beauty.identityPrompt).toContain('黑吊国第一美女');
+    expect(AI_PERSONA_PRESETS.beauty.personaName).toBe('绯月');
+    expect(AI_PERSONA_PRESETS.beauty.identityPrompt).toContain('绯月');
     expect(AI_PERSONA_PRESETS.beauty.soulPrompt).toContain('防转述');
     expect(AI_PERSONA_PRESETS.beauty.soulPrompt).toContain('防抢话');
     expect(AI_PERSONA_PRESETS.beauty.soulPrompt).toContain('嘴角');
@@ -405,8 +411,7 @@ describe('aiService helpers & AiMemoryRepo', () => {
     expect(prompt).toContain('冰熊（账号：@icebear）');
     expect(prompt).toContain('严禁在开头加');
     expect(prompt).toContain('[名字]:');
-    expect(prompt).toContain('黑屌王');
-    expect(prompt).toContain('冰吊王「icebear」');
+    expect(prompt).toContain('核心偏爱');
     expect(prompt).toContain('去 AI 味与反八股');
     expect(prompt).toContain('身份核验防戏耍');
     expect(prompt).toContain('按出场触发偏爱');
@@ -477,6 +482,13 @@ describe('aiService helpers & AiMemoryRepo', () => {
       },
     );
     const aiService = new AiService(guildConfigRepo, aiMemoryRepo, llmClient);
+    aiService.addRegexRule('g1', {
+      label: '双向代称测试',
+      pattern: '草莓布丁酱|布丁酱',
+      replacement: '黑曜王',
+      scope: 'both',
+      flags: 'gi',
+    });
     const res = await aiService.generateReply(
       {
         guildId: 'g1',
@@ -501,19 +513,19 @@ describe('aiService helpers & AiMemoryRepo', () => {
 
     expect(res.ok).toBe(true);
     if (res.ok) {
-      expect(res.replyText).toBe('黑屌王今天特别开心，草莓也很甜。');
+      expect(res.replyText).toBe('黑曜王今天特别开心，草莓也很甜。');
     }
 
     const sentMsgs = (capturedBody?.['messages'] ?? []) as Array<{ role: string; content: string }>;
     expect(sentMsgs).toHaveLength(2);
-    expect(sentMsgs[0]?.content).toContain('当前对你说话的群友：黑屌王');
-    expect(sentMsgs[0]?.content).toContain('以前黑屌王赢过一把');
+    expect(sentMsgs[0]?.content).toContain('当前对你说话的群友：黑曜王');
+    expect(sentMsgs[0]?.content).toContain('以前黑曜王赢过一把');
     expect(sentMsgs[1]?.role).toBe('user');
-    expect(sentMsgs[1]?.content).toContain('[黑屌王]: 叫我黑屌王也行');
-    expect(sentMsgs[1]?.content).toContain('[黑屌王]: 刚才 @黑屌王 说想吃草莓');
+    expect(sentMsgs[1]?.content).toContain('[黑曜王]: 叫我黑曜王也行');
+    expect(sentMsgs[1]?.content).toContain('[黑曜王]: 刚才 @黑曜王 说想吃草莓');
 
     const mems = aiService.listMemories('g1', 'user', 'u_vip');
-    expect(mems[0]?.content).toBe('黑屌王爱喝乌龙茶');
+    expect(mems[0]?.content).toBe('黑曜王爱喝乌龙茶');
 
     // Toggle anti-cliche prompt off
     expect(aiService.toggleAntiClichePrompt('g1')).toBe(false);
@@ -1018,6 +1030,13 @@ describe('aiService helpers & AiMemoryRepo', () => {
     );
 
     const aiService = new AiService(guildConfigRepo, aiMemoryRepo, llmClient);
+    aiService.addRegexRule('g1', {
+      label: '正主代称归一化',
+      pattern: '草莓布丁酱|黑吊王',
+      replacement: '黑屌王',
+      scope: 'both',
+      flags: 'gi',
+    });
     aiService.upsertUserProfile('g1', {
       userId: '100000000000000004',
       alias: '黑屌王',

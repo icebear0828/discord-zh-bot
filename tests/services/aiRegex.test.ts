@@ -10,17 +10,26 @@ import {
 } from '../../src/services/aiRegex.js';
 
 describe('aiRegex module', () => {
-  it('replaces 草莓布丁酱, 布丁酱, and 黑吊王 with 黑屌王 in both input and output without touching standalone 草莓, 黑吊国, 黑吊币, or 冰吊王', () => {
-    const rules = cloneDefaultAiRegexRules();
+  it('supports custom bidirectional alias regex alongside default anti-cliche output rules', () => {
+    const customAliasRule = {
+      id: 'alias_captain',
+      label: '船长代称归一化',
+      pattern: '草莓船长|老船长',
+      flags: 'gi',
+      replacement: '舰长',
+      scope: 'both' as const,
+      enabled: true,
+    };
+    const rules = [customAliasRule, ...cloneDefaultAiRegexRules()];
 
-    const inputText = '@草莓布丁酱 刚才和 布丁酱 以及 黑吊王 在黑吊国用黑吊币买了一箱草莓和草莓蛋糕，冰吊王也在';
+    const inputText = '@草莓船长 刚才和 老船长 在港口买了一箱草莓和草莓蛋糕';
     expect(applyAiRegexRules(inputText, rules, 'input')).toBe(
-      '@黑屌王 刚才和 黑屌王 以及 黑屌王 在黑吊国用黑吊币买了一箱草莓和草莓蛋糕，冰吊王也在',
+      '@舰长 刚才和 舰长 在港口买了一箱草莓和草莓蛋糕',
     );
 
-    const outputText = '草莓布丁酱说的没错，不过草莓味冰淇淋确实好吃，布丁酱和黑吊王也喜欢';
+    const outputText = '草莓船长说的没错，不过草莓味冰淇淋确实好吃，老船长也喜欢';
     expect(applyAiRegexRules(outputText, rules, 'output')).toBe(
-      '黑屌王说的没错，不过草莓味冰淇淋确实好吃，黑屌王和黑屌王也喜欢',
+      '舰长说的没错，不过草莓味冰淇淋确实好吃，舰长也喜欢',
     );
   });
 
@@ -48,9 +57,18 @@ describe('aiRegex module', () => {
   });
 
   it('only runs input rules on input stage and output rules on output stage', () => {
-    const rules = cloneDefaultAiRegexRules();
-    expect(applyAiRegexRules('极其近乎草莓布丁酱', rules, 'input')).toBe('极其近乎黑屌王');
-    expect(applyAiRegexRules('极其近乎草莓布丁酱', rules, 'output')).toBe('特别几乎黑屌王');
+    const customAliasRule = {
+      id: 'alias_captain',
+      label: '船长代称',
+      pattern: '草莓船长',
+      flags: 'gi',
+      replacement: '舰长',
+      scope: 'both' as const,
+      enabled: true,
+    };
+    const rules = [customAliasRule, ...cloneDefaultAiRegexRules()];
+    expect(applyAiRegexRules('极其近乎草莓船长', rules, 'input')).toBe('极其近乎舰长');
+    expect(applyAiRegexRules('极其近乎草莓船长', rules, 'output')).toBe('特别几乎舰长');
   });
 
   it('validates regex inputs and rejects malformed, empty-matching, or ReDoS-prone patterns', () => {

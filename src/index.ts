@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { Client, GatewayIntentBits } from 'discord.js';
 import { loadEnv } from './config/env.js';
 import { createDatabase } from './db/database.js';
@@ -33,6 +34,7 @@ import { ChaosService } from './services/chaosService.js';
 import { WorldEventService } from './services/worldEventService.js';
 import { SocialPetService } from './services/socialPetService.js';
 import { LlmClient } from './services/llmClient.js';
+import { AiPackStore } from './services/aiPackStore.js';
 import { AiService } from './services/aiService.js';
 import { CreditLoanService } from './services/creditLoanService.js';
 import { DuelArenaService } from './services/duelArenaService.js';
@@ -69,6 +71,12 @@ function main(): void {
   const creditLoanRepo = new CreditLoanRepo(db);
   const rpgRepo = new RpgRepo(db);
   const llmClient = new LlmClient(env.llm);
+  const aiPacksDir =
+    env.dbPath === ':memory:'
+      ? undefined
+      : path.join(path.dirname(path.resolve(env.dbPath)), 'ai-packs');
+  const aiPackStore = aiPacksDir ? new AiPackStore(aiPacksDir) : undefined;
+  aiPackStore?.ensureInitialized();
 
   const creditLoanService = new CreditLoanService(
     db,
@@ -178,7 +186,7 @@ function main(): void {
         env.timezone,
         creditLoanService,
       ),
-      ai: new AiService(guildConfigRepo, aiMemoryRepo, llmClient),
+      ai: new AiService(guildConfigRepo, aiMemoryRepo, llmClient, fetch, aiPackStore),
       creditLoan: creditLoanService,
       rpg: rpgService,
       duelArena: new DuelArenaService(db, profileRepo, duelRepo, chaosRepo, creditLoanService),

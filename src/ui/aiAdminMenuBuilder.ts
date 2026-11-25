@@ -28,14 +28,6 @@ import {
   type MenuFeedback,
 } from './menuShared.js';
 
-const AI_PRESET_LABELS: Record<string, string> = {
-  community: AI_PERSONA_PRESETS.community.label,
-  roast: AI_PERSONA_PRESETS.roast.label,
-  assistant: AI_PERSONA_PRESETS.assistant.label,
-  beauty: AI_PERSONA_PRESETS.beauty.label,
-  custom: '🛠️ 自定义人格',
-};
-
 const REGEX_SCOPE_LABELS: Record<AiRegexRuleScope, string> = {
   both: '双向',
   input: '仅输入',
@@ -350,9 +342,14 @@ export function buildAdminAiView(
       ? ai.ignoredChannelIds.map((id) => `<#${id}>`).join('、')
       : '无';
 
+  const resolvedBinding = ctx.services.ai.resolveEffectiveBinding(guildId);
+  const channelOverrideCount = Object.keys(ai.channelOverrides ?? {}).length;
+  const packCards = ctx.services.ai.getPackStore() ? ctx.services.ai.listCards() : [];
+
   const description = [
     `🔌 **网关状态**：${llmConfigured ? '✅ 已连接配置' : '⚠️ 未配置网关参数'} ｜ **模块总开关**：${aiEnabled ? '✅ 已开启' : '⛔ 已关闭'}`,
-    `🎭 **当前人格**：**${ai.personaName}**（预设：${AI_PRESET_LABELS[ai.preset] ?? ai.preset}）`,
+    `🎭 **当前人格**：**${resolvedBinding.card.personaName}**（卡：\`${resolvedBinding.card.id}@v${resolvedBinding.card.version}\`）`,
+    `🔓 **破限预设**：**${resolvedBinding.preset.name}**（\`${resolvedBinding.preset.id}@v${resolvedBinding.preset.version}\`）${channelOverrideCount > 0 ? ` ｜ 🧪 频道沙盒覆盖：**${channelOverrideCount}** 个` : ''}`,
     `🤖 **当前模型**：\`${effectiveModel}\`${ai.modelOverride ? '（后台覆盖）' : '（默认）'} ｜ 温度 **${ai.temperature}** ｜ MaxTokens **${ai.maxTokens}**`,
     `💬 **上下文与记忆**：滑窗 **${ai.contextWindowMessages}** 条 ｜ 记忆抽取 ${ai.memoryEnabled ? `✅ 开（每域上限 ${ai.maxMemoriesPerScope} 条）` : '⛔ 关'} ｜ 图片识图 ${ai.visionEnabled ? '✅ 开' : '⛔ 关'}`,
     `🔧 **正则替换与反八股**：启用 **${enabledRegexCount}/${ai.regexRules.length}** 条规则 ｜ 反八股提示词 ${ai.antiClichePromptEnabled ? '✅ 开' : '⛔ 关'}`,
@@ -378,19 +375,37 @@ export function buildAdminAiView(
     .setFooter({ text: '🔒 仅管理员可见；修改立即生效，群友可用 /ai 重置 与 /ai 记忆' })
     .setTimestamp();
 
-  const presetRow = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
-    new StringSelectMenuBuilder()
-      .setCustomId('menu:admin_ai_preset')
-      .setPlaceholder('🎭 一键切换内置 AI 人格预设...')
-      .addOptions(
-        Object.values(AI_PERSONA_PRESETS).map((preset) =>
+  const selectOptions =
+    packCards.length > 0
+      ? packCards.slice(0, 25).map((card) =>
+          new StringSelectMenuOptionBuilder()
+            .setLabel(truncateText(`🎭 ${card.name} (v${card.version})`, 100))
+            .setValue(`card:${card.id}`)
+            .setDescription(
+              truncateText(
+                card.description || `${card.personaName} · 词条 ${card.lorebookEntries.length}`,
+                100,
+              ),
+            )
+            .setDefault(resolvedBinding.card.id === card.id),
+        )
+      : Object.values(AI_PERSONA_PRESETS).map((preset) =>
           new StringSelectMenuOptionBuilder()
             .setLabel(preset.label)
             .setValue(preset.key)
             .setDescription(truncateText(preset.description, 100))
             .setDefault(ai.preset === preset.key),
-        ),
-      ),
+        );
+
+  const presetRow = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId('menu:admin_ai_preset')
+      .setPlaceholder(
+        packCards.length > 0
+          ? '🎭 一键切换角色人设卡（或用 /ai 预设|角色卡 导入导出）...'
+          : '🎭 一键切换内置 AI 人格预设...',
+      )
+      .addOptions(selectOptions),
   );
 
   const freeChanSelect = new ChannelSelectMenuBuilder()
