@@ -35,12 +35,14 @@ import { SocialPetService } from './services/socialPetService.js';
 import { LlmClient } from './services/llmClient.js';
 import { AiService } from './services/aiService.js';
 import { CreditLoanService } from './services/creditLoanService.js';
+import { DuelArenaService } from './services/duelArenaService.js';
 import { RpgService } from './services/rpgService.js';
 import type { AppContext } from './ui/embeds.js';
 import { registerReadyEvent } from './events/ready.js';
 import { registerMessageCreateEvent } from './events/messageCreate.js';
 import { registerGuildMemberAddEvent } from './events/guildMemberAdd.js';
 import { registerGuildMemberRemoveEvent } from './events/guildMemberRemove.js';
+import { registerGuildMemberUpdateEvent } from './events/guildMemberUpdate.js';
 import { registerInviteEvents } from './events/inviteEvents.js';
 import { registerInteractionCreateEvent } from './events/interactionCreate.js';
 
@@ -179,6 +181,7 @@ function main(): void {
       ai: new AiService(guildConfigRepo, aiMemoryRepo, llmClient),
       creditLoan: creditLoanService,
       rpg: rpgService,
+      duelArena: new DuelArenaService(db, profileRepo, duelRepo, chaosRepo, creditLoanService),
     },
   };
 
@@ -197,6 +200,7 @@ function main(): void {
   registerMessageCreateEvent(client, ctx);
   registerGuildMemberAddEvent(client, ctx);
   registerGuildMemberRemoveEvent(client, ctx);
+  registerGuildMemberUpdateEvent(client, ctx);
   registerInviteEvents(client, ctx);
   registerInteractionCreateEvent(client, ctx);
 

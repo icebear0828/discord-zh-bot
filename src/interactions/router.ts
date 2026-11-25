@@ -31,11 +31,12 @@ import {
   handleWorldEventStringSelect,
 } from './worldEventHandler.js';
 import { handleSocialPetButton } from './socialPetHandler.js';
+import { handleCreditLoanButton, handleCreditLoanModal, handleCreditLoanUserSelect } from './creditLoanHandler.js';
 import {
-  handleCreditLoanButton,
-  handleCreditLoanModal,
-  handleCreditLoanUserSelect,
-} from './creditLoanHandler.js';
+  handleDuelArenaButton,
+  handleDuelArenaModal,
+  handleDuelArenaStringSelect,
+} from './duelArenaHandler.js';
 import { handleRpgButton, handleRpgStringSelect } from './rpgHandler.js';
 
 import { extractDiscordErrorCode } from './menuHelpers.js';
@@ -257,6 +258,8 @@ export async function routeInteraction(
         await handleCreditLoanButton(interaction, ctx);
       } else if (prefix === 'rpg') {
         await handleRpgButton(interaction, ctx);
+      } else if (prefix === 'da') {
+        await handleDuelArenaButton(interaction, ctx);
       }
     } else if (interaction.isStringSelectMenu()) {
       const prefix = interaction.customId.split(':')[0];
@@ -272,6 +275,8 @@ export async function routeInteraction(
         await handleRpgStringSelect(interaction, ctx);
       } else if (prefix === 'lb') {
         await handleLeaderboardSelect(interaction, ctx);
+      } else if (prefix === 'da') {
+        await handleDuelArenaStringSelect(interaction, ctx);
       }
     } else if (interaction.isUserSelectMenu()) {
       const prefix = interaction.customId.split(':')[0];
@@ -302,6 +307,8 @@ export async function routeInteraction(
         await handleWorldEventModal(interaction, ctx);
       } else if (prefix === 'cl') {
         await handleCreditLoanModal(interaction, ctx);
+      } else if (prefix === 'da') {
+        await handleDuelArenaModal(interaction, ctx);
       }
     }
 

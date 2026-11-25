@@ -55,13 +55,8 @@ import {
   type MenuFeedback,
   type MenuView,
 } from '../ui/menuShared.js';
-import {
-  buildBlackjackPublicReportEmbed,
-  buildRobTargetHints,
-  checkRobTargetIsAdmin,
-  formatBankRobResultEmbed,
-  formatPocketRobResultEmbed,
-} from '../ui/soloFormatters.js';
+import { buildBlackjackPublicReportEmbed, buildRobTargetHints, checkRobTargetIsAdmin, formatBankRobResultEmbed, formatPocketRobResultEmbed } from '../ui/soloFormatters.js';
+import { buildRouletteDuelModal, buildRpsDuelModal } from '../ui/duelArenaBuilder.js';
 import {
   tryHandleConfigMenuButton,
   tryHandleConfigMenuChannelSelect,
@@ -2529,6 +2524,60 @@ export async function handleMenuUserSelect(
         `决斗赌注（1 ~ ${MAX_COIN_AMOUNT.toLocaleString('en-US')} ${cfg.currencyName}）`,
         '例如：10000',
       ),
+    );
+    return;
+  }
+
+  if (actionType === 'rps_duel' || actionType === 'roulette_duel') {
+    if (targetUser?.bot) {
+      await interaction.update(
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'duel' },
+          { type: 'error', text: '不能向机器人发起决斗，请选择一位真实群友！' },
+        ),
+      );
+      return;
+    }
+    if (targetId === actor.id) {
+      await interaction.update(
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'duel' },
+          { type: 'error', text: '不能向自己发起决斗！' },
+        ),
+      );
+      return;
+    }
+    const disabledMsg = checkModuleDisabled(ctx, guildId, 'socialGames', '整蛊与博弈');
+    if (disabledMsg) {
+      await interaction.update(
+        buildMenuMessage(ctx, guildId, actor, { page: 'duel' }, { type: 'error', text: disabledMsg }),
+      );
+      return;
+    }
+    if (!interaction.channel?.isSendable()) {
+      await interaction.update(
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'duel' },
+          { type: 'error', text: '当前频道不支持发送公开决斗卡片，请在普通文字频道中重试。' },
+        ),
+      );
+      return;
+    }
+
+    const cfg = ctx.repos.guildConfig.getOrCreate(guildId).economy;
+    await interaction.showModal(
+      actionType === 'rps_duel'
+        ? buildRpsDuelModal(targetId, cfg.currencyName)
+        : buildRouletteDuelModal(targetId, cfg.currencyName),
     );
     return;
   }

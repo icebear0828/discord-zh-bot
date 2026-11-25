@@ -33,6 +33,7 @@ import type { WorldEventService } from '../services/worldEventService.js';
 import type { SocialPetService } from '../services/socialPetService.js';
 import type { AiService } from '../services/aiService.js';
 import type { CreditLoanService } from '../services/creditLoanService.js';
+import type { DuelArenaService } from '../services/duelArenaService.js';
 import type { RpgService } from '../services/rpgService.js';
 
 export interface AppContext {
@@ -75,6 +76,7 @@ export interface AppContext {
     ai: AiService;
     creditLoan: CreditLoanService;
     rpg: RpgService;
+    duelArena?: DuelArenaService;
   };
 }
 

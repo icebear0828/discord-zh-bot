@@ -33,6 +33,7 @@ import type { InteractionAction } from '../services/funService.js';
 import { parseCardColor, type LeaderboardType } from '../services/levelingService.js';
 import type { AcceptDuelResult, DuelChallenge } from '../services/multiplayerService.js';
 import { PET_SPECIES_MAP } from '../services/socialPetService.js';
+import { buildDuelLobbyView } from './duelArenaBuilder.js';
 import {
   buildAdminLvlRewardsView,
   buildAdminMonitorView,
@@ -627,7 +628,7 @@ function buildMultiView(
     '',
     '• **🥷 偷钱 / 劫金库**：既可顺走群友口袋现金，也能高风险强抢银行金库',
     '• **💸 群友转账**：选中群友输入金额直接转账',
-    '• **⚔️ 骰子决斗**：在当前频道发起公开 3 骰押注对战（最高 10 亿）',
+    '• **⚔️ 多人决斗大厅**：骰子决斗（最高 10 亿）、石头剪刀布 Bo5（赢家限时反复改名）、1v1 俄罗斯轮盘（赌币/改名/禁言/文字赌约）',
     '• **🧧 发拼手气红包**：在当前频道派发 2~100 份随机金额红包（最高 10 亿）',
     '• **💕 趣味互动**：摸头、抱抱、贴贴、戳一戳、投喂、丢雪球',
     '• **🧰 黑市道具**：捕兽夹反抓小偷、万能撬锁、防盗盾、衰神符、改昵称卡',
@@ -649,7 +650,7 @@ function buildMultiView(
       buttonRow(
         makeButton('menu:nav:rob', '🥷 偷钱', ButtonStyle.Danger),
         makeButton('menu:nav:pay', '💸 群友转账', ButtonStyle.Primary),
-        makeButton('menu:nav:duel', '⚔️ 骰子决斗', ButtonStyle.Primary),
+        makeButton('menu:nav:duel', '⚔️ 决斗大厅', ButtonStyle.Primary),
         makeButton('menu:modal:redpacket', '🧧 发拼手气红包', ButtonStyle.Success),
         makeButton('menu:nav:social:pat', '💕 趣味互动', ButtonStyle.Secondary),
       ),
@@ -782,52 +783,6 @@ function buildPayView(
     new UserSelectMenuBuilder()
       .setCustomId('menu:user:pay')
       .setPlaceholder('选择要转账的群友...')
-      .setMinValues(1)
-      .setMaxValues(1),
-  );
-
-  return {
-    embeds: [embed],
-    components: [
-      userSelectRow,
-      buttonRow(
-        makeButton('menu:nav:multi', '⬅️ 多人互动', ButtonStyle.Secondary),
-        makeButton('menu:nav:home', '🏠 主菜单', ButtonStyle.Secondary),
-      ),
-    ],
-  };
-}
-
-function buildDuelView(
-  ctx: AppContext,
-  guildId: string,
-  actor: MenuActor,
-  feedback: MenuFeedback | undefined,
-): BuiltMenuMessage {
-  const cfg = ctx.repos.guildConfig.getOrCreate(guildId).economy;
-  const profile = ctx.repos.profile.getOrCreate(guildId, actor.id);
-
-  const description = [
-    `${cfg.currencyEmoji} 你的口袋现金：**${profile.coins}** ${cfg.currencyName}`,
-    '',
-    '**⚔️ 骰子决斗规则：**',
-    '1. 选择一名群友并在弹窗中输入赌注金额（1 ~ 1,000,000,000）。',
-    '2. 系统将在当前频道发送公开挑战卡片，对方需在 3 分钟内应战。',
-    '3. 双方各掷 3 颗骰子比拼总点数，大者赢走全部赌注，平局不扣款！',
-  ].join('\n');
-
-  const embed = new EmbedBuilder()
-    .setColor(resolveColor(COLORS.WARNING, feedback))
-    .setAuthor({ name: `${actor.displayName} · 骰子决斗`, iconURL: actor.avatarUrl })
-    .setTitle('⚔️ 发起骰子决斗')
-    .setDescription(withFeedback(description, feedback))
-    .setFooter({ text: '📢 公开互动：决斗邀请卡片与胜负结算均在当前频道公开展示' })
-    .setTimestamp();
-
-  const userSelectRow = new ActionRowBuilder<UserSelectMenuBuilder>().addComponents(
-    new UserSelectMenuBuilder()
-      .setCustomId('menu:user:duel')
-      .setPlaceholder('选择要发起骰子决斗的群友...')
       .setMinValues(1)
       .setMaxValues(1),
   );
@@ -1987,7 +1942,7 @@ export function buildMenuMessage(
     case 'pay':
       return buildPayView(ctx, guildId, actor, feedback);
     case 'duel':
-      return buildDuelView(ctx, guildId, actor, feedback);
+      return buildDuelLobbyView(ctx, guildId, actor, feedback, nowMs);
     case 'social':
       return buildSocialView(actor, view.action, feedback);
     case 'props':

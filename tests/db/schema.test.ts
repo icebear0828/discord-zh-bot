@@ -98,6 +98,9 @@ describe('env & database schema', () => {
           'interaction_logs',
           'blackjack_games',
           'duel_challenges',
+          'rps_duels',
+          'duel_roulettes',
+          'nickname_locks',
           'credit_accounts',
           'credit_logs',
           'credit_reviews',
@@ -567,6 +570,12 @@ describe('env & database schema', () => {
       expect.arrayContaining([
         'idx_blackjack_games_expires',
         'idx_duel_challenges_status_exp',
+        'idx_rps_duels_status_exp',
+        'idx_rps_duels_status_round',
+        'idx_duel_roulettes_status_exp',
+        'idx_duel_roulettes_status_turn',
+        'idx_nickname_locks_expires',
+        'idx_nickname_locks_winner',
         'idx_interaction_logs_created_at',
       ]),
     );

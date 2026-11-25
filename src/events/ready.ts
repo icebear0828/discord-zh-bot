@@ -9,9 +9,12 @@ import {
 import { DEFAULT_LEVELING_CONFIG, type GuildConfig } from '../config/defaults.js';
 import { MONITOR_RETENTION_MS } from '../config/economyConstants.js';
 import { buildGiveawayMessage } from '../commands/giveaways/giveaway.js';
+import { applyRouletteTimeoutPenalty } from '../interactions/duelArenaHandler.js';
 import { editChannelMessage, sendToChannel } from '../interactions/menuHelpers.js';
+import { getDuelArenaService } from '../services/duelArenaService.js';
 import { renderLevelUpTemplate, type AwardXpResult } from '../services/levelingService.js';
 import { buildNumberBombCard, buildRouletteCard } from '../ui/chaosMenuBuilder.js';
+import { buildRouletteDuelCard, buildRpsDuelCard } from '../ui/duelArenaBuilder.js';
 import {
   createErrorEmbed,
   createInfoEmbed,
@@ -407,6 +410,101 @@ export async function runGamesTick(readyClient: Client, ctx: AppContext): Promis
       }
     } catch (subErr) {
       console.error('[timer:games:duel]', subErr);
+    }
+
+    try {
+      const duelArena = getDuelArenaService(ctx);
+      const rpsUpdates = duelArena.processTimedOutRpsDuels();
+      for (const upd of rpsUpdates) {
+        try {
+          if (!upd.duel.messageId) continue;
+          const cfg = ctx.repos.guildConfig.getOrCreate(upd.duel.guildId).economy;
+          const guild = readyClient.guilds.cache.get(upd.duel.guildId);
+          await editChannelMessage(
+            readyClient,
+            upd.duel.channelId,
+            upd.duel.messageId,
+            buildRpsDuelCard(upd.duel, cfg),
+            guild,
+          );
+          if (upd.kind === 'round_forfeit' && upd.matchFinished && upd.winnerId && upd.loserId) {
+            await sendToChannel(readyClient, upd.duel.channelId, {
+              content: `⌛ 回合超时判负！🏆 <@${upd.winnerId}> 赢得石头剪刀布决斗（击败 <@${upd.loserId}>），请点击战报卡片行使改名权！`,
+            });
+          }
+        } catch (itemErr) {
+          console.error(`[timer:games:rpsDuel:${upd.duel.id}]`, itemErr);
+        }
+      }
+    } catch (subErr) {
+      console.error('[timer:games:rpsDuel]', subErr);
+    }
+
+    try {
+      const duelArena = getDuelArenaService(ctx);
+      const rouletteDuelUpdates = duelArena.processTimedOutRouletteDuels();
+      for (const upd of rouletteDuelUpdates) {
+        try {
+          const cfg = ctx.repos.guildConfig.getOrCreate(upd.duel.guildId).economy;
+          const guild = readyClient.guilds.cache.get(upd.duel.guildId) ?? null;
+          let penaltyNote: string | undefined;
+          if (
+            upd.kind === 'turn_timeout' &&
+            upd.fired &&
+            upd.loserId &&
+            upd.timeoutDurationMs > 0
+          ) {
+            penaltyNote =
+              (await applyRouletteTimeoutPenalty({
+                guild,
+                targetId: upd.loserId,
+                timeoutDurationMs: upd.timeoutDurationMs,
+                winnerName: upd.winnerId ?? '胜者',
+              })) ?? undefined;
+          }
+          if (upd.duel.messageId) {
+            await editChannelMessage(
+              readyClient,
+              upd.duel.channelId,
+              upd.duel.messageId,
+              buildRouletteDuelCard(upd.duel, cfg, penaltyNote),
+              guild,
+            );
+          }
+          if (upd.kind === 'turn_timeout' && upd.fired && upd.winnerId && upd.loserId) {
+            await sendToChannel(readyClient, upd.duel.channelId, {
+              content: `⌛ 超时自动扣扳机💥！🏆 <@${upd.winnerId}> 赢得 1v1 俄罗斯轮盘（击败 <@${upd.loserId}>）！`,
+            });
+          }
+        } catch (itemErr) {
+          console.error(`[timer:games:rouletteDuel:${upd.duel.id}]`, itemErr);
+        }
+      }
+    } catch (subErr) {
+      console.error('[timer:games:rouletteDuel]', subErr);
+    }
+
+    try {
+      const duelArena = getDuelArenaService(ctx);
+      const expiredLocks = duelArena.expireDueNicknameLocks();
+      for (const lock of expiredLocks) {
+        if (lock.fallbackMode || !lock.originalNicknameCaptured) continue;
+        try {
+          const guild =
+            readyClient.guilds.cache.get(lock.guildId) ??
+            (await readyClient.guilds.fetch(lock.guildId).catch(() => null));
+          if (!guild) continue;
+          const member = await guild.members.fetch(lock.targetId).catch(() => null);
+          if (!member) continue;
+          await member
+            .setNickname(lock.originalNickname, '决斗改名惩罚到期，自动恢复原昵称')
+            .catch(() => undefined);
+        } catch (itemErr) {
+          console.error(`[timer:games:nickLock:${lock.guildId}:${lock.targetId}]`, itemErr);
+        }
+      }
+    } catch (subErr) {
+      console.error('[timer:games:nickLock]', subErr);
     }
 
     try {

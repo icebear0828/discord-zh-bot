@@ -16,6 +16,7 @@ import { blackjackCommand } from './economy/blackjack.js';
 import { shopCommand } from './economy/shop.js';
 import { inventoryCommand } from './economy/inventory.js';
 import { creditCommand } from './economy/credit.js';
+import { duelCommand } from './economy/duel.js';
 import { loanCommand } from './economy/loan.js';
 import { hustleCommand } from './economy/hustle.js';
 import { fortuneCommand } from './fun/fortune.js';
@@ -45,6 +46,7 @@ export const commands: readonly CommandDefinition[] = [
   diceCommand,
   slotsCommand,
   blackjackCommand,
+  duelCommand,
   shopCommand,
   inventoryCommand,
   creditCommand,
