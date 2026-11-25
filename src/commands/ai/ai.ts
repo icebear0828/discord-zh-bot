@@ -4,6 +4,13 @@ import {
   type ChatInputCommandInteraction,
 } from 'discord.js';
 import type { AiMemoryRecord, AiMemoryScopeType } from '../../db/repositories/aiMemoryRepo.js';
+import {
+  isValidAiRegexScope,
+  MAX_AI_REGEX_LABEL_LEN,
+  MAX_AI_REGEX_PATTERN_LEN,
+  MAX_AI_REGEX_REPLACEMENT_LEN,
+  type AiRegexRuleScope,
+} from '../../services/aiRegex.js';
 import { truncateText } from '../../ui/menuShared.js';
 import {
   createErrorEmbed,
@@ -23,6 +30,17 @@ const SCOPE_CHOICES: ReadonlyArray<{ name: string; value: AiMemoryScopeType }> =
   { name: '我的个人记忆 (user)', value: 'user' },
   { name: '当前频道记忆 (channel)', value: 'channel' },
   { name: '全服共同记忆 (guild)', value: 'guild' },
+];
+
+const REGEX_SCOPE_CHOICES: ReadonlyArray<{ name: string; value: AiRegexRuleScope }> = [
+  { name: '双向生效（输入与输出）', value: 'both' },
+  { name: '仅输入（传给 AI 前）', value: 'input' },
+  { name: '仅输出（AI 回复前）', value: 'output' },
+];
+
+const REGEX_TEST_STAGE_CHOICES: ReadonlyArray<{ name: string; value: 'input' | 'output' }> = [
+  { name: '输出阶段（反八股 + 双向代称）', value: 'output' },
+  { name: '输入阶段（输入归一化 + 双向代称）', value: 'input' },
 ];
 
 function formatScopeLabel(scope: AiMemoryScopeType): string {
@@ -204,6 +222,158 @@ export const aiCommand: CommandDefinition = {
           '记忆',
           '查看或管理 AI 长期记忆',
         ),
+      )
+      .addSubcommandGroup((group) =>
+        applyZh(
+          group
+            .setName('regex')
+            .setDescription('管理员配置 AI 代称与反八股正则规则')
+            .addSubcommand((sub) =>
+              applyZh(
+                sub.setName('list').setDescription('查看当前正则替换规则列表'),
+                '查看',
+                '查看当前正则替换规则列表',
+              ),
+            )
+            .addSubcommand((sub) =>
+              applyZh(
+                sub
+                  .setName('add')
+                  .setDescription('新增一条 AI 正则替换规则')
+                  .addStringOption((opt) =>
+                    applyZh(
+                      opt
+                        .setName('label')
+                        .setDescription(`规则名称（1~${MAX_AI_REGEX_LABEL_LEN}字）`)
+                        .setMinLength(1)
+                        .setMaxLength(MAX_AI_REGEX_LABEL_LEN)
+                        .setRequired(true),
+                      '名称',
+                      `规则名称（1~${MAX_AI_REGEX_LABEL_LEN}字）`,
+                    ),
+                  )
+                  .addStringOption((opt) =>
+                    applyZh(
+                      opt
+                        .setName('pattern')
+                        .setDescription(`正则表达式（1~${MAX_AI_REGEX_PATTERN_LEN}字符）`)
+                        .setMinLength(1)
+                        .setMaxLength(MAX_AI_REGEX_PATTERN_LEN)
+                        .setRequired(true),
+                      '正则',
+                      `正则表达式（1~${MAX_AI_REGEX_PATTERN_LEN}字符）`,
+                    ),
+                  )
+                  .addStringOption((opt) =>
+                    applyZh(
+                      opt
+                        .setName('replacement')
+                        .setDescription('替换文本（不填表示删除匹配内容）')
+                        .setMaxLength(MAX_AI_REGEX_REPLACEMENT_LEN),
+                      '替换为',
+                      '替换文本（不填表示删除）',
+                    ),
+                  )
+                  .addStringOption((opt) =>
+                    applyZh(
+                      opt
+                        .setName('scope')
+                        .setDescription('生效范围（默认 both 双向）')
+                        .addChoices(...REGEX_SCOPE_CHOICES),
+                      '范围',
+                      '生效范围（默认 both 双向）',
+                    ),
+                  )
+                  .addStringOption((opt) =>
+                    applyZh(
+                      opt
+                        .setName('flags')
+                        .setDescription('正则标志（默认 gi，仅支持 g/i/m/u）')
+                        .setMaxLength(8),
+                      '标志',
+                      '正则标志（默认 gi，支持 g/i/m/u）',
+                    ),
+                  ),
+                '添加',
+                '新增一条 AI 正则替换规则',
+              ),
+            )
+            .addSubcommand((sub) =>
+              applyZh(
+                sub
+                  .setName('toggle')
+                  .setDescription('启用或停用指定编号的正则规则')
+                  .addStringOption((opt) =>
+                    applyZh(
+                      opt
+                        .setName('id')
+                        .setDescription('规则编号（如 r1 或 alias_heidiowang）')
+                        .setMinLength(1)
+                        .setMaxLength(32)
+                        .setRequired(true),
+                      '编号',
+                      '要切换状态的规则编号',
+                    ),
+                  ),
+                '开关',
+                '启用或停用指定编号的正则规则',
+              ),
+            )
+            .addSubcommand((sub) =>
+              applyZh(
+                sub
+                  .setName('delete')
+                  .setDescription('删除指定编号的正则规则')
+                  .addStringOption((opt) =>
+                    applyZh(
+                      opt
+                        .setName('id')
+                        .setDescription('规则编号（可通过 /ai 正则 查看 获取）')
+                        .setMinLength(1)
+                        .setMaxLength(32)
+                        .setRequired(true),
+                      '编号',
+                      '要删除的规则编号',
+                    ),
+                  ),
+                '删除',
+                '删除指定编号的正则规则',
+              ),
+            )
+            .addSubcommand((sub) =>
+              applyZh(
+                sub
+                  .setName('test')
+                  .setDescription('测试当前启用的正则规则对一段文本的替换效果')
+                  .addStringOption((opt) =>
+                    applyZh(
+                      opt
+                        .setName('text')
+                        .setDescription('待测试的文本内容（1~1000字）')
+                        .setMinLength(1)
+                        .setMaxLength(1000)
+                        .setRequired(true),
+                      '测试文本',
+                      '待测试的文本内容（1~1000字）',
+                    ),
+                  )
+                  .addStringOption((opt) =>
+                    applyZh(
+                      opt
+                        .setName('scope')
+                        .setDescription('模拟阶段（默认 output 输出阶段）')
+                        .addChoices(...REGEX_TEST_STAGE_CHOICES),
+                      '环节',
+                      '模拟阶段（input 或 output）',
+                    ),
+                  ),
+                '测试',
+                '测试当前启用的正则规则对一段文本的替换效果',
+              ),
+            ),
+          '正则',
+          '管理员配置 AI 代称与反八股正则规则',
+        ),
       ),
     'ai',
     'AI 对话上下文重置与长期记忆管理',
@@ -354,6 +524,150 @@ export const aiCommand: CommandDefinition = {
             createSuccessEmbed(
               '🧹 记忆已清空',
               `已清空 **${formatScopeLabel(scope)}记忆**，共移除 **${deleted}** 条记录。`,
+            ),
+          ],
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+      return;
+    }
+
+    if (group === 'regex') {
+      if (!isAdmin) {
+        await interaction.reply({
+          embeds: [
+            createErrorEmbed(
+              '🔒 权限不足',
+              '只有服务器管理员或 Bot 管理员才能管理 AI 正则替换规则。',
+            ),
+          ],
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
+      if (sub === 'list') {
+        const rules = ctx.repos.guildConfig.getOrCreate(guildId).ai.regexRules;
+        const antiCliche = ctx.repos.guildConfig.getOrCreate(guildId).ai.antiClichePromptEnabled;
+        const lines =
+          rules.length > 0
+            ? rules.map((r) => {
+                const icon = r.enabled ? '✅' : '⏸️';
+                const rep = r.replacement ? `\`${truncateText(r.replacement, 30)}\`` : '*(删除)*';
+                return `${icon} \`${r.id}\` **[${r.scope}] ${r.label}**\n  \`/${truncateText(r.pattern, 60)}/${r.flags}\` → ${rep}`;
+              })
+            : ['当前没有正则替换规则。'];
+
+        await interaction.reply({
+          embeds: [
+            createInfoEmbed(
+              `🔧 AI 正则规则列表（共 ${rules.length} 条）`,
+              truncateText(
+                [`🧹 反八股系统提示词：${antiCliche ? '✅ 开启' : '⛔ 关闭'}`, '', ...lines].join('\n'),
+                4096,
+              ),
+            ),
+          ],
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
+      if (sub === 'add') {
+        const label = interaction.options.getString('label', true);
+        const pattern = interaction.options.getString('pattern', true);
+        const replacement = interaction.options.getString('replacement') ?? '';
+        const scopeRaw = interaction.options.getString('scope') ?? 'both';
+        const flags = interaction.options.getString('flags') ?? 'gi';
+        const scope: AiRegexRuleScope = isValidAiRegexScope(scopeRaw) ? scopeRaw : 'both';
+
+        const res = ctx.services.ai.addRegexRule(guildId, {
+          label,
+          pattern,
+          replacement,
+          scope,
+          flags,
+        });
+        if (!res.ok) {
+          await interaction.reply({
+            embeds: [createErrorEmbed('❌ 添加正则规则失败', res.error)],
+            flags: MessageFlags.Ephemeral,
+          });
+          return;
+        }
+        await interaction.reply({
+          embeds: [
+            createSuccessEmbed(
+              '✅ 已添加正则规则',
+              `编号 \`${res.rule.id}\` **${res.rule.label}**（${res.rule.scope}）\n\`/${res.rule.pattern}/${res.rule.flags}\` → ${res.rule.replacement ? `\`${res.rule.replacement}\`` : '*(删除)*'}`,
+            ),
+          ],
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
+      if (sub === 'toggle') {
+        const id = interaction.options.getString('id', true).trim();
+        const res = ctx.services.ai.toggleRegexRule(guildId, id);
+        if (!res.ok) {
+          await interaction.reply({
+            embeds: [createErrorEmbed('❓ 操作失败', res.error)],
+            flags: MessageFlags.Ephemeral,
+          });
+          return;
+        }
+        await interaction.reply({
+          embeds: [
+            createSuccessEmbed(
+              '🔘 已更新规则状态',
+              `规则 \`${res.rule.id}\`（${res.rule.label}）已切换为：**${res.rule.enabled ? '启用' : '停用'}**。`,
+            ),
+          ],
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
+      if (sub === 'delete') {
+        const id = interaction.options.getString('id', true).trim();
+        const res = ctx.services.ai.deleteRegexRule(guildId, id);
+        if (!res.ok) {
+          await interaction.reply({
+            embeds: [createErrorEmbed('❓ 删除失败', res.error)],
+            flags: MessageFlags.Ephemeral,
+          });
+          return;
+        }
+        await interaction.reply({
+          embeds: [
+            createSuccessEmbed(
+              '🗑️ 已删除正则规则',
+              `已移除规则 \`${res.rule.id}\`（${res.rule.label}）。`,
+            ),
+          ],
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
+      if (sub === 'test') {
+        const text = interaction.options.getString('text', true);
+        const stageRaw = interaction.options.getString('scope');
+        const stage: 'input' | 'output' = stageRaw === 'input' ? 'input' : 'output';
+        const preview = ctx.services.ai.previewRegexRules(guildId, text, stage);
+        await interaction.reply({
+          embeds: [
+            createInfoEmbed(
+              `🧪 正则测试预览（${stage === 'input' ? '输入阶段' : '输出阶段'}）`,
+              truncateText(
+                [
+                  `**原文**：\n${preview.before}`,
+                  '',
+                  `**结果**（${preview.changed ? '✅ 已命中替换' : '未命中任何规则'}）：\n${preview.after}`,
+                ].join('\n'),
+                4096,
+              ),
             ),
           ],
           flags: MessageFlags.Ephemeral,

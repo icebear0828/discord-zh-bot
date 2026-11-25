@@ -363,8 +363,8 @@ describe('aiService helpers & AiMemoryRepo', () => {
     });
     expect(res.ok).toBe(true);
     if (res.ok) {
-      expect(res.replyText).toBe('草莓布丁酱说得全对');
-      expect(res.chunks).toEqual(['草莓布丁酱说得全对']);
+      expect(res.replyText).toBe('黑吊王说得全对');
+      expect(res.chunks).toEqual(['黑吊王说得全对']);
     }
     db.close();
   });
@@ -374,7 +374,7 @@ describe('aiService helpers & AiMemoryRepo', () => {
       expect(preset.personaName.length).toBeLessThanOrEqual(32);
       expect(preset.identityPrompt.length).toBeLessThanOrEqual(500);
       expect(preset.soulPrompt.length).toBeLessThanOrEqual(500);
-      expect(preset.identityPrompt).toContain('草莓布丁酱');
+      expect(preset.identityPrompt).toContain('黑吊王');
       expect(preset.identityPrompt).toContain('icebear');
     }
     expect(AI_PERSONA_PRESETS.beauty.personaName).toBe('黑吊国第一美女');
@@ -401,8 +401,113 @@ describe('aiService helpers & AiMemoryRepo', () => {
     expect(prompt).toContain('冰熊（账号：@icebear）');
     expect(prompt).toContain('严禁在开头加');
     expect(prompt).toContain('[名字]:');
-    expect(prompt).toContain('黑吊王「草莓布丁酱」');
+    expect(prompt).toContain('黑吊王');
     expect(prompt).toContain('冰吊王「icebear」');
+    expect(prompt).toContain('去 AI 味与反八股禁词铁律');
+  });
+
+  it('normalizes input/history/memories and cleans output cliches while preserving legacy DB vs explicit empty regex rules', async () => {
+    const db = createDatabase(':memory:');
+    const guildConfigRepo = new GuildConfigRepo(db);
+    const aiMemoryRepo = new AiMemoryRepo(db);
+
+    // 1. Legacy guild_configs row without regexRules receives default rules
+    guildConfigRepo.getOrCreate('g_legacy');
+    const legacyRow = db
+      .prepare('SELECT ai_config_json FROM guild_configs WHERE guild_id = ?')
+      .get('g_legacy') as { ai_config_json: string };
+    const parsedLegacy = JSON.parse(legacyRow.ai_config_json) as Record<string, unknown>;
+    delete parsedLegacy['regexRules'];
+    delete parsedLegacy['antiClichePromptEnabled'];
+    db.prepare('UPDATE guild_configs SET ai_config_json = ? WHERE guild_id = ?').run(
+      JSON.stringify(parsedLegacy),
+      'g_legacy',
+    );
+    const loadedLegacy = guildConfigRepo.getOrCreate('g_legacy');
+    expect(loadedLegacy.ai.regexRules.length).toBeGreaterThan(0);
+    expect(loadedLegacy.ai.antiClichePromptEnabled).toBe(true);
+
+    // 2. Explicit empty array [] stays empty (does not re-populate defaults)
+    guildConfigRepo.updateAi('g_legacy', { ...loadedLegacy.ai, regexRules: [] });
+    expect(guildConfigRepo.getOrCreate('g_legacy').ai.regexRules).toEqual([]);
+
+    // 3. End-to-end input/history/memory/output regex + anti-cliche toggle
+    let capturedBody: Record<string, unknown> | null = null;
+    const llmClient = new LlmClient(
+      {
+        baseUrl: 'https://gateway.local/v1',
+        apiKey: 'sk-test',
+        model: 'demo-model',
+        timeoutMs: 10_000,
+      },
+      {
+        fetchFn: async (_url, init) => {
+          capturedBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+          return new Response(
+            JSON.stringify({
+              model: 'demo-model',
+              choices: [
+                {
+                  message: {
+                    content:
+                      '草莓布丁酱今天极其开心，草莓也很甜。\n[MEMORY:identity: 草莓布丁酱爱喝乌龙茶]',
+                  },
+                },
+              ],
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          );
+        },
+      },
+    );
+    const aiService = new AiService(guildConfigRepo, aiMemoryRepo, llmClient);
+    const res = await aiService.generateReply(
+      {
+        guildId: 'g1',
+        channelId: 'c1',
+        userId: 'u_vip',
+        userName: '草莓布丁酱',
+        messageId: 'm_cur',
+        userContent: '刚才 @布丁酱 说想吃草莓',
+        channelWindow: [
+          {
+            id: 'm_prev',
+            authorId: 'u_vip',
+            authorName: '草莓布丁酱',
+            isBot: false,
+            content: '叫我布丁酱也行',
+            createdTimestamp: 1000,
+          },
+        ],
+      },
+      'bot1',
+    );
+
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.replyText).toBe('黑吊王今天特别开心，草莓也很甜。');
+    }
+
+    const sentMsgs = (capturedBody?.['messages'] ?? []) as Array<{ role: string; content: string }>;
+    expect(sentMsgs[0]?.content).toContain('当前正在对你发言的群友：黑吊王');
+    expect(sentMsgs[1]?.content).toBe('[黑吊王]: 叫我黑吊王也行');
+    expect(sentMsgs[2]?.content).toBe('[黑吊王]: 刚才 @黑吊王 说想吃草莓');
+
+    const mems = aiService.listMemories('g1', 'user', 'u_vip');
+    expect(mems[0]?.content).toBe('黑吊王爱喝乌龙茶');
+
+    // Toggle anti-cliche prompt off
+    expect(aiService.toggleAntiClichePrompt('g1')).toBe(false);
+    const promptNoCliche = buildSystemPrompt({
+      aiCfg: guildConfigRepo.getOrCreate('g1').ai,
+      guildMemories: [],
+      channelMemories: [],
+      userMemories: [],
+      currentUserName: '黑吊王',
+    });
+    expect(promptNoCliche).not.toContain('去 AI 味与反八股禁词铁律');
+
+    db.close();
   });
 
   it('restricts auto-extracted [MEMORY:] tags strictly to user scope and provides natural empty fallback', async () => {

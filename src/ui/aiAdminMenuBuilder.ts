@@ -8,10 +8,12 @@ import {
   StringSelectMenuOptionBuilder,
 } from 'discord.js';
 import { AI_PERSONA_PRESETS } from '../config/defaults.js';
+import { MAX_AI_REGEX_RULES, type AiRegexRuleScope } from '../services/aiRegex.js';
 import { COLORS, type AppContext } from './embeds.js';
 import {
   buttonRow,
   makeButton,
+  paginateSlice,
   resolveColor,
   truncateText,
   withFeedback,
@@ -29,12 +31,21 @@ const AI_PRESET_LABELS: Record<string, string> = {
   custom: '🛠️ 自定义人格',
 };
 
+const REGEX_SCOPE_LABELS: Record<AiRegexRuleScope, string> = {
+  both: '双向',
+  input: '仅输入',
+  output: '仅输出',
+};
+
+const REGEX_PAGE_SIZE = 10;
+
 export function buildAdminAiView(
   ctx: AppContext,
   guildId: string,
   actor: MenuActor,
   feedback: MenuFeedback | undefined,
-  tab: 'basic' | 'channels' = 'basic',
+  tab: 'basic' | 'channels' | 'regex' = 'basic',
+  regexPage = 1,
 ): BuiltMenuMessage {
   const cfg = ctx.repos.guildConfig.getOrCreate(guildId);
   const ai = cfg.ai;
@@ -43,6 +54,108 @@ export function buildAdminAiView(
   const defaultModel = ctx.services.ai.getDefaultModel() || '未配置';
   const effectiveModel = ai.modelOverride?.trim() || defaultModel;
   const memCounts = ctx.services.ai.countMemories(guildId);
+  const enabledRegexCount = ai.regexRules.filter((r) => r.enabled).length;
+
+  if (tab === 'regex') {
+    const paged = paginateSlice(ai.regexRules, regexPage, REGEX_PAGE_SIZE);
+    const rulesLines =
+      paged.slice.length > 0
+        ? paged.slice.map((rule) => {
+            const status = rule.enabled ? '✅' : '⏸️';
+            const scopeLabel = REGEX_SCOPE_LABELS[rule.scope];
+            const repText = rule.replacement ? `\`${truncateText(rule.replacement, 24)}\`` : '*(删除)*';
+            return `${status} \`${rule.id}\` **[${scopeLabel}] ${rule.label}**\n  \`/${truncateText(rule.pattern, 48)}/${rule.flags}\` → ${repText}`;
+          })
+        : ['当前没有正则替换规则，可点击下方「➕ 新增正则规则」或「♻️ 恢复默认规则」。'];
+
+    const description = [
+      `🧹 **反八股系统提示词**：${ai.antiClichePromptEnabled ? '✅ 已开启' : '⛔ 已关闭'} ｜ **生效规则**：**${enabledRegexCount}/${ai.regexRules.length}** 条（上限 ${MAX_AI_REGEX_RULES} 条）`,
+      `📌 **说明**：\`input\`/\`both\` 在发送给 AI 前归一化昵称、@提及、历史消息与记忆；\`output\`/\`both\` 在 AI 回复前清洗八股与代称（自动跳过 \`\`\`代码块\`\`\`）。`,
+      '',
+      ...rulesLines,
+    ].join('\n');
+
+    const embed = new EmbedBuilder()
+      .setColor(resolveColor(COLORS.PRIMARY, feedback))
+      .setAuthor({ name: `${actor.displayName} · AI 正则替换与反八股`, iconURL: actor.avatarUrl })
+      .setTitle(`🔧 AI 正则规则管理（第 ${paged.page}/${paged.totalPages} 页）`)
+      .setDescription(withFeedback(truncateText(description, 4000), feedback))
+      .setFooter({ text: '🔒 仅管理员可见；也可在频道用 /ai 正则 管理或测试' })
+      .setTimestamp();
+
+    const components: MenuComponentRow[] = [];
+
+    if (paged.slice.length > 0) {
+      const toggleSelect = new StringSelectMenuBuilder()
+        .setCustomId(`menu:admin_ai_regex_toggle:${paged.page}`)
+        .setPlaceholder('🔘 选择一条规则切换启用/停用...')
+        .addOptions(
+          paged.slice.map((rule) =>
+            new StringSelectMenuOptionBuilder()
+              .setLabel(truncateText(`${rule.enabled ? '✅' : '⏸️'} [${rule.id}] ${rule.label}`, 100))
+              .setValue(rule.id)
+              .setDescription(
+                truncateText(
+                  `${REGEX_SCOPE_LABELS[rule.scope]} | /${rule.pattern}/${rule.flags} → ${rule.replacement || '(删除)'}`,
+                  100,
+                ),
+              ),
+          ),
+        );
+      components.push(new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(toggleSelect));
+
+      const deleteSelect = new StringSelectMenuBuilder()
+        .setCustomId(`menu:admin_ai_regex_delete:${paged.page}`)
+        .setPlaceholder('🗑️ 选择一条规则永久删除...')
+        .addOptions(
+          paged.slice.map((rule) =>
+            new StringSelectMenuOptionBuilder()
+              .setLabel(truncateText(`🗑️ [${rule.id}] ${rule.label}`, 100))
+              .setValue(rule.id)
+              .setDescription(truncateText(`删除规则 /${rule.pattern}/${rule.flags}`, 100)),
+          ),
+        );
+      components.push(new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(deleteSelect));
+    }
+
+    components.push(
+      buttonRow(
+        makeButton('menu:modal:admin_ai_regex_add', '➕ 新增正则规则', ButtonStyle.Primary),
+        makeButton(
+          'menu:admin:ai_toggle_cliche_prompt',
+          `🧹 反八股提示词: ${ai.antiClichePromptEnabled ? '开' : '关'}`,
+          ai.antiClichePromptEnabled ? ButtonStyle.Success : ButtonStyle.Secondary,
+        ),
+        makeButton('menu:admin:ai_regex_reset', '♻️ 恢复默认规则', ButtonStyle.Danger),
+      ),
+    );
+
+    const navButtons = [];
+    if (paged.totalPages > 1) {
+      navButtons.push(
+        makeButton(
+          `menu:nav:admin_ai:regex:${Math.max(1, paged.page - 1)}`,
+          '⬅️ 上页',
+          ButtonStyle.Secondary,
+          paged.page <= 1,
+        ),
+        makeButton(
+          `menu:nav:admin_ai:regex:${Math.min(paged.totalPages, paged.page + 1)}`,
+          '➡️ 下页',
+          ButtonStyle.Secondary,
+          paged.page >= paged.totalPages,
+        ),
+      );
+    }
+    navButtons.push(
+      makeButton('menu:nav:admin_ai:basic', '🎭 人设与参数', ButtonStyle.Primary),
+      makeButton('menu:nav:admin', '⬅️ 管理后台', ButtonStyle.Secondary),
+      makeButton('menu:nav:home', '🏠 主菜单', ButtonStyle.Secondary),
+    );
+    components.push(buttonRow(...navButtons));
+
+    return { embeds: [embed], components };
+  }
 
   const freeText =
     ai.freeChatChannelIds.length > 0
@@ -62,6 +175,7 @@ export function buildAdminAiView(
     `🎭 **当前人格**：**${ai.personaName}**（预设：${AI_PRESET_LABELS[ai.preset] ?? ai.preset}）`,
     `🤖 **当前模型**：\`${effectiveModel}\`${ai.modelOverride ? '（后台覆盖）' : '（默认）'} ｜ 温度 **${ai.temperature}** ｜ MaxTokens **${ai.maxTokens}**`,
     `💬 **上下文与记忆**：滑窗 **${ai.contextWindowMessages}** 条 ｜ 记忆抽取 ${ai.memoryEnabled ? `✅ 开（每域上限 ${ai.maxMemoriesPerScope} 条）` : '⛔ 关'} ｜ 图片识图 ${ai.visionEnabled ? '✅ 开' : '⛔ 关'}`,
+    `🔧 **正则替换与反八股**：启用 **${enabledRegexCount}/${ai.regexRules.length}** 条规则 ｜ 反八股提示词 ${ai.antiClichePromptEnabled ? '✅ 开' : '⛔ 关'}`,
     `🧠 **SQLite 记忆库**：共 **${memCounts.total}** 条（用户 ${memCounts.user} / 频道 ${memCounts.channel} / 全服 ${memCounts.guild}）`,
     `🗨️ **免 @ 直聊频道**：${freeText}`,
     `📌 **白名单限定频道**：${allowedText}`,
@@ -181,6 +295,7 @@ export function buildAdminAiView(
     ),
     buttonRow(
       makeButton('menu:admin:ai_toggle_allowed_here', '📌 切换本频道白名单', ButtonStyle.Secondary),
+      makeButton('menu:nav:admin_ai:regex', '🔧 正则与反八股', ButtonStyle.Primary),
       makeButton('menu:nav:admin_ai:channels', '🔕 屏蔽与全部频道', ButtonStyle.Primary),
       makeButton('menu:nav:admin', '⬅️ 管理后台', ButtonStyle.Secondary),
       makeButton('menu:nav:home', '🏠 主菜单', ButtonStyle.Secondary),

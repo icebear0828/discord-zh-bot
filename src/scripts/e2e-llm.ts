@@ -72,6 +72,9 @@ async function runLlmE2E(): Promise<void> {
     if (/^\[[^\]]+\]\s*[:：]/.test(res2.replyText)) {
       throw new Error(`[E2E #2/3] 检测到未清除的发言人前缀: ${res2.replyText}`);
     }
+    if (/(?:草莓)?布丁酱/.test(res2.replyText) || res2.replyText.includes('极其')) {
+      throw new Error(`[E2E #2/3] 检测到未替换的代称或八股禁词: ${res2.replyText}`);
+    }
     console.log(
       `[E2E #2/3 VIP双标+记忆] OK (${Date.now() - t2}ms, attempts=${res2.attempts}, model=${res2.model}) | 回复: ${res2.replyText.replace(/\s+/g, ' ').slice(0, 100)}`,
     );

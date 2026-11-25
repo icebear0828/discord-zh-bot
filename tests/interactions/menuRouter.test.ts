@@ -2471,6 +2471,75 @@ describe('menu router & multiplayer interaction flows', () => {
     await routeInteraction(aiMemDel.interaction, ctx);
     expect(ctx.services.ai.listMemories('g1', 'user', 'member1')).toHaveLength(0);
 
+    // admin_ai:regex tab navigation, modal add (invalid + valid), toggle, delete, anti-cliche toggle, reset
+    const regexNav = createButtonMock({ customId: 'menu:nav:admin_ai:regex:1', userId: 'admin1' });
+    await routeInteraction(regexNav.interaction, ctx);
+    expect(regexNav.update.mock.calls[0]![0].embeds?.[0]?.toJSON().title).toContain('AI 正则规则管理');
+
+    const badRegexModal = createModalMock({
+      customId: 'menu:modal_sub:admin_ai_regex_add',
+      userId: 'admin1',
+      fields: {
+        label: '坏正则',
+        pattern: '(a+)+',
+        replacement: 'x',
+        scope: 'output',
+        flags: 'g',
+      },
+    });
+    await routeInteraction(badRegexModal.interaction, ctx);
+    expect(badRegexModal.update.mock.calls[0]![0].embeds?.[0]?.toJSON().description).toContain('回溯');
+
+    const okRegexModal = createModalMock({
+      customId: 'menu:modal_sub:admin_ai_regex_add',
+      userId: 'admin1',
+      fields: {
+        label: '测别名',
+        pattern: '菜鸡',
+        replacement: '大佬',
+        scope: 'both',
+        flags: 'gi',
+      },
+    });
+    await routeInteraction(okRegexModal.interaction, ctx);
+    const addedRule = ctx.repos.guildConfig.getOrCreate('g1').ai.regexRules.find((r) => r.label === '测别名');
+    expect(addedRule).toBeDefined();
+
+    const toggleRuleSelect = createStringSelectMock({
+      customId: 'menu:admin_ai_regex_toggle:1',
+      userId: 'admin1',
+      values: [addedRule!.id],
+    });
+    await routeInteraction(toggleRuleSelect.interaction, ctx);
+    expect(
+      ctx.repos.guildConfig.getOrCreate('g1').ai.regexRules.find((r) => r.id === addedRule!.id)?.enabled,
+    ).toBe(false);
+
+    const delRuleSelect = createStringSelectMock({
+      customId: 'menu:admin_ai_regex_delete:1',
+      userId: 'admin1',
+      values: [addedRule!.id],
+    });
+    await routeInteraction(delRuleSelect.interaction, ctx);
+    expect(
+      ctx.repos.guildConfig.getOrCreate('g1').ai.regexRules.some((r) => r.id === addedRule!.id),
+    ).toBe(false);
+
+    const toggleClicheBtn = createButtonMock({
+      customId: 'menu:admin:ai_toggle_cliche_prompt',
+      userId: 'admin1',
+    });
+    await routeInteraction(toggleClicheBtn.interaction, ctx);
+    expect(ctx.repos.guildConfig.getOrCreate('g1').ai.antiClichePromptEnabled).toBe(false);
+
+    const resetRegexBtn = createButtonMock({
+      customId: 'menu:admin:ai_regex_reset',
+      userId: 'admin1',
+    });
+    await routeInteraction(resetRegexBtn.interaction, ctx);
+    expect(ctx.repos.guildConfig.getOrCreate('g1').ai.antiClichePromptEnabled).toBe(true);
+    expect(ctx.repos.guildConfig.getOrCreate('g1').ai.regexRules.length).toBeGreaterThan(0);
+
     ctx.db.close();
   });
 

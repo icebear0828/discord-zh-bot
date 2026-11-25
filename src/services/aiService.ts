@@ -6,6 +6,16 @@ import type {
 } from '../db/repositories/aiMemoryRepo.js';
 import type { GuildConfigRepo } from '../db/repositories/guildConfigRepo.js';
 import {
+  applyAiRegexRules,
+  cloneDefaultAiRegexRules,
+  generateAiRegexRuleId,
+  GLOBAL_ANTI_CLICHE_PROMPT,
+  MAX_AI_REGEX_RULES,
+  validateAiRegexRuleInput,
+  type AiRegexRule,
+  type AiRegexRuleInput,
+} from './aiRegex.js';
+import {
   LlmClient,
   LlmError,
   type LlmChatMessage,
@@ -152,13 +162,20 @@ function stripLeadingSpeakerPrefix(text: string, personaName?: string): string {
   return out;
 }
 
-export function cleanAiOutput(raw: string, personaName?: string): string {
+export function cleanAiOutput(
+  raw: string,
+  personaName?: string,
+  regexRules?: ReadonlyArray<AiRegexRule>,
+): string {
   let out = raw;
   out = out.replace(/\[MEMORY:[^\]]*\]/gi, '');
   out = out.replace(/\[VOICE:[^\]]*\]/gi, '');
   out = out.replace(/\[IMAGE:[^\]]*\]/gi, '');
   out = out.replace(/\[USAGE:\{[^\]]*\}\]/gi, '');
   out = stripLeadingSpeakerPrefix(out, personaName);
+  if (regexRules && regexRules.length > 0) {
+    out = applyAiRegexRules(out, regexRules, 'output', { preserveCodeBlocks: true });
+  }
   out = out.replace(/\n{3,}/g, '\n\n');
   return out.trim();
 }
@@ -325,6 +342,10 @@ export function buildSystemPrompt(params: {
     '- 默认使用中文回复；避免使用 @everyone 或 @here。',
   ];
 
+  if (aiCfg.antiClichePromptEnabled !== false) {
+    sections.push('', GLOBAL_ANTI_CLICHE_PROMPT);
+  }
+
   if (aiCfg.worldbook.trim()) {
     sections.push('', '## 社群背景与世界书', aiCfg.worldbook.trim());
   }
@@ -373,8 +394,17 @@ export function mergeConversationHistory(params: {
   botId: string;
   resetAt: number;
   maxMessages: number;
+  inputRegexRules?: ReadonlyArray<AiRegexRule>;
 }): LlmChatMessage[] {
-  const { replyChain, channelWindow, currentMessageId, botId, resetAt, maxMessages } = params;
+  const {
+    replyChain,
+    channelWindow,
+    currentMessageId,
+    botId,
+    resetAt,
+    maxMessages,
+    inputRegexRules,
+  } = params;
   if (maxMessages <= 0) return [];
 
   const byId = new Map<string, { msg: RawContextMessage; fromReplyChain: boolean }>();
@@ -416,11 +446,20 @@ export function mergeConversationHistory(params: {
     }
   }
 
-  return selected.map(({ msg, text }) =>
-    msg.authorId === botId
-      ? { role: 'assistant', content: text }
-      : { role: 'user', content: `[${msg.authorName}]: ${text}` },
-  );
+  return selected.map(({ msg, text }) => {
+    if (msg.authorId === botId) {
+      return { role: 'assistant', content: text };
+    }
+    const normalizedAuthor =
+      inputRegexRules && inputRegexRules.length > 0
+        ? applyAiRegexRules(msg.authorName, inputRegexRules, 'input').trim() || msg.authorName
+        : msg.authorName;
+    const normalizedText =
+      inputRegexRules && inputRegexRules.length > 0
+        ? applyAiRegexRules(text, inputRegexRules, 'input')
+        : text;
+    return { role: 'user', content: `[${normalizedAuthor}]: ${normalizedText}` };
+  });
 }
 
 function inferImageMimeType(att: DiscordAttachmentLike): string {
@@ -556,6 +595,107 @@ export class AiService {
     return this.aiMemoryRepo.countByGuild(guildId);
   }
 
+  addRegexRule(
+    guildId: string,
+    input: AiRegexRuleInput,
+  ): { ok: true; rule: AiRegexRule } | { ok: false; error: string } {
+    const cfg = this.guildConfigRepo.getOrCreate(guildId);
+    if (cfg.ai.regexRules.length >= MAX_AI_REGEX_RULES) {
+      return {
+        ok: false,
+        error: `正则规则数量已达上限（最多 ${MAX_AI_REGEX_RULES} 条），请先删除不用的规则。`,
+      };
+    }
+
+    const validated = validateAiRegexRuleInput(input);
+    if (!validated.ok) {
+      return { ok: false, error: validated.error };
+    }
+
+    const existingIds = new Set(cfg.ai.regexRules.map((r) => r.id));
+    const rule: AiRegexRule = {
+      id: generateAiRegexRuleId(existingIds),
+      ...validated.ruleInput,
+      enabled: true,
+    };
+
+    this.guildConfigRepo.updateAi(guildId, {
+      ...cfg.ai,
+      regexRules: [...cfg.ai.regexRules, rule],
+    });
+    return { ok: true, rule };
+  }
+
+  toggleRegexRule(
+    guildId: string,
+    ruleId: string,
+  ): { ok: true; rule: AiRegexRule } | { ok: false; error: string } {
+    const cfg = this.guildConfigRepo.getOrCreate(guildId);
+    const target = cfg.ai.regexRules.find((r) => r.id === ruleId);
+    if (!target) {
+      return { ok: false, error: `找不到编号为 \`${ruleId}\` 的正则规则。` };
+    }
+    const updated: AiRegexRule = { ...target, enabled: !target.enabled };
+    this.guildConfigRepo.updateAi(guildId, {
+      ...cfg.ai,
+      regexRules: cfg.ai.regexRules.map((r) => (r.id === ruleId ? updated : r)),
+    });
+    return { ok: true, rule: updated };
+  }
+
+  deleteRegexRule(
+    guildId: string,
+    ruleId: string,
+  ): { ok: true; rule: AiRegexRule } | { ok: false; error: string } {
+    const cfg = this.guildConfigRepo.getOrCreate(guildId);
+    const target = cfg.ai.regexRules.find((r) => r.id === ruleId);
+    if (!target) {
+      return { ok: false, error: `找不到编号为 \`${ruleId}\` 的正则规则。` };
+    }
+    this.guildConfigRepo.updateAi(guildId, {
+      ...cfg.ai,
+      regexRules: cfg.ai.regexRules.filter((r) => r.id !== ruleId),
+    });
+    return { ok: true, rule: target };
+  }
+
+  resetRegexRules(guildId: string): AiRegexRule[] {
+    const cfg = this.guildConfigRepo.getOrCreate(guildId);
+    const defaults = cloneDefaultAiRegexRules();
+    this.guildConfigRepo.updateAi(guildId, {
+      ...cfg.ai,
+      antiClichePromptEnabled: true,
+      regexRules: defaults,
+    });
+    return defaults;
+  }
+
+  toggleAntiClichePrompt(guildId: string): boolean {
+    const cfg = this.guildConfigRepo.getOrCreate(guildId);
+    const next = !cfg.ai.antiClichePromptEnabled;
+    this.guildConfigRepo.updateAi(guildId, {
+      ...cfg.ai,
+      antiClichePromptEnabled: next,
+    });
+    return next;
+  }
+
+  previewRegexRules(
+    guildId: string,
+    text: string,
+    stage: 'input' | 'output',
+  ): { before: string; after: string; changed: boolean } {
+    const cfg = this.guildConfigRepo.getOrCreate(guildId);
+    const after = applyAiRegexRules(text, cfg.ai.regexRules, stage, {
+      preserveCodeBlocks: stage === 'output',
+    });
+    return {
+      before: text,
+      after,
+      changed: after !== text,
+    };
+  }
+
   async generateReply(
     input: GenerateAiReplyInput,
     botId = 'bot',
@@ -597,12 +737,15 @@ export class AiService {
         )
       : [];
 
+    const effectiveUserName =
+      applyAiRegexRules(input.userName, aiCfg.regexRules, 'input').trim() || input.userName;
+
     const systemPrompt = buildSystemPrompt({
       aiCfg,
       guildMemories,
       channelMemories,
       userMemories,
-      currentUserName: input.userName,
+      currentUserName: effectiveUserName,
       currentUserHandle: input.userHandle,
     });
 
@@ -614,6 +757,7 @@ export class AiService {
       botId,
       resetAt,
       maxMessages: aiCfg.contextWindowMessages,
+      inputRegexRules: aiCfg.regexRules,
     });
 
     const imageParts =
@@ -621,8 +765,11 @@ export class AiService {
         ? await loadImageParts(input.attachments, this.fetchFn)
         : [];
 
-    const userText = input.userContent.trim() || (imageParts.length > 0 ? '请看看这张图片。' : '你好');
-    const formattedText = `[${input.userName}]: ${userText}`;
+    const rawUserText =
+      input.userContent.trim() || (imageParts.length > 0 ? '请看看这张图片。' : '你好');
+    const normalizedUserText =
+      applyAiRegexRules(rawUserText, aiCfg.regexRules, 'input').trim() || rawUserText;
+    const formattedText = `[${effectiveUserName}]: ${normalizedUserText}`;
     const userMessageContent: string | LlmContentPart[] =
       imageParts.length > 0
         ? [{ type: 'text', text: formattedText }, ...imageParts]
@@ -643,23 +790,25 @@ export class AiService {
       });
 
       const tags = extractMemoryTags(response.content);
-      const replyText = cleanAiOutput(response.content, aiCfg.personaName);
+      const replyText = cleanAiOutput(response.content, aiCfg.personaName, aiCfg.regexRules);
 
       let storedMemoryCount = 0;
-      if (aiCfg.memoryEnabled && !containsPromptInjectionMemoryTag(userText)) {
+      if (aiCfg.memoryEnabled && !containsPromptInjectionMemoryTag(rawUserText)) {
         for (const tag of tags) {
           // Auto-extracted memory tags are strictly confined to user scope;
           // reject natural-language attempts to inject guild/channel memories.
           if (tag.scopeHint !== 'user') {
             continue;
           }
+          const normalizedMem =
+            applyAiRegexRules(tag.content, aiCfg.regexRules, 'input').trim() || tag.content;
           try {
             this.aiMemoryRepo.addMemory({
               guildId: input.guildId,
               scopeType: 'user',
               scopeId: input.userId,
               category: tag.category,
-              content: tag.content,
+              content: normalizedMem,
               createdBy: 'ai',
               maxPerScope: aiCfg.maxMemoriesPerScope,
             });

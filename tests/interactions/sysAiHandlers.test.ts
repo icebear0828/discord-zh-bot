@@ -958,4 +958,159 @@ describe('messageCreate isolation, world event guards, and AI safety/rate-limits
 
     ctx2.db.close();
   });
+
+  it('resolves <@userId> mentions to display names and applies input/output regex in handleMessageCreate and /ai regex', async () => {
+    resetAiRuntimeGuards();
+    let capturedMessages: Array<{ role: string; content: string }> = [];
+    const llmClient = new LlmClient(
+      { baseUrl: 'https://gateway.local/v1', apiKey: 'sk-test', model: 'demo', timeoutMs: 5000 },
+      {
+        fetchFn: async (_url, init) => {
+          const parsed = JSON.parse(String(init?.body)) as {
+            messages: Array<{ role: string; content: string }>;
+          };
+          capturedMessages = parsed.messages;
+          return new Response(
+            JSON.stringify({
+              model: 'demo',
+              choices: [{ message: { content: '布丁酱这波极其稳，草莓留着自己吃' } }],
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          );
+        },
+      },
+    );
+    const ctx = createCtx(llmClient);
+    const replyFn = vi.fn(async () => undefined);
+    const fakeClient = { user: { id: 'bot-1' } } as unknown as Client;
+
+    const historyMsg = {
+      id: 'm-hist-1',
+      author: { id: '900002', bot: false, username: 'other', displayName: '路人' },
+      member: { displayName: '路人' },
+      content: '刚才 <@900001> 发红包了',
+      createdTimestamp: Date.now() - 2000,
+      attachments: new Map(),
+      embeds: [],
+      mentions: {
+        users: new Map([
+          ['900001', { id: '900001', username: 'pudding', displayName: '草莓布丁酱' }],
+        ]),
+        members: new Map([['900001', { displayName: '草莓布丁酱' }]]),
+      },
+      guild: { id: 'g1', members: { cache: new Map() } },
+    };
+
+    await handleMessageCreate(
+      fakeClient,
+      {
+        id: 'm-mention',
+        channelId: 'chat-ch',
+        content: '<@bot-1> 看看 <@!900001> 买草莓没',
+        createdTimestamp: Date.now(),
+        author: { id: '900003', bot: false, username: 'asker', displayName: '路人甲' },
+        member: { displayName: '路人甲' },
+        guild: { id: 'g1', members: { cache: new Map() } },
+        mentions: {
+          users: new Map([
+            ['bot-1', { id: 'bot-1' }],
+            ['900001', { id: '900001', username: 'pudding', displayName: '草莓布丁酱' }],
+          ]),
+          members: new Map([['900001', { displayName: '草莓布丁酱' }]]),
+        },
+        attachments: new Map(),
+        embeds: [],
+        reference: null,
+        channel: {
+          isTextBased: () => true,
+          isSendable: () => true,
+          sendTyping: vi.fn(async () => undefined),
+          messages: { fetch: vi.fn(async () => new Map([['m-hist-1', historyMsg]])) },
+        },
+        reply: replyFn,
+      } as unknown as Message,
+      ctx,
+    );
+
+    expect(capturedMessages[1]?.content).toBe('[路人]: 刚才 @黑吊王 发红包了');
+    expect(capturedMessages[2]?.content).toBe('[路人甲]: 看看 @黑吊王 买草莓没');
+    const replyPayload = (replyFn.mock.calls[0] as unknown as [{ content: string }])[0];
+    expect(replyPayload.content).toBe('黑吊王这波特别稳，草莓留着自己吃');
+
+    // /ai regex permission & CRUD/test
+    const memberDeniedReply = vi.fn(async () => undefined);
+    await aiCommand.execute(
+      {
+        guildId: 'g1',
+        channelId: 'chat-ch',
+        inCachedGuild: () => true,
+        user: { id: 'u-asker' },
+        member: makeMember('u-asker'),
+        options: {
+          getSubcommandGroup: () => 'regex',
+          getSubcommand: () => 'list',
+        },
+        reply: memberDeniedReply,
+      } as unknown as ChatInputCommandInteraction,
+      ctx,
+    );
+    expect(
+      (memberDeniedReply.mock.calls[0] as unknown as [MockPayload])[0].embeds?.[0]?.toJSON().title,
+    ).toContain('权限不足');
+
+    const adminAddReply = vi.fn(async () => undefined);
+    await aiCommand.execute(
+      {
+        guildId: 'g1',
+        channelId: 'chat-ch',
+        inCachedGuild: () => true,
+        user: { id: 'admin-1' },
+        member: makeMember('admin-1', { admin: true }),
+        options: {
+          getSubcommandGroup: () => 'regex',
+          getSubcommand: () => 'add',
+          getString: (name: string) => {
+            if (name === 'label') return '口癖替换';
+            if (name === 'pattern') return '好家伙';
+            if (name === 'replacement') return '厉害';
+            if (name === 'scope') return 'output';
+            if (name === 'flags') return 'g';
+            return null;
+          },
+        },
+        reply: adminAddReply,
+      } as unknown as ChatInputCommandInteraction,
+      ctx,
+    );
+    expect(
+      (adminAddReply.mock.calls[0] as unknown as [MockPayload])[0].embeds?.[0]?.toJSON().title,
+    ).toContain('已添加正则规则');
+
+    const adminTestReply = vi.fn(async () => undefined);
+    await aiCommand.execute(
+      {
+        guildId: 'g1',
+        channelId: 'chat-ch',
+        inCachedGuild: () => true,
+        user: { id: 'admin-1' },
+        member: makeMember('admin-1', { admin: true }),
+        options: {
+          getSubcommandGroup: () => 'regex',
+          getSubcommand: () => 'test',
+          getString: (name: string) => {
+            if (name === 'text') return '好家伙，草莓布丁酱极其强';
+            if (name === 'scope') return 'output';
+            return null;
+          },
+        },
+        reply: adminTestReply,
+      } as unknown as ChatInputCommandInteraction,
+      ctx,
+    );
+    const testDesc = (adminTestReply.mock.calls[0] as unknown as [MockPayload])[0].embeds?.[0]?.toJSON()
+      .description;
+    expect(testDesc).toContain('厉害，黑吊王特别强');
+
+    ctx.db.close();
+  });
 });

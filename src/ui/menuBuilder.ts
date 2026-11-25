@@ -2064,7 +2064,14 @@ export function buildMenuMessage(
     case 'admin_ops':
       return buildAdminOpsView(ctx, guildId, actor, feedback);
     case 'admin_ai':
-      return buildAdminAiView(ctx, guildId, actor, feedback, view.tab ?? 'basic');
+      return buildAdminAiView(
+        ctx,
+        guildId,
+        actor,
+        feedback,
+        view.tab ?? 'basic',
+        view.regexPage ?? 1,
+      );
     case 'admin_credit_rpg':
       return buildAdminCreditRpgView(ctx, guildId, actor, feedback);
     case 'admin_monitor':

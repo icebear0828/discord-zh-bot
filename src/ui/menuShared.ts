@@ -89,7 +89,7 @@ export type MenuView =
   | { page: 'admin_games' }
   | { page: 'admin_mod' }
   | { page: 'admin_ops' }
-  | { page: 'admin_ai'; tab?: 'basic' | 'channels' }
+  | { page: 'admin_ai'; tab?: 'basic' | 'channels' | 'regex'; regexPage?: number }
   | { page: 'admin_credit_rpg' }
   | { page: 'admin_monitor'; filter?: 'issues' | 'all'; confirmClear?: boolean };
 

@@ -1,5 +1,6 @@
 import { Events, type Client, type Message } from 'discord.js';
 import { sendToChannel } from '../interactions/menuHelpers.js';
+import { resolveDiscordUserMentions } from '../services/aiRegex.js';
 import {
   stripBotMention,
   type DiscordAttachmentLike,
@@ -30,14 +31,29 @@ function pruneCooldownMap(nowMs: number): void {
   }
 }
 
-function toRawContextMessage(msg: Message): RawContextMessage {
-  const hasImages = msg.attachments.some((att) => Boolean(att.contentType?.startsWith('image/')));
+function resolveMessageUserMentionName(msg: Message, userId: string): string | null {
+  const fromMentionMember = msg.mentions?.members?.get(userId)?.displayName;
+  if (fromMentionMember?.trim()) return fromMentionMember.trim();
+  const fromGuildCache = msg.guild?.members?.cache?.get(userId)?.displayName;
+  if (fromGuildCache?.trim()) return fromGuildCache.trim();
+  const mentionedUser = msg.mentions?.users?.get(userId);
+  const fromUser = mentionedUser?.displayName ?? mentionedUser?.username;
+  return fromUser?.trim() ? fromUser.trim() : null;
+}
+
+function toRawContextMessage(msg: Message, botId: string): RawContextMessage {
+  const hasImages = [...msg.attachments.values()].some((att) =>
+    Boolean(att.contentType?.startsWith('image/')),
+  );
+  const content = resolveDiscordUserMentions(msg.content, botId, (userId) =>
+    resolveMessageUserMentionName(msg, userId),
+  );
   return {
     id: msg.id,
     authorId: msg.author.id,
     authorName: msg.member?.displayName ?? msg.author.displayName ?? msg.author.username,
     isBot: msg.author.bot,
-    content: msg.content,
+    content,
     createdTimestamp: msg.createdTimestamp,
     hasImages,
     hasEmbeds: Array.isArray(msg.embeds) && msg.embeds.length > 0,
@@ -55,15 +71,16 @@ function toAttachmentLikes(msg: Message): DiscordAttachmentLike[] {
 
 async function collectDeeperReplyChain(
   directRef: Message,
+  botId: string,
   maxDepth = AI_MAX_REPLY_CHAIN_DEPTH,
 ): Promise<RawContextMessage[]> {
-  const chain: RawContextMessage[] = [toRawContextMessage(directRef)];
+  const chain: RawContextMessage[] = [toRawContextMessage(directRef, botId)];
   let current: Message | null = directRef;
 
   for (let i = 1; i < maxDepth && current?.reference?.messageId; i++) {
     try {
       const referenced = await current.fetchReference();
-      chain.unshift(toRawContextMessage(referenced));
+      chain.unshift(toRawContextMessage(referenced, botId));
       current = referenced;
     } catch {
       break;
@@ -121,12 +138,15 @@ async function handleAiMessage(client: Client, message: Message, ctx: AppContext
     ownAttachments.length === 0 && directRef ? toAttachmentLikes(directRef) : [];
   const attachments = ownAttachments.length > 0 ? ownAttachments : refAttachments;
 
-  const rawUserContent = stripBotMention(message.content, botId);
-  if (!rawUserContent && attachments.length === 0) {
+  const strippedUserContent = stripBotMention(message.content, botId);
+  const resolvedUserContent = resolveDiscordUserMentions(strippedUserContent, botId, (userId) =>
+    resolveMessageUserMentionName(message, userId),
+  );
+  if (!resolvedUserContent && attachments.length === 0) {
     // Do not fall back to '你好' on empty messages without attachments
     return;
   }
-  const userContent = rawUserContent.slice(0, AI_MAX_USER_INPUT_CHARS);
+  const userContent = resolvedUserContent.slice(0, AI_MAX_USER_INPUT_CHARS);
 
   if (!ctx.services.ai.isConfigured()) {
     if (isMentioned || isReplyToBot) {
@@ -157,7 +177,7 @@ async function handleAiMessage(client: Client, message: Message, ctx: AppContext
   try {
     // Only fetch deeper reply chain AFTER trigger + guards pass
     const replyChain = directRef
-      ? await collectDeeperReplyChain(directRef, AI_MAX_REPLY_CHAIN_DEPTH)
+      ? await collectDeeperReplyChain(directRef, botId, AI_MAX_REPLY_CHAIN_DEPTH)
       : [];
 
     const channelWindow: RawContextMessage[] = [];
@@ -168,7 +188,7 @@ async function handleAiMessage(client: Client, message: Message, ctx: AppContext
           before: message.id,
         });
         for (const m of fetched.values()) {
-          channelWindow.push(toRawContextMessage(m));
+          channelWindow.push(toRawContextMessage(m, botId));
         }
       } catch {
         // Missing ReadMessageHistory permission — fall back to reply chain only
