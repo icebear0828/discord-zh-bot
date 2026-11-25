@@ -10,7 +10,8 @@ import {
   BANK_ROB_TRAP_FINE_RATE,
   DEFAULT_SLOTS_VIP_KEYWORDS,
   MAX_SOLO_GAMBLE_BET,
-  ROB_ADMIN_EASTER_EGG_STORIES,
+  ROB_ADMIN_PERSONA_RULES,
+  ROB_ADMIN_PERSONA_STORIES,
   ROB_ATTACKER_MIN_ASSETS,
   ROB_EASTER_EGG_FINE_RATE,
   ROB_FINE_RATE,
@@ -21,6 +22,7 @@ import {
   ROB_TARGET_MIN_COINS,
   ROB_TRAP_FINE_RATE,
   SLOTS_VIP_ICE_JACKPOT_CHANCE,
+  type RobAdminPersonaKey,
 } from '../config/economyConstants.js';
 import type { ChaosRepo } from '../db/repositories/chaosRepo.js';
 import type { GuildConfigRepo } from '../db/repositories/guildConfigRepo.js';
@@ -123,20 +125,32 @@ export function matchesSlotsVipPlayer(
   return matchesProfileKeywords(playerProfile, playerHints, keywords);
 }
 
+export function resolveRobAdminPersona(
+  targetProfile: { equippedTitle: string | null; cardNickname: string | null },
+  targetHints?: RobTargetHints,
+): RobAdminPersonaKey {
+  for (const rule of ROB_ADMIN_PERSONA_RULES) {
+    if (matchesProfileKeywords(targetProfile, targetHints, rule.keywords)) {
+      return rule.key;
+    }
+  }
+  return 'generic';
+}
+
 function renderRobEasterEggStory(
   attackerId: string,
   targetId: string,
   fine: number,
   currencyName: string,
   rng: () => number,
+  mode: 'pocket' | 'bank',
+  persona: RobAdminPersonaKey,
 ): string {
+  const pool = ROB_ADMIN_PERSONA_STORIES[persona][mode];
   const raw = rng();
   const r = Number.isFinite(raw) ? Math.min(0.999999, Math.max(0, raw)) : 0;
-  const idx = Math.min(
-    ROB_ADMIN_EASTER_EGG_STORIES.length - 1,
-    Math.floor(r * ROB_ADMIN_EASTER_EGG_STORIES.length),
-  );
-  const template = ROB_ADMIN_EASTER_EGG_STORIES[idx]!;
+  const idx = Math.min(pool.length - 1, Math.floor(r * pool.length));
+  const template = pool[idx]!;
   return template
     .replaceAll('{attacker}', `<@${attackerId}>`)
     .replaceAll('{target}', `<@${targetId}>`)
@@ -457,16 +471,19 @@ export class EconomyService {
           guildId,
           attackerId,
           -10,
-          '打劫管理员触发反噬信用扣分',
+          '偷窃失败信用扣分',
           nowMs,
         );
 
+        const persona = resolveRobAdminPersona(target, targetHints);
         const easterEggStory = renderRobEasterEggStory(
           attackerId,
           targetId,
           actualFine,
           cfg.currencyName,
           rng,
+          'pocket',
+          persona,
         );
 
         return {
@@ -680,12 +697,15 @@ export class EconomyService {
           bankCoins: nextTargetBank,
         });
 
+        const persona = resolveRobAdminPersona(target, targetHints);
         const easterEggStory = renderRobEasterEggStory(
           attackerId,
           targetId,
           actualFine,
           cfg.currencyName,
           rng,
+          'bank',
+          persona,
         );
 
         return {

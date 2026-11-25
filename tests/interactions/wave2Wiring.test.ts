@@ -792,7 +792,7 @@ describe('Wave 2 final wiring: persistent repos, expiry timers, and unified menu
     ctx.db.close();
   });
 
-  it('broadcasts admin anti-rob easter egg publicly in /rob and /menu handlers while allowing non-admin pudding targets to be robbed', async () => {
+  it('disguises per-admin anti-rob persona failures as normal fails in /rob and /menu handlers while allowing non-admin pudding targets to be robbed', async () => {
     const ctx = createPersistentCtx();
     const cfg = ctx.repos.guildConfig.getOrCreate('g1');
     ctx.repos.guildConfig.updateEconomy('g1', {
@@ -811,21 +811,21 @@ describe('Wave 2 final wiring: persistent repos, expiry timers, and unified menu
     });
     const adminSlashUser = {
       id: 'admin-slash',
-      username: 'guild_admin',
-      displayName: '管理员甲',
+      username: 'icebear4922',
+      displayName: 'icebear4922',
       bot: false,
       displayAvatarURL: () => 'https://cdn.discordapp.com/embed/avatars/0.png',
     };
     const adminSlashMember = {
       id: 'admin-slash',
-      displayName: '管理员甲',
+      displayName: 'icebear4922',
       permissions: { has: (bit: bigint) => bit === PermissionFlagsBits.Administrator },
       roles: {
         cache: new Map<string, { id: string; name: string }>(),
       },
     };
 
-    // 1. /rob slash command (pocket mode) on Discord Administrator -> public non-ephemeral reply with admin easter egg
+    // 1. /rob slash command (pocket mode) on Discord Administrator -> disguised normal fail embed with ice persona story
     const slashReply = vi.fn(async (_p: MockPayload & { flags?: number }) => undefined);
     const slashInteraction = {
       guildId: 'g1',
@@ -848,23 +848,27 @@ describe('Wave 2 final wiring: persistent repos, expiry timers, and unified menu
     const slashPayload = slashReply.mock.calls[0]![0];
     expect(slashPayload.flags).toBeUndefined();
     expect(slashPayload.allowedMentions).toEqual({ parse: [] });
-    expect(slashPayload.embeds?.[0]?.toJSON().title).toContain('管理员防盗反噬');
-    expect(slashPayload.embeds?.[0]?.toJSON().description).toContain('联动划扣银行存款');
+    const slashEmbedJson = slashPayload.embeds?.[0]?.toJSON();
+    expect(slashEmbedJson?.title).toBe('🚨 打劫翻车被抓现行！');
+    expect(slashEmbedJson?.title).not.toMatch(/管理员|反噬|禁令|10%/);
+    expect(slashEmbedJson?.description).not.toMatch(/管理员|反噬|禁令|10%/);
+    expect(slashEmbedJson?.description).toContain('联动划扣银行存款');
+    expect(slashEmbedJson?.description).toMatch(/(?:❄️|🧊|🥶|🌨️)/u);
     expect(ctx.repos.profile.getOrCreate('g1', 'atk-slash').coins).toBe(0);
     expect(ctx.repos.profile.getOrCreate('g1', 'atk-slash').bankCoins).toBe(900);
     expect(ctx.repos.profile.getOrCreate('g1', 'admin-slash').coins).toBe(100);
 
-    // 2. /menu rob & rob_bank handlers on configured adminRoleIds -> public channel broadcast + private feedback
+    // 2. /menu rob & rob_bank handlers on configured adminRoleIds named qll114514. -> disguised normal broadcast & senpai persona
     const adminMenuUser = {
       id: 'admin-menu',
-      username: 'bot_admin',
-      displayName: '管理员乙',
+      username: 'qll114514.',
+      displayName: 'qll114514.',
       bot: false,
       displayAvatarURL: () => 'https://cdn.discordapp.com/embed/avatars/0.png',
     };
     const adminMenuMember = {
       id: 'admin-menu',
-      displayName: '管理员乙',
+      displayName: 'qll114514.',
       permissions: makePerms(),
       roles: {
         cache: new Map([['r-admin', { id: 'r-admin', name: '管理组' }]]),
@@ -919,16 +923,23 @@ describe('Wave 2 final wiring: persistent repos, expiry timers, and unified menu
     await routeInteraction(makeMenuRobSelect('menu:user:rob'), ctx);
     expect(send).toHaveBeenCalledTimes(1);
     const menuPocketBroadcast = send.mock.calls[0]![0];
-    expect(menuPocketBroadcast.content).toContain('防盗反噬');
-    expect(menuPocketBroadcast.embeds?.[0]?.toJSON().title).toContain('管理员防盗反噬');
-    expect(editReply.mock.calls[0]![0].embeds?.[0]?.toJSON().description).toContain('罚没总资产 10%');
+    expect(menuPocketBroadcast.content).toContain('翻车被抓');
+    expect(menuPocketBroadcast.content).not.toMatch(/管理员|反噬|禁令|10%/);
+    expect(menuPocketBroadcast.embeds?.[0]?.toJSON().title).toBe('🚨 打劫翻车被抓现行！');
+    const pocketFeedback = editReply.mock.calls[0]![0].embeds?.[0]?.toJSON().description ?? '';
+    expect(pocketFeedback).not.toMatch(/管理员|反噬|禁令|10%/);
+    expect(pocketFeedback).toMatch(/[🍵📣👀🏠🔢]/u);
 
     // Now atk-menu has 0 pocket + 1800 bank -> rob_bank takes 180 from bank -> target bank gains 180
     await routeInteraction(makeMenuRobSelect('menu:user:rob_bank'), ctx);
     expect(send).toHaveBeenCalledTimes(2);
     const menuBankBroadcast = send.mock.calls[1]![0];
-    expect(menuBankBroadcast.content).toContain('防盗禁令');
-    expect(menuBankBroadcast.embeds?.[0]?.toJSON().title).toContain('管理员金库禁令');
+    expect(menuBankBroadcast.content).toContain('触发警报被捕');
+    expect(menuBankBroadcast.content).not.toMatch(/管理员|反噬|禁令|10%/);
+    expect(menuBankBroadcast.embeds?.[0]?.toJSON().title).toBe('🚨 抢银行金库翻车被捕！');
+    const bankFeedback = editReply.mock.calls[1]![0].embeds?.[0]?.toJSON().description ?? '';
+    expect(bankFeedback).not.toMatch(/管理员|反噬|禁令|10%/);
+    expect(bankFeedback).toMatch(/[🍵📣👀🏠🔢]/u);
     expect(ctx.repos.profile.getOrCreate('g1', 'atk-menu').bankCoins).toBe(1620);
     expect(ctx.repos.profile.getOrCreate('g1', 'admin-menu').bankCoins).toBe(180);
 
@@ -979,7 +990,7 @@ describe('Wave 2 final wiring: persistent repos, expiry timers, and unified menu
     await robCommand.execute(puddingSlash, ctx);
     expect(puddingReply).toHaveBeenCalledTimes(1);
     const puddingTitle = puddingReply.mock.calls[0]![0].embeds?.[0]?.toJSON().title ?? '';
-    expect(puddingTitle).not.toContain('反噬');
+    expect(puddingTitle).toBe('🥷 打劫得手！');
     expect(ctx.repos.profile.getOrCreate('g1', 'pudding-normal').coins).toBeLessThan(1000);
 
     ctx.db.close();

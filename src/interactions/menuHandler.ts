@@ -2230,7 +2230,7 @@ export async function handleMenuUserSelect(
         : res.easterEggTriggered
           ? {
               allowedMentions: { parse: [] },
-              content: `🛡️ 频道吃瓜！**${actor.displayName}** 竟敢打劫管理员 **${targetName}**，触发防盗反噬被当场罚没 10% 总资产（**${res.amount}** ${cfg.currencyName}）！`,
+              content: `🚨 **${actor.displayName}** 抢 **${targetName}** 翻车被抓，反赔了 **${res.amount}** ${cfg.currencyName}！`,
               embeds: [formatPocketRobResultEmbed(res, targetId, cfg)],
             }
           : {
@@ -2265,7 +2265,7 @@ export async function handleMenuUserSelect(
       : res.easterEggTriggered
         ? {
             type: 'error',
-            text: `${res.easterEggStory ?? '🛡️ 触发管理员防盗反噬，敢动管理员必遭重罚！'}\n💸 罚没总资产 10%（${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}${fineDetail}），你的现金：**${res.attackerBalance}**${bankSuffix}。${warnSuffix}`,
+            text: `${res.easterEggStory ?? `🚨 打劫翻车被抓现行！向 <@${targetId}> 赔偿了 ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}。`}${fineDetail ? `\n💸 扣款明细：${fineDetail}` : ''}\n你的当前现金：**${res.attackerBalance}**${bankSuffix}。${warnSuffix}`,
           }
         : {
             type: 'error',
@@ -2385,7 +2385,7 @@ export async function handleMenuUserSelect(
         : res.easterEggTriggered
           ? {
               allowedMentions: { parse: [] },
-              content: `🛡️🏦 频道吃瓜！**${actor.displayName}** 竟敢强抢管理员 **${targetName}** 的金库，触发防盗禁令被当场罚没 10% 总资产（**${res.amount}** ${cfg.currencyName}）！`,
+              content: `🚨🏦 **${actor.displayName}** 强抢 **${targetName}** 的银行金库触发警报被捕，重罚赔偿 **${res.amount}** ${cfg.currencyName}！`,
               embeds: [formatBankRobResultEmbed(res, targetId, cfg)],
             }
           : {
@@ -2419,7 +2419,7 @@ export async function handleMenuUserSelect(
       : res.easterEggTriggered
         ? {
             type: 'error',
-            text: `${res.easterEggStory ?? '🛡️ 触发管理员金库禁令！'}\n💸 罚没总资产 10%（${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}${fineDetail}），你的现金：**${res.attackerBalance}**（银行 **${res.attackerBankBalance}**）。${warnSuffix}`,
+            text: `${res.easterEggStory ?? `🚨 抢金库翻车被抓！向 <@${targetId}> 赔偿了 ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}。`}${fineDetail ? `\n💸 扣款明细：${fineDetail}` : ''}\n你的当前现金：**${res.attackerBalance}**（银行 **${res.attackerBankBalance}**）。${warnSuffix}`,
           }
         : {
             type: 'error',

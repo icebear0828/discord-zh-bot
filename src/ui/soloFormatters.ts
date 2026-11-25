@@ -233,13 +233,15 @@ export function formatPocketRobResultEmbed(
   if (res.easterEggTriggered) {
     const story =
       res.easterEggStory ??
-      `🛡️ 试图打劫管理员 <@${targetId}> 触发管理防盗反噬，被当场罚没总资产 10%（**${res.amount}** ${cfg.currencyName}）！`;
+      `🚨 失手了！你企图打劫 <@${targetId}> 时翻车被抓，向对方赔偿了 ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}！`;
     const lines = [
       story,
-      `💸 罚没总资产 10%：${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}${fineDetail}`,
-      `劫匪当前现金：**${res.attackerBalance}** ${cfg.currencyName}${bankSuffix} ｜ 对方当前现金：**${res.targetBalance}** ${cfg.currencyName}`,
+      ...(fineDetail
+        ? [`💸 赔款明细：${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}${fineDetail}`]
+        : []),
+      `你的当前现金：**${res.attackerBalance}** ${cfg.currencyName}${bankSuffix} ｜ 对方当前现金：**${res.targetBalance}** ${cfg.currencyName}`,
     ];
-    return createErrorEmbed('🛡️ 管理员防盗反噬！敢动管理员？', lines.join('\n'));
+    return createErrorEmbed('🚨 打劫翻车被抓现行！', lines.join('\n'));
   }
 
   const lines = [
@@ -279,13 +281,15 @@ export function formatBankRobResultEmbed(
   if (res.easterEggTriggered) {
     const story =
       res.easterEggStory ??
-      `🛡️ 试图强抢管理员 <@${targetId}> 的金库触发管理防盗禁令，被当场罚没总资产 10%（**${res.amount}** ${cfg.currencyName}）！`;
+      `🚨 潜入金库失手！你强抢 <@${targetId}> 的银行金库时翻车被捕，重罚赔偿了 ${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}！`;
     const lines = [
       story,
-      `💸 罚没总资产 10%：${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}${fineDetail}`,
-      `劫匪当前现金：**${res.attackerBalance}**（银行 **${res.attackerBankBalance}**）｜ 对方当前金库：**${res.targetBankBalance}** ${cfg.currencyName}`,
+      ...(fineDetail
+        ? [`💸 赔款明细：${cfg.currencyEmoji} **${res.amount}** ${cfg.currencyName}${fineDetail}`]
+        : []),
+      `你的当前现金：**${res.attackerBalance}**（银行 **${res.attackerBankBalance}**）｜ 对方当前金库：**${res.targetBankBalance}** ${cfg.currencyName}`,
     ];
-    return createErrorEmbed('🛡️ 管理员金库禁令触发！敢抢管理员？', lines.join('\n'));
+    return createErrorEmbed('🚨 抢银行金库翻车被捕！', lines.join('\n'));
   }
 
   const lines = [
