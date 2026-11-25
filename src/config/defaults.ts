@@ -147,6 +147,8 @@ export interface AiConfig {
   maxMemoriesPerScope: number;
   memoryEnabled: boolean;
   visionEnabled: boolean;
+  inputPricePer1MUsd: number;
+  outputPricePer1MUsd: number;
   antiClichePromptEnabled: boolean;
   regexRules: AiRegexRule[];
   freeChatChannelIds: string[];
@@ -359,6 +361,8 @@ export const DEFAULT_AI_CONFIG: AiConfig = {
   maxMemoriesPerScope: 30,
   memoryEnabled: true,
   visionEnabled: true,
+  inputPricePer1MUsd: 0,
+  outputPricePer1MUsd: 0,
   antiClichePromptEnabled: true,
   regexRules: cloneDefaultAiRegexRules(),
   freeChatChannelIds: [],

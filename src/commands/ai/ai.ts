@@ -374,6 +374,26 @@ export const aiCommand: CommandDefinition = {
           '正则',
           '管理员配置 AI 代称与反八股正则规则',
         ),
+      )
+      .addSubcommand((sub) =>
+        applyZh(
+          sub
+            .setName('usage')
+            .setDescription('管理员查看 AI Token 用量与费用估算')
+            .addIntegerOption((opt) =>
+              applyZh(
+                opt
+                  .setName('hours')
+                  .setDescription('统计时间范围（小时，默认 24，范围 1~720）')
+                  .setMinValue(1)
+                  .setMaxValue(720),
+                '小时',
+                '统计最近多少小时的用量（默认 24）',
+              ),
+            ),
+          '用量',
+          '管理员查看 AI Token 用量与费用估算',
+        ),
       ),
     'ai',
     'AI 对话上下文重置与长期记忆管理',
@@ -399,6 +419,72 @@ export const aiCommand: CommandDefinition = {
           createSuccessEmbed(
             '🧹 对话上下文已重置',
             '本频道之前的短期聊天记录已从 AI 视野截断，接下来将开启全新对话（长期记忆仍会保留）。',
+          ),
+        ],
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    if (!group && sub === 'usage') {
+      if (!isAdmin) {
+        await interaction.reply({
+          embeds: [
+            createErrorEmbed(
+              '🔒 权限不足',
+              '只有服务器管理员或 Bot 管理员才能查看 AI Token 用量与计费统计。',
+            ),
+          ],
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
+      const hours = interaction.options.getInteger('hours') ?? 24;
+      const summary = ctx.services.ai.getUsageSummary(guildId, hours);
+      const costStr =
+        summary.estimatedCostUsd <= 0
+          ? '$0.0000'
+          : summary.estimatedCostUsd < 0.01
+            ? `$${summary.estimatedCostUsd.toFixed(6)}`
+            : `$${summary.estimatedCostUsd.toFixed(4)}`;
+
+      const modelLines =
+        summary.byModel.length > 0
+          ? summary.byModel
+              .slice(0, 5)
+              .map(
+                (m) =>
+                  `• \`${m.model}\`：${m.calls} 次 ｜ ${m.totalTokens.toLocaleString('en-US')} tok（${m.promptTokens}/${m.completionTokens}）`,
+              )
+          : ['• 暂无调用记录'];
+
+      const userLines =
+        summary.topUsers.length > 0
+          ? summary.topUsers.map(
+              (u) => `• <@${u.userId}>：${u.calls} 次 ｜ ${u.totalTokens.toLocaleString('en-US')} tok`,
+            )
+          : ['• 暂无成员消费记录'];
+
+      await interaction.reply({
+        embeds: [
+          createInfoEmbed(
+            `📊 AI 近 ${hours} 小时用量统计`,
+            truncateText(
+              [
+                `• **调用次数**：**${summary.totalCalls}** 次（成功 ${summary.okCalls} / 失败 ${summary.errorCalls} / 本地估算 ${summary.estimatedCalls}）`,
+                `• **Token 消耗**：**${summary.totalTokens.toLocaleString('en-US')}**（输入 ${summary.promptTokens.toLocaleString('en-US')} + 输出 ${summary.completionTokens.toLocaleString('en-US')}）`,
+                `• **平均延迟**：**${summary.avgLatencyMs}ms** ｜ **估算花费**：**${costStr}**`,
+                `• **当前单价**：输入 $${cfg.ai.inputPricePer1MUsd}/1M ｜ 输出 $${cfg.ai.outputPricePer1MUsd}/1M`,
+                '',
+                '**按模型分布**',
+                ...modelLines,
+                '',
+                '**消耗 Top 5**',
+                ...userLines,
+              ].join('\n'),
+              4096,
+            ),
           ),
         ],
         flags: MessageFlags.Ephemeral,

@@ -2540,6 +2540,39 @@ describe('menu router & multiplayer interaction flows', () => {
     expect(ctx.repos.guildConfig.getOrCreate('g1').ai.antiClichePromptEnabled).toBe(true);
     expect(ctx.repos.guildConfig.getOrCreate('g1').ai.regexRules.length).toBeGreaterThan(0);
 
+    // admin_ai:usage tab, pricing modal, and clear usage logs
+    ctx.repos.aiMemory.recordUsageLog({
+      guildId: 'g1',
+      channelId: 'c1',
+      userId: 'member1',
+      model: 'demo-model',
+      status: 'ok',
+      promptTokens: 500_000,
+      completionTokens: 100_000,
+      totalTokens: 600_000,
+      latencyMs: 320,
+    });
+    const usageNav = createButtonMock({ customId: 'menu:nav:admin_ai:usage', userId: 'admin1' });
+    await routeInteraction(usageNav.interaction, ctx);
+    expect(usageNav.update.mock.calls[0]![0].embeds?.[0]?.toJSON().title).toContain('Token 用量与费用监控');
+
+    const pricingModal = createModalMock({
+      customId: 'menu:modal_sub:admin_ai_pricing',
+      userId: 'admin1',
+      fields: {
+        inputPricePer1MUsd: '1.5',
+        outputPricePer1MUsd: '6',
+      },
+    });
+    await routeInteraction(pricingModal.interaction, ctx);
+    expect(ctx.repos.guildConfig.getOrCreate('g1').ai.inputPricePer1MUsd).toBe(1.5);
+    expect(ctx.repos.guildConfig.getOrCreate('g1').ai.outputPricePer1MUsd).toBe(6);
+    expect(pricingModal.update.mock.calls[0]![0].embeds?.[0]?.toJSON().description).toContain('$1.3500');
+
+    const clearUsageBtn = createButtonMock({ customId: 'menu:admin:ai_clear_usage', userId: 'admin1' });
+    await routeInteraction(clearUsageBtn.interaction, ctx);
+    expect(ctx.services.ai.getUsageSummary('g1', 24).totalCalls).toBe(0);
+
     ctx.db.close();
   });
 

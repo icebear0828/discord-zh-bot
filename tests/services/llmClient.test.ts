@@ -74,6 +74,27 @@ describe('LlmClient', () => {
     expect(res.model).toBe('demo-model-v2');
     expect(res.attempts).toBe(1);
     expect(res.usage).toEqual({ promptTokens: 10, completionTokens: 5, totalTokens: 15 });
+
+    // Supports input_tokens / output_tokens format without total_tokens
+    const responsesFormatClient = new LlmClient(
+      {
+        baseUrl: 'https://gateway.local/v1',
+        apiKey: 'sk-test',
+        model: 'demo-model',
+        timeoutMs: 10_000,
+      },
+      {
+        fetchFn: async () =>
+          makeJsonResponse({
+            choices: [{ message: { content: 'ok' } }],
+            usage: { input_tokens: 120, output_tokens: 30 },
+          }),
+      },
+    );
+    const res2 = await responsesFormatClient.chat({
+      messages: [{ role: 'user', content: 'hi' }],
+    });
+    expect(res2.usage).toEqual({ promptTokens: 120, completionTokens: 30, totalTokens: 150 });
   });
 
   it('retries on 503 and 429 (honoring Retry-After) and succeeds on subsequent attempt', async () => {

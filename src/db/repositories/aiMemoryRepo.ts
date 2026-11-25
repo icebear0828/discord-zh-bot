@@ -1,6 +1,76 @@
 import type Database from 'better-sqlite3';
 
 export type AiMemoryScopeType = 'user' | 'channel' | 'guild';
+export type AiUsageStatus = 'ok' | 'error';
+
+export const MAX_AI_USAGE_LOGS_PER_GUILD = 5000;
+
+export interface AiUsageLogRecord {
+  id: number;
+  guildId: string;
+  channelId: string;
+  userId: string;
+  model: string;
+  status: AiUsageStatus;
+  errorCode: string | null;
+  attempts: number;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  usageEstimated: boolean;
+  estimatedCostUsd: number;
+  latencyMs: number;
+  createdAt: number;
+}
+
+export interface AiUsageModelBreakdown {
+  model: string;
+  calls: number;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  costUsd: number;
+}
+
+export interface AiUsageUserBreakdown {
+  userId: string;
+  calls: number;
+  totalTokens: number;
+  costUsd: number;
+}
+
+export interface AiUsageSummary {
+  totalCalls: number;
+  okCalls: number;
+  errorCalls: number;
+  estimatedCalls: number;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  avgLatencyMs: number;
+  recordedCostUsd: number;
+  estimatedCostUsd: number;
+  byModel: AiUsageModelBreakdown[];
+  topUsers: AiUsageUserBreakdown[];
+}
+
+interface AiUsageLogRow {
+  id: number;
+  guild_id: string;
+  channel_id: string;
+  user_id: string;
+  model: string;
+  status: AiUsageStatus;
+  error_code: string | null;
+  attempts: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  usage_estimated: number;
+  estimated_cost_usd: number;
+  latency_ms: number;
+  created_at: number;
+}
 
 export interface AiMemoryRecord {
   id: number;
@@ -45,6 +115,27 @@ CREATE TABLE IF NOT EXISTS ai_channel_resets (
   reset_at INTEGER NOT NULL,
   PRIMARY KEY (guild_id, channel_id)
 );
+
+CREATE TABLE IF NOT EXISTS ai_usage_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  guild_id TEXT NOT NULL,
+  channel_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  model TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('ok', 'error')),
+  error_code TEXT,
+  attempts INTEGER NOT NULL DEFAULT 1,
+  prompt_tokens INTEGER NOT NULL DEFAULT 0,
+  completion_tokens INTEGER NOT NULL DEFAULT 0,
+  total_tokens INTEGER NOT NULL DEFAULT 0,
+  usage_estimated INTEGER NOT NULL DEFAULT 0,
+  estimated_cost_usd REAL NOT NULL DEFAULT 0,
+  latency_ms INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_usage_logs_guild_time
+  ON ai_usage_logs (guild_id, created_at DESC, id DESC);
 `;
 
 export function initAiSchema(db: Database.Database): void {
@@ -60,6 +151,26 @@ function mapMemoryRow(row: AiMemoryRow): AiMemoryRecord {
     category: row.category,
     content: row.content,
     createdBy: row.created_by,
+    createdAt: row.created_at,
+  };
+}
+
+function mapUsageLogRow(row: AiUsageLogRow): AiUsageLogRecord {
+  return {
+    id: row.id,
+    guildId: row.guild_id,
+    channelId: row.channel_id,
+    userId: row.user_id,
+    model: row.model,
+    status: row.status,
+    errorCode: row.error_code,
+    attempts: row.attempts,
+    promptTokens: row.prompt_tokens,
+    completionTokens: row.completion_tokens,
+    totalTokens: row.total_tokens,
+    usageEstimated: row.usage_estimated !== 0,
+    estimatedCostUsd: row.estimated_cost_usd,
+    latencyMs: row.latency_ms,
     createdAt: row.created_at,
   };
 }
@@ -247,5 +358,216 @@ export class AiMemoryRepo {
          ON CONFLICT(guild_id, channel_id) DO UPDATE SET reset_at = excluded.reset_at`,
       )
       .run(guildId, channelId, resetAt);
+  }
+
+  recordUsageLog(input: {
+    guildId: string;
+    channelId: string;
+    userId: string;
+    model: string;
+    status: AiUsageStatus;
+    errorCode?: string | null;
+    attempts?: number;
+    promptTokens?: number;
+    completionTokens?: number;
+    totalTokens?: number;
+    usageEstimated?: boolean;
+    estimatedCostUsd?: number;
+    latencyMs?: number;
+    createdAt?: number;
+  }): AiUsageLogRecord {
+    const now = input.createdAt ?? Date.now();
+    const promptTokens = Math.max(0, Math.floor(input.promptTokens ?? 0));
+    const completionTokens = Math.max(0, Math.floor(input.completionTokens ?? 0));
+    const totalTokens = Math.max(0, Math.floor(input.totalTokens ?? promptTokens + completionTokens));
+    const attempts = Math.max(1, Math.floor(input.attempts ?? 1));
+    const latencyMs = Math.max(0, Math.floor(input.latencyMs ?? 0));
+    const estimatedCostUsd =
+      typeof input.estimatedCostUsd === 'number' && Number.isFinite(input.estimatedCostUsd)
+        ? Math.max(0, input.estimatedCostUsd)
+        : 0;
+
+    return this.db.transaction(() => {
+      const info = this.db
+        .prepare(
+          `INSERT INTO ai_usage_logs (
+            guild_id, channel_id, user_id, model, status, error_code,
+            attempts, prompt_tokens, completion_tokens, total_tokens,
+            usage_estimated, estimated_cost_usd, latency_ms, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          input.guildId,
+          input.channelId,
+          input.userId,
+          input.model,
+          input.status,
+          input.errorCode ?? null,
+          attempts,
+          promptTokens,
+          completionTokens,
+          totalTokens,
+          input.usageEstimated ? 1 : 0,
+          estimatedCostUsd,
+          latencyMs,
+          now,
+        );
+
+      this.db
+        .prepare(
+          `DELETE FROM ai_usage_logs
+           WHERE guild_id = ?
+             AND id NOT IN (
+               SELECT id FROM ai_usage_logs
+               WHERE guild_id = ?
+               ORDER BY id DESC
+               LIMIT ?
+             )`,
+        )
+        .run(input.guildId, input.guildId, MAX_AI_USAGE_LOGS_PER_GUILD);
+
+      const row = this.db
+        .prepare('SELECT * FROM ai_usage_logs WHERE id = ?')
+        .get(Number(info.lastInsertRowid)) as AiUsageLogRow;
+      return mapUsageLogRow(row);
+    })();
+  }
+
+  summarizeUsage(
+    guildId: string,
+    sinceMs: number,
+    pricing?: { inputPricePer1MUsd: number; outputPricePer1MUsd: number },
+  ): AiUsageSummary {
+    const totalsRow = this.db
+      .prepare(
+        `SELECT
+          COUNT(*) AS total_calls,
+          COALESCE(SUM(CASE WHEN status = 'ok' THEN 1 ELSE 0 END), 0) AS ok_calls,
+          COALESCE(SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END), 0) AS error_calls,
+          COALESCE(SUM(CASE WHEN status = 'ok' AND usage_estimated = 1 THEN 1 ELSE 0 END), 0) AS estimated_calls,
+          COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
+          COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
+          COALESCE(SUM(total_tokens), 0) AS total_tokens,
+          COALESCE(AVG(latency_ms), 0) AS avg_latency_ms,
+          COALESCE(SUM(estimated_cost_usd), 0) AS recorded_cost_usd
+         FROM ai_usage_logs
+         WHERE guild_id = ? AND created_at >= ?`,
+      )
+      .get(guildId, sinceMs) as {
+      total_calls: number;
+      ok_calls: number;
+      error_calls: number;
+      estimated_calls: number;
+      prompt_tokens: number;
+      completion_tokens: number;
+      total_tokens: number;
+      avg_latency_ms: number;
+      recorded_cost_usd: number;
+    };
+
+    const inputRate = Math.max(0, pricing?.inputPricePer1MUsd ?? 0);
+    const outputRate = Math.max(0, pricing?.outputPricePer1MUsd ?? 0);
+    const computeCost = (promptTok: number, completionTok: number, recorded: number): number =>
+      pricing
+        ? (promptTok / 1_000_000) * inputRate + (completionTok / 1_000_000) * outputRate
+        : recorded;
+
+    const modelRows = this.db
+      .prepare(
+        `SELECT
+          model,
+          COUNT(*) AS calls,
+          COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
+          COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
+          COALESCE(SUM(total_tokens), 0) AS total_tokens,
+          COALESCE(SUM(estimated_cost_usd), 0) AS recorded_cost_usd
+         FROM ai_usage_logs
+         WHERE guild_id = ? AND created_at >= ?
+         GROUP BY model
+         ORDER BY total_tokens DESC, calls DESC`,
+      )
+      .all(guildId, sinceMs) as Array<{
+      model: string;
+      calls: number;
+      prompt_tokens: number;
+      completion_tokens: number;
+      total_tokens: number;
+      recorded_cost_usd: number;
+    }>;
+
+    const userRows = this.db
+      .prepare(
+        `SELECT
+          user_id,
+          COUNT(*) AS calls,
+          COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
+          COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
+          COALESCE(SUM(total_tokens), 0) AS total_tokens,
+          COALESCE(SUM(estimated_cost_usd), 0) AS recorded_cost_usd
+         FROM ai_usage_logs
+         WHERE guild_id = ? AND created_at >= ?
+         GROUP BY user_id
+         ORDER BY total_tokens DESC, calls DESC
+         LIMIT 5`,
+      )
+      .all(guildId, sinceMs) as Array<{
+      user_id: string;
+      calls: number;
+      prompt_tokens: number;
+      completion_tokens: number;
+      total_tokens: number;
+      recorded_cost_usd: number;
+    }>;
+
+    return {
+      totalCalls: totalsRow.total_calls,
+      okCalls: totalsRow.ok_calls,
+      errorCalls: totalsRow.error_calls,
+      estimatedCalls: totalsRow.estimated_calls,
+      promptTokens: totalsRow.prompt_tokens,
+      completionTokens: totalsRow.completion_tokens,
+      totalTokens: totalsRow.total_tokens,
+      avgLatencyMs: Math.round(totalsRow.avg_latency_ms),
+      recordedCostUsd: totalsRow.recorded_cost_usd,
+      estimatedCostUsd: computeCost(
+        totalsRow.prompt_tokens,
+        totalsRow.completion_tokens,
+        totalsRow.recorded_cost_usd,
+      ),
+      byModel: modelRows.map((m) => ({
+        model: m.model,
+        calls: m.calls,
+        promptTokens: m.prompt_tokens,
+        completionTokens: m.completion_tokens,
+        totalTokens: m.total_tokens,
+        costUsd: computeCost(m.prompt_tokens, m.completion_tokens, m.recorded_cost_usd),
+      })),
+      topUsers: userRows.map((u) => ({
+        userId: u.user_id,
+        calls: u.calls,
+        totalTokens: u.total_tokens,
+        costUsd: computeCost(u.prompt_tokens, u.completion_tokens, u.recorded_cost_usd),
+      })),
+    };
+  }
+
+  listRecentUsageLogs(guildId: string, limit = 10): AiUsageLogRecord[] {
+    const safeLimit = Math.max(1, Math.min(50, Math.floor(limit)));
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM ai_usage_logs
+         WHERE guild_id = ?
+         ORDER BY id DESC
+         LIMIT ?`,
+      )
+      .all(guildId, safeLimit) as AiUsageLogRow[];
+    return rows.map(mapUsageLogRow);
+  }
+
+  clearUsageLogs(guildId: string): number {
+    const res = this.db
+      .prepare('DELETE FROM ai_usage_logs WHERE guild_id = ?')
+      .run(guildId);
+    return res.changes;
   }
 }

@@ -1111,6 +1111,50 @@ describe('messageCreate isolation, world event guards, and AI safety/rate-limits
       .description;
     expect(testDesc).toContain('厉害，黑吊王特别强');
 
+    // /ai usage permission & summary output
+    const deniedUsageReply = vi.fn(async () => undefined);
+    await aiCommand.execute(
+      {
+        guildId: 'g1',
+        channelId: 'chat-ch',
+        inCachedGuild: () => true,
+        user: { id: 'u-asker' },
+        member: makeMember('u-asker'),
+        options: {
+          getSubcommandGroup: () => null,
+          getSubcommand: () => 'usage',
+          getInteger: () => 24,
+        },
+        reply: deniedUsageReply,
+      } as unknown as ChatInputCommandInteraction,
+      ctx,
+    );
+    expect(
+      (deniedUsageReply.mock.calls[0] as unknown as [MockPayload])[0].embeds?.[0]?.toJSON().title,
+    ).toContain('权限不足');
+
+    ctx.services.ai.updatePricing('g1', 2, 10);
+    const okUsageReply = vi.fn(async () => undefined);
+    await aiCommand.execute(
+      {
+        guildId: 'g1',
+        channelId: 'chat-ch',
+        inCachedGuild: () => true,
+        user: { id: 'admin-1' },
+        member: makeMember('admin-1', { admin: true }),
+        options: {
+          getSubcommandGroup: () => null,
+          getSubcommand: () => 'usage',
+          getInteger: () => 24,
+        },
+        reply: okUsageReply,
+      } as unknown as ChatInputCommandInteraction,
+      ctx,
+    );
+    const usageEmbed = (okUsageReply.mock.calls[0] as unknown as [MockPayload])[0].embeds?.[0]?.toJSON();
+    expect(usageEmbed?.title).toContain('AI 近 24 小时用量统计');
+    expect(usageEmbed?.description).toContain('demo');
+
     ctx.db.close();
   });
 });

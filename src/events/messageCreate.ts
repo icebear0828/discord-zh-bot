@@ -221,12 +221,19 @@ async function handleAiMessage(client: Client, message: Message, ctx: AppContext
     );
 
     if (!res.ok) {
+      console.warn(
+        `[ai:error] code=${res.errorCode} user=${message.author.username}(${message.author.id}) guild=${message.guild.id} channel=${message.channelId} msg=${res.errorMessage}`,
+      );
       await message.reply({
         content: `⚠️ ${res.errorMessage}`,
         allowedMentions: { parse: [], repliedUser: true },
       });
       return;
     }
+
+    console.log(
+      `[ai:ok] model=${res.model} user=${message.author.username}(${message.author.id}) guild=${message.guild.id} channel=${message.channelId} tokens=${res.usage.promptTokens}+${res.usage.completionTokens}=${res.usage.totalTokens}${res.usage.estimated ? '(est)' : ''} cost=$${res.usage.costUsd.toFixed(6)} latency=${res.usage.latencyMs}ms attempts=${res.attempts}`,
+    );
 
     for (let i = 0; i < res.chunks.length; i++) {
       const chunk = res.chunks[i];

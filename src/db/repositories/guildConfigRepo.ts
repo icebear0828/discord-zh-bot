@@ -138,8 +138,18 @@ export class GuildConfigRepo {
             ignoredChannelIds: [],
           });
           const parsedRules = sanitizeStoredRegexRules(rawAiObj['regexRules']);
+          const rawInputPrice = rawAiObj['inputPricePer1MUsd'];
+          const rawOutputPrice = rawAiObj['outputPricePer1MUsd'];
           return {
             ...aiRaw,
+            inputPricePer1MUsd:
+              typeof rawInputPrice === 'number' && Number.isFinite(rawInputPrice) && rawInputPrice >= 0
+                ? rawInputPrice
+                : 0,
+            outputPricePer1MUsd:
+              typeof rawOutputPrice === 'number' && Number.isFinite(rawOutputPrice) && rawOutputPrice >= 0
+                ? rawOutputPrice
+                : 0,
             antiClichePromptEnabled:
               typeof rawAiObj['antiClichePromptEnabled'] === 'boolean'
                 ? rawAiObj['antiClichePromptEnabled']

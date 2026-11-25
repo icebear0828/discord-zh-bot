@@ -154,6 +154,26 @@ function buildAiRegexAddModal(): ModalBuilder {
     );
 }
 
+function buildAiPricingModal(ai: AiConfig): ModalBuilder {
+  return new ModalBuilder()
+    .setCustomId('menu:modal_sub:admin_ai_pricing')
+    .setTitle('💲 设置 AI Token 计费单价')
+    .addComponents(
+      prefilledField(
+        'inputPricePer1MUsd',
+        truncateText('输入单价（美元 / 1M Tokens，0~1000）', 45),
+        ai.inputPricePer1MUsd,
+        12,
+      ),
+      prefilledField(
+        'outputPricePer1MUsd',
+        truncateText('输出单价（美元 / 1M Tokens，0~1000）', 45),
+        ai.outputPricePer1MUsd,
+        12,
+      ),
+    );
+}
+
 export async function tryHandleAiMenuButton(
   interaction: ButtonInteraction,
   ctx: AppContext,
@@ -171,8 +191,14 @@ export async function tryHandleAiMenuButton(
       return true;
     }
     const tabRaw = parts[3];
-    const tab: 'basic' | 'channels' | 'regex' =
-      tabRaw === 'channels' ? 'channels' : tabRaw === 'regex' ? 'regex' : 'basic';
+    const tab: 'basic' | 'channels' | 'regex' | 'usage' =
+      tabRaw === 'channels'
+        ? 'channels'
+        : tabRaw === 'regex'
+          ? 'regex'
+          : tabRaw === 'usage'
+            ? 'usage'
+            : 'basic';
     const parsedPage = parts[4] ? Number.parseInt(parts[4], 10) : 1;
     const regexPage = Number.isFinite(parsedPage) && parsedPage > 0 ? parsedPage : 1;
     await interaction.update(
@@ -185,7 +211,8 @@ export async function tryHandleAiMenuButton(
     section === 'modal' &&
     (parts[2] === 'admin_ai_persona' ||
       parts[2] === 'admin_ai_params' ||
-      parts[2] === 'admin_ai_regex_add')
+      parts[2] === 'admin_ai_regex_add' ||
+      parts[2] === 'admin_ai_pricing')
   ) {
     if (!actor.isAdmin) {
       await interaction.update(
@@ -198,6 +225,8 @@ export async function tryHandleAiMenuButton(
       await interaction.showModal(buildAiPersonaModal(cfg.ai));
     } else if (parts[2] === 'admin_ai_params') {
       await interaction.showModal(buildAiParamsModal(cfg.ai, ctx.services.ai.getDefaultModel()));
+    } else if (parts[2] === 'admin_ai_pricing') {
+      await interaction.showModal(buildAiPricingModal(cfg.ai));
     } else {
       await interaction.showModal(buildAiRegexAddModal());
     }
@@ -214,6 +243,7 @@ export async function tryHandleAiMenuButton(
       'ai_reset_config',
       'ai_toggle_cliche_prompt',
       'ai_regex_reset',
+      'ai_clear_usage',
     ]);
     if (!action || !handled.has(action)) {
       return false;
@@ -360,6 +390,23 @@ export async function tryHandleAiMenuButton(
           {
             type: 'success',
             text: `已恢复默认的 **${rules.length}** 条代称与反八股正则规则，并开启反八股提示词。`,
+          },
+        ),
+      );
+      return true;
+    }
+
+    if (action === 'ai_clear_usage') {
+      const deleted = ctx.services.ai.clearUsageLogs(guildId);
+      await interaction.update(
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'admin_ai', tab: 'usage' },
+          {
+            type: 'success',
+            text: `已清空本服 AI 用量日志，共移除 **${deleted}** 条记录。`,
           },
         ),
       );
@@ -587,7 +634,8 @@ export async function tryHandleAiMenuModal(
   if (
     modalType !== 'admin_ai_persona' &&
     modalType !== 'admin_ai_params' &&
-    modalType !== 'admin_ai_regex_add'
+    modalType !== 'admin_ai_regex_add' &&
+    modalType !== 'admin_ai_pricing'
   ) {
     return false;
   }
@@ -596,6 +644,48 @@ export async function tryHandleAiMenuModal(
     await respondFromModal(
       interaction,
       buildMenuMessage(ctx, guildId, actor, { page: 'home' }, ADMIN_DENIED_FEEDBACK),
+    );
+    return true;
+  }
+
+  if (modalType === 'admin_ai_pricing') {
+    const inputPrice = parseNumberInRange(
+      interaction.fields.getTextInputValue('inputPricePer1MUsd'),
+      0,
+      1000,
+    );
+    const outputPrice = parseNumberInRange(
+      interaction.fields.getTextInputValue('outputPricePer1MUsd'),
+      0,
+      1000,
+    );
+    if (inputPrice === null || outputPrice === null) {
+      await respondFromModal(
+        interaction,
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'admin_ai', tab: 'usage' },
+          { type: 'error', text: '单价无效：输入与输出每 1M Tokens 单价均需在 0 ~ 1000 美元之间。' },
+        ),
+      );
+      return true;
+    }
+
+    ctx.services.ai.updatePricing(guildId, inputPrice, outputPrice);
+    await respondFromModal(
+      interaction,
+      buildMenuMessage(
+        ctx,
+        guildId,
+        actor,
+        { page: 'admin_ai', tab: 'usage' },
+        {
+          type: 'success',
+          text: `已更新 AI 计费单价：输入 **$${Number(inputPrice.toFixed(4))}**/1M ｜ 输出 **$${Number(outputPrice.toFixed(4))}**/1M。`,
+        },
+      ),
     );
     return true;
   }

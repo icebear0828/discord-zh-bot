@@ -132,17 +132,36 @@ function extractResponseContent(data: unknown): {
   const model = typeof data.model === 'string' ? data.model : undefined;
   let usage: LlmUsage | undefined;
   if (isRecord(data.usage)) {
-    usage = {
-      ...(typeof data.usage.prompt_tokens === 'number'
-        ? { promptTokens: data.usage.prompt_tokens }
-        : {}),
-      ...(typeof data.usage.completion_tokens === 'number'
-        ? { completionTokens: data.usage.completion_tokens }
-        : {}),
-      ...(typeof data.usage.total_tokens === 'number'
-        ? { totalTokens: data.usage.total_tokens }
-        : {}),
-    };
+    const promptTokens =
+      typeof data.usage.prompt_tokens === 'number'
+        ? data.usage.prompt_tokens
+        : typeof data.usage.input_tokens === 'number'
+          ? data.usage.input_tokens
+          : undefined;
+    const completionTokens =
+      typeof data.usage.completion_tokens === 'number'
+        ? data.usage.completion_tokens
+        : typeof data.usage.output_tokens === 'number'
+          ? data.usage.output_tokens
+          : undefined;
+    const totalTokens =
+      typeof data.usage.total_tokens === 'number'
+        ? data.usage.total_tokens
+        : promptTokens !== undefined || completionTokens !== undefined
+          ? (promptTokens ?? 0) + (completionTokens ?? 0)
+          : undefined;
+
+    if (
+      promptTokens !== undefined ||
+      completionTokens !== undefined ||
+      totalTokens !== undefined
+    ) {
+      usage = {
+        ...(promptTokens !== undefined ? { promptTokens } : {}),
+        ...(completionTokens !== undefined ? { completionTokens } : {}),
+        ...(totalTokens !== undefined ? { totalTokens } : {}),
+      };
+    }
   }
 
   const choices = data.choices;

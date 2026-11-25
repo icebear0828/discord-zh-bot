@@ -640,4 +640,110 @@ describe('aiService helpers & AiMemoryRepo', () => {
       { role: 'assistant', content: '正常聊天回复' },
     ]);
   });
+
+  it('records exact/estimated token usage, error logs, 24h summary, and USD pricing calculation', async () => {
+    const db = createDatabase(':memory:');
+    const guildConfigRepo = new GuildConfigRepo(db);
+    const aiMemoryRepo = new AiMemoryRepo(db);
+
+    let callIdx = 0;
+    const llmClient = new LlmClient(
+      {
+        baseUrl: 'https://gateway.local/v1',
+        apiKey: 'sk-test',
+        model: 'demo-model',
+        timeoutMs: 10_000,
+      },
+      {
+        maxRetries: 0,
+        fetchFn: async () => {
+          callIdx++;
+          if (callIdx === 1) {
+            // Exact usage returned
+            return new Response(
+              JSON.stringify({
+                model: 'demo-model',
+                choices: [{ message: { content: '收到' } }],
+                usage: { prompt_tokens: 1000, completion_tokens: 500, total_tokens: 1500 },
+              }),
+              { status: 200, headers: { 'Content-Type': 'application/json' } },
+            );
+          }
+          if (callIdx === 2) {
+            // No usage returned -> local fallback estimation
+            return new Response(
+              JSON.stringify({
+                model: 'demo-model',
+                choices: [{ message: { content: '没有返回用量字段时的本地估算回复' } }],
+              }),
+              { status: 200, headers: { 'Content-Type': 'application/json' } },
+            );
+          }
+          return new Response(JSON.stringify({ error: 'bad' }), { status: 400 });
+        },
+      },
+    );
+
+    const aiService = new AiService(guildConfigRepo, aiMemoryRepo, llmClient);
+    aiService.updatePricing('g1', 2, 10); // $2/1M input, $10/1M output
+
+    const res1 = await aiService.generateReply({
+      guildId: 'g1',
+      channelId: 'c1',
+      userId: 'u1',
+      userName: 'Alice',
+      messageId: 'm1',
+      userContent: 'hello',
+    });
+    expect(res1.ok).toBe(true);
+    if (res1.ok) {
+      expect(res1.usage.promptTokens).toBe(1000);
+      expect(res1.usage.completionTokens).toBe(500);
+      expect(res1.usage.totalTokens).toBe(1500);
+      expect(res1.usage.estimated).toBe(false);
+      // 1000/1M * 2 + 500/1M * 10 = 0.002 + 0.005 = 0.007
+      expect(res1.usage.costUsd).toBeCloseTo(0.007, 6);
+    }
+
+    const res2 = await aiService.generateReply({
+      guildId: 'g1',
+      channelId: 'c1',
+      userId: 'u2',
+      userName: 'Bob',
+      messageId: 'm2',
+      userContent: '估一下我的 token',
+    });
+    expect(res2.ok).toBe(true);
+    if (res2.ok) {
+      expect(res2.usage.estimated).toBe(true);
+      expect(res2.usage.promptTokens).toBeGreaterThan(0);
+      expect(res2.usage.completionTokens).toBeGreaterThan(0);
+    }
+
+    const res3 = await aiService.generateReply({
+      guildId: 'g1',
+      channelId: 'c1',
+      userId: 'u1',
+      userName: 'Alice',
+      messageId: 'm3',
+      userContent: 'trigger 400',
+    });
+    expect(res3.ok).toBe(false);
+
+    const summary = aiService.getUsageSummary('g1', 24);
+    expect(summary.totalCalls).toBe(3);
+    expect(summary.okCalls).toBe(2);
+    expect(summary.errorCalls).toBe(1);
+    expect(summary.estimatedCalls).toBe(1);
+    expect(summary.totalTokens).toBeGreaterThan(1500);
+    expect(summary.estimatedCostUsd).toBeGreaterThan(0.007);
+    expect(summary.byModel[0]?.model).toBe('demo-model');
+    expect(summary.topUsers).toHaveLength(2);
+    expect(aiService.listRecentUsageLogs('g1', 5)).toHaveLength(3);
+
+    expect(aiService.clearUsageLogs('g1')).toBe(3);
+    expect(aiService.getUsageSummary('g1', 24).totalCalls).toBe(0);
+
+    db.close();
+  });
 });

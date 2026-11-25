@@ -3,6 +3,8 @@ import type {
   AiMemoryRecord,
   AiMemoryRepo,
   AiMemoryScopeType,
+  AiUsageLogRecord,
+  AiUsageSummary,
 } from '../db/repositories/aiMemoryRepo.js';
 import type { GuildConfigRepo } from '../db/repositories/guildConfigRepo.js';
 import {
@@ -64,6 +66,15 @@ export interface GenerateAiReplyInput {
   attachments?: DiscordAttachmentLike[];
 }
 
+export interface AiReplyUsageInfo {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  estimated: boolean;
+  costUsd: number;
+  latencyMs: number;
+}
+
 export type GenerateAiReplyResult =
   | {
       ok: true;
@@ -72,12 +83,61 @@ export type GenerateAiReplyResult =
       storedMemoryCount: number;
       model: string;
       attempts: number;
+      usage: AiReplyUsageInfo;
     }
   | {
       ok: false;
       errorCode: LlmErrorCode;
       errorMessage: string;
     };
+
+export function estimateTextTokens(text: string): number {
+  if (!text) return 0;
+  let cjkCount = 0;
+  for (const ch of text) {
+    const code = ch.codePointAt(0) ?? 0;
+    if (
+      (code >= 0x4e00 && code <= 0x9fff) ||
+      (code >= 0x3040 && code <= 0x30ff) ||
+      (code >= 0xac00 && code <= 0xd7af)
+    ) {
+      cjkCount++;
+    }
+  }
+  const otherCount = text.length - cjkCount;
+  return Math.max(1, Math.ceil(cjkCount * 0.75 + otherCount * 0.28));
+}
+
+export function estimatePromptTokens(messages: readonly LlmChatMessage[]): number {
+  let total = 0;
+  for (const msg of messages) {
+    total += 4;
+    if (typeof msg.content === 'string') {
+      total += estimateTextTokens(msg.content);
+    } else {
+      for (const part of msg.content) {
+        if (part.type === 'text') {
+          total += estimateTextTokens(part.text);
+        } else {
+          total += 258;
+        }
+      }
+    }
+  }
+  return total;
+}
+
+export function calculateUsageCostUsd(
+  promptTokens: number,
+  completionTokens: number,
+  inputPricePer1MUsd: number,
+  outputPricePer1MUsd: number,
+): number {
+  const inRate = Number.isFinite(inputPricePer1MUsd) ? Math.max(0, inputPricePer1MUsd) : 0;
+  const outRate = Number.isFinite(outputPricePer1MUsd) ? Math.max(0, outputPricePer1MUsd) : 0;
+  return (Math.max(0, promptTokens) / 1_000_000) * inRate +
+    (Math.max(0, completionTokens) / 1_000_000) * outRate;
+}
 
 export function stripBotMention(text: string, botId: string): string {
   return text.replace(new RegExp(`<@!?${botId}>`, 'g'), '').trim();
@@ -694,6 +754,33 @@ export class AiService {
     };
   }
 
+  getUsageSummary(guildId: string, windowHours: number, nowMs = Date.now()): AiUsageSummary {
+    const cfg = this.guildConfigRepo.getOrCreate(guildId);
+    const safeHours = Math.max(1, Math.min(720, Math.floor(windowHours)));
+    const sinceMs = nowMs - safeHours * 3600_000;
+    return this.aiMemoryRepo.summarizeUsage(guildId, sinceMs, {
+      inputPricePer1MUsd: cfg.ai.inputPricePer1MUsd,
+      outputPricePer1MUsd: cfg.ai.outputPricePer1MUsd,
+    });
+  }
+
+  listRecentUsageLogs(guildId: string, limit = 10): AiUsageLogRecord[] {
+    return this.aiMemoryRepo.listRecentUsageLogs(guildId, limit);
+  }
+
+  clearUsageLogs(guildId: string): number {
+    return this.aiMemoryRepo.clearUsageLogs(guildId);
+  }
+
+  updatePricing(guildId: string, inputPricePer1MUsd: number, outputPricePer1MUsd: number): void {
+    const cfg = this.guildConfigRepo.getOrCreate(guildId);
+    this.guildConfigRepo.updateAi(guildId, {
+      ...cfg.ai,
+      inputPricePer1MUsd: Number(Math.max(0, inputPricePer1MUsd).toFixed(4)),
+      outputPricePer1MUsd: Number(Math.max(0, outputPricePer1MUsd).toFixed(4)),
+    });
+  }
+
   async generateReply(
     input: GenerateAiReplyInput,
     botId = 'bot',
@@ -791,6 +878,7 @@ export class AiService {
       { role: 'user', content: userMessageContent },
     ];
 
+    const startedAt = Date.now();
     try {
       const response = await this.llmClient.chat({
         model: effectiveModel,
@@ -798,6 +886,7 @@ export class AiService {
         temperature: aiCfg.temperature,
         maxTokens: aiCfg.maxTokens,
       });
+      const latencyMs = Math.max(0, Date.now() - startedAt);
 
       const tags = extractMemoryTags(response.content);
       const replyText = cleanAiOutput(response.content, aiCfg.personaName, aiCfg.regexRules);
@@ -834,6 +923,51 @@ export class AiService {
         (storedMemoryCount > 0 ? EMPTY_AI_MEMORY_ONLY_FALLBACK : EMPTY_AI_REPLY_FALLBACK);
       const chunks = splitDiscordMessage(finalReplyText);
 
+      const reportedPrompt = response.usage?.promptTokens;
+      const reportedCompletion = response.usage?.completionTokens;
+      const reportedTotal = response.usage?.totalTokens;
+      const hasReportedUsage =
+        (typeof reportedPrompt === 'number' && reportedPrompt > 0) ||
+        (typeof reportedCompletion === 'number' && reportedCompletion > 0) ||
+        (typeof reportedTotal === 'number' && reportedTotal > 0);
+
+      const promptTokens = hasReportedUsage
+        ? (reportedPrompt ?? Math.max(0, (reportedTotal ?? 0) - (reportedCompletion ?? 0)))
+        : estimatePromptTokens(messages);
+      const completionTokens = hasReportedUsage
+        ? (reportedCompletion ?? Math.max(0, (reportedTotal ?? 0) - promptTokens))
+        : estimateTextTokens(response.content);
+      const totalTokens = hasReportedUsage
+        ? (reportedTotal ?? promptTokens + completionTokens)
+        : promptTokens + completionTokens;
+      const estimated = !hasReportedUsage;
+      const costUsd = calculateUsageCostUsd(
+        promptTokens,
+        completionTokens,
+        aiCfg.inputPricePer1MUsd,
+        aiCfg.outputPricePer1MUsd,
+      );
+
+      try {
+        this.aiMemoryRepo.recordUsageLog({
+          guildId: input.guildId,
+          channelId: input.channelId,
+          userId: input.userId,
+          model: response.model,
+          status: 'ok',
+          attempts: response.attempts,
+          promptTokens,
+          completionTokens,
+          totalTokens,
+          usageEstimated: estimated,
+          estimatedCostUsd: costUsd,
+          latencyMs,
+          createdAt: Date.now(),
+        });
+      } catch {
+        // Best-effort usage persistence
+      }
+
       return {
         ok: true,
         replyText: finalReplyText,
@@ -841,8 +975,40 @@ export class AiService {
         storedMemoryCount,
         model: response.model,
         attempts: response.attempts,
+        usage: {
+          promptTokens,
+          completionTokens,
+          totalTokens,
+          estimated,
+          costUsd,
+          latencyMs,
+        },
       };
     } catch (err) {
+      const latencyMs = Math.max(0, Date.now() - startedAt);
+      const errorCode: LlmErrorCode = err instanceof LlmError ? err.code : 'unknown';
+      const attempts = err instanceof LlmError ? err.attempts : 1;
+      try {
+        this.aiMemoryRepo.recordUsageLog({
+          guildId: input.guildId,
+          channelId: input.channelId,
+          userId: input.userId,
+          model: effectiveModel,
+          status: 'error',
+          errorCode,
+          attempts,
+          promptTokens: 0,
+          completionTokens: 0,
+          totalTokens: 0,
+          usageEstimated: false,
+          estimatedCostUsd: 0,
+          latencyMs,
+          createdAt: Date.now(),
+        });
+      } catch {
+        // Best-effort usage persistence
+      }
+
       if (err instanceof LlmError) {
         return {
           ok: false,

@@ -45,7 +45,7 @@ async function runLlmE2E(): Promise<void> {
       throw new Error(`[E2E #1/3] 检测到未清除的发言人前缀: ${res1.replyText}`);
     }
     console.log(
-      `[E2E #1/3 普通群友] OK (${Date.now() - t1}ms, attempts=${res1.attempts}, model=${res1.model}) | 回复: ${res1.replyText.replace(/\s+/g, ' ').slice(0, 100)}`,
+      `[E2E #1/3 普通群友] OK (${Date.now() - t1}ms, attempts=${res1.attempts}, model=${res1.model}, tokens=${res1.usage.promptTokens}+${res1.usage.completionTokens}=${res1.usage.totalTokens}${res1.usage.estimated ? '(est)' : ''}) | 回复: ${res1.replyText.replace(/\s+/g, ' ').slice(0, 100)}`,
     );
 
     // Call #2: VIP favoritism (草莓布丁酱) + Memory injection via AiService
@@ -76,7 +76,7 @@ async function runLlmE2E(): Promise<void> {
       throw new Error(`[E2E #2/3] 检测到未替换的代称或八股禁词: ${res2.replyText}`);
     }
     console.log(
-      `[E2E #2/3 VIP双标+记忆] OK (${Date.now() - t2}ms, attempts=${res2.attempts}, model=${res2.model}) | 回复: ${res2.replyText.replace(/\s+/g, ' ').slice(0, 100)}`,
+      `[E2E #2/3 VIP双标+记忆] OK (${Date.now() - t2}ms, attempts=${res2.attempts}, model=${res2.model}, tokens=${res2.usage.promptTokens}+${res2.usage.completionTokens}=${res2.usage.totalTokens}${res2.usage.estimated ? '(est)' : ''}) | 回复: ${res2.replyText.replace(/\s+/g, ' ').slice(0, 100)}`,
     );
 
     // Call #3: VIP handle recognition (icebear) + Vision multimodal image_url via AiService
@@ -108,7 +108,7 @@ async function runLlmE2E(): Promise<void> {
       throw new Error(`[E2E #3/3] 检测到未清除的发言人前缀: ${res3.replyText}`);
     }
     console.log(
-      `[E2E #3/3 icebear账号识别] OK (${Date.now() - t3}ms, attempts=${res3.attempts}, model=${res3.model}) | 回复: ${res3.replyText.replace(/\s+/g, ' ').slice(0, 100)}`,
+      `[E2E #3/3 icebear账号识别] OK (${Date.now() - t3}ms, attempts=${res3.attempts}, model=${res3.model}, tokens=${res3.usage.promptTokens}+${res3.usage.completionTokens}=${res3.usage.totalTokens}${res3.usage.estimated ? '(est)' : ''}) | 回复: ${res3.replyText.replace(/\s+/g, ' ').slice(0, 100)}`,
     );
 
     console.log('[E2E-LLM] 连续 3 次真实 LLM 网关调用全部成功！');

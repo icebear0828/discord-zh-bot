@@ -39,12 +39,18 @@ const REGEX_SCOPE_LABELS: Record<AiRegexRuleScope, string> = {
 
 const REGEX_PAGE_SIZE = 10;
 
+function formatUsd(amount: number): string {
+  if (!Number.isFinite(amount) || amount <= 0) return '$0.0000';
+  if (amount < 0.01) return `$${amount.toFixed(6)}`;
+  return `$${amount.toFixed(4)}`;
+}
+
 export function buildAdminAiView(
   ctx: AppContext,
   guildId: string,
   actor: MenuActor,
   feedback: MenuFeedback | undefined,
-  tab: 'basic' | 'channels' | 'regex' = 'basic',
+  tab: 'basic' | 'channels' | 'regex' | 'usage' = 'basic',
   regexPage = 1,
 ): BuiltMenuMessage {
   const cfg = ctx.repos.guildConfig.getOrCreate(guildId);
@@ -55,6 +61,92 @@ export function buildAdminAiView(
   const effectiveModel = ai.modelOverride?.trim() || defaultModel;
   const memCounts = ctx.services.ai.countMemories(guildId);
   const enabledRegexCount = ai.regexRules.filter((r) => r.enabled).length;
+  const usage24h = ctx.services.ai.getUsageSummary(guildId, 24);
+
+  if (tab === 'usage') {
+    const usage7d = ctx.services.ai.getUsageSummary(guildId, 24 * 7);
+    const recentLogs = ctx.services.ai.listRecentUsageLogs(guildId, 5);
+    const hasPricing = ai.inputPricePer1MUsd > 0 || ai.outputPricePer1MUsd > 0;
+    const pricingLine = hasPricing
+      ? `输入 **$${ai.inputPricePer1MUsd}**/1M tokens ｜ 输出 **$${ai.outputPricePer1MUsd}**/1M tokens`
+      : '未配置单价（当前估算费用为 $0，点击下方「💲 设置 Token 单价」配置）';
+
+    const modelLines =
+      usage24h.byModel.length > 0
+        ? usage24h.byModel
+            .slice(0, 5)
+            .map(
+              (m) =>
+                `• \`${m.model}\`：${m.calls} 次 ｜ ${m.totalTokens.toLocaleString('en-US')} tok（${m.promptTokens}/${m.completionTokens}） ｜ ${formatUsd(m.costUsd)}`,
+            )
+        : ['• 近 24 小时暂无调用记录'];
+
+    const userLines =
+      usage24h.topUsers.length > 0
+        ? usage24h.topUsers.map(
+            (u) =>
+              `• <@${u.userId}>：${u.calls} 次 ｜ ${u.totalTokens.toLocaleString('en-US')} tok ｜ ${formatUsd(u.costUsd)}`,
+          )
+        : ['• 暂无成员消费记录'];
+
+    const recentLines =
+      recentLogs.length > 0
+        ? recentLogs.map((log) => {
+            const statusIcon = log.status === 'ok' ? '✅' : `❌(${log.errorCode ?? 'err'})`;
+            const estTag = log.usageEstimated ? '(估)' : '';
+            return `• ${statusIcon} \`${truncateText(log.model, 24)}\` <@${log.userId}> ${log.promptTokens}+${log.completionTokens}=${log.totalTokens}${estTag} tok · ${log.latencyMs}ms`;
+          })
+        : ['• 暂无调用明细'];
+
+    const description = [
+      `💵 **当前计费单价**：${pricingLine}`,
+      '',
+      `📊 **近 24 小时统计**`,
+      `• 调用：**${usage24h.totalCalls}** 次（成功 ${usage24h.okCalls} / 失败 ${usage24h.errorCalls} / 估算 ${usage24h.estimatedCalls}） ｜ 平均耗时 **${usage24h.avgLatencyMs}ms**`,
+      `• Token：**${usage24h.totalTokens.toLocaleString('en-US')}**（输入 ${usage24h.promptTokens.toLocaleString('en-US')} + 输出 ${usage24h.completionTokens.toLocaleString('en-US')}）`,
+      `• 估算花费：**${formatUsd(usage24h.estimatedCostUsd)}**`,
+      '',
+      `📅 **近 7 天汇总**：**${usage7d.totalCalls}** 次 ｜ **${usage7d.totalTokens.toLocaleString('en-US')}** tok ｜ **${formatUsd(usage7d.estimatedCostUsd)}**`,
+      '',
+      '🤖 **24h 按模型分布**',
+      ...modelLines,
+      '',
+      '👥 **24h 消耗 Top 5**',
+      ...userLines,
+      '',
+      '🕒 **最近 5 次调用**',
+      ...recentLines,
+    ].join('\n');
+
+    const embed = new EmbedBuilder()
+      .setColor(resolveColor(COLORS.PRIMARY, feedback))
+      .setAuthor({ name: `${actor.displayName} · AI Token 与计费统计`, iconURL: actor.avatarUrl })
+      .setTitle('📊 AI Token 用量与费用监控')
+      .setDescription(withFeedback(truncateText(description, 4000), feedback))
+      .setFooter({ text: '🔒 仅管理员可见；也可在频道用 /ai 用量 [小时] 查看' })
+      .setTimestamp();
+
+    const components: MenuComponentRow[] = [
+      buttonRow(
+        makeButton('menu:modal:admin_ai_pricing', '💲 设置 Token 单价', ButtonStyle.Primary),
+        makeButton('menu:nav:admin_ai:usage', '🔄 刷新统计', ButtonStyle.Secondary),
+        makeButton(
+          'menu:admin:ai_clear_usage',
+          '🗑️ 清空用量日志',
+          ButtonStyle.Danger,
+          usage7d.totalCalls === 0 && recentLogs.length === 0,
+        ),
+      ),
+      buttonRow(
+        makeButton('menu:nav:admin_ai:basic', '🎭 人设与参数', ButtonStyle.Primary),
+        makeButton('menu:nav:admin_ai:regex', '🔧 正则与反八股', ButtonStyle.Secondary),
+        makeButton('menu:nav:admin', '⬅️ 管理后台', ButtonStyle.Secondary),
+        makeButton('menu:nav:home', '🏠 主菜单', ButtonStyle.Secondary),
+      ),
+    ];
+
+    return { embeds: [embed], components };
+  }
 
   if (tab === 'regex') {
     const paged = paginateSlice(ai.regexRules, regexPage, REGEX_PAGE_SIZE);
@@ -176,6 +268,7 @@ export function buildAdminAiView(
     `🤖 **当前模型**：\`${effectiveModel}\`${ai.modelOverride ? '（后台覆盖）' : '（默认）'} ｜ 温度 **${ai.temperature}** ｜ MaxTokens **${ai.maxTokens}**`,
     `💬 **上下文与记忆**：滑窗 **${ai.contextWindowMessages}** 条 ｜ 记忆抽取 ${ai.memoryEnabled ? `✅ 开（每域上限 ${ai.maxMemoriesPerScope} 条）` : '⛔ 关'} ｜ 图片识图 ${ai.visionEnabled ? '✅ 开' : '⛔ 关'}`,
     `🔧 **正则替换与反八股**：启用 **${enabledRegexCount}/${ai.regexRules.length}** 条规则 ｜ 反八股提示词 ${ai.antiClichePromptEnabled ? '✅ 开' : '⛔ 关'}`,
+    `📊 **近 24h 用量**：**${usage24h.totalCalls}** 次（失败 ${usage24h.errorCalls}） ｜ **${usage24h.totalTokens.toLocaleString('en-US')}** Tokens ｜ 估算 **${formatUsd(usage24h.estimatedCostUsd)}**`,
     `🧠 **SQLite 记忆库**：共 **${memCounts.total}** 条（用户 ${memCounts.user} / 频道 ${memCounts.channel} / 全服 ${memCounts.guild}）`,
     `🗨️ **免 @ 直聊频道**：${freeText}`,
     `📌 **白名单限定频道**：${allowedText}`,
@@ -294,7 +387,7 @@ export function buildAdminAiView(
       makeButton('menu:admin:ai_reset_config', '♻️ 恢复默认', ButtonStyle.Danger),
     ),
     buttonRow(
-      makeButton('menu:admin:ai_toggle_allowed_here', '📌 切换本频道白名单', ButtonStyle.Secondary),
+      makeButton('menu:nav:admin_ai:usage', '📊 用量与计费', ButtonStyle.Primary),
       makeButton('menu:nav:admin_ai:regex', '🔧 正则与反八股', ButtonStyle.Primary),
       makeButton('menu:nav:admin_ai:channels', '🔕 屏蔽与全部频道', ButtonStyle.Primary),
       makeButton('menu:nav:admin', '⬅️ 管理后台', ButtonStyle.Secondary),
