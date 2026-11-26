@@ -2,16 +2,48 @@ import type Database from 'better-sqlite3';
 import type { GuildConfigRepo } from '../db/repositories/guildConfigRepo.js';
 import type { ProfileRepo } from '../db/repositories/profileRepo.js';
 import type {
+  RpgAffix,
   RpgCharacter,
   RpgClassKey,
+  RpgDuel,
+  RpgDuelRulesMode,
   RpgItem,
   RpgItemRarity,
   RpgItemSlot,
+  RpgLegendaryEffect,
+  RpgRaid,
+  RpgRaidPayout,
   RpgRepo,
   RpgTrial,
 } from '../db/repositories/rpgRepo.js';
 import type { PetRarity, SocialPetRepo, UserPet } from '../db/repositories/socialPetRepo.js';
+import type { CreditLoanService } from './creditLoanService.js';
 import { getDateKey } from './economyService.js';
+import {
+  aggregateEquippedAffixes,
+  awakenLegacyItemAffixes,
+  computeClassAwareItemScore,
+  createEmptyAffixBonuses,
+  getAffixSlotCount,
+  getReforgeCost,
+  getSalvageArcaneDust,
+  rollLegendaryEffect,
+  rollRandomAffixes,
+  type AggregatedAffixBonuses,
+} from './rpgAffixes.js';
+import {
+  buildCoopRaidBossCombatant,
+  buildHeroCombatantSnapshot,
+  buildTierBossCombatant,
+  simulateCoopRaidBattle,
+  simulateRpgBattle,
+  type CombatantSnapshot,
+  type CoopPartyMemberInput,
+  type CoopRaidBattleReport,
+  type RpgBattleRating,
+  type RpgBattleReport,
+  type RpgBattleWinner,
+} from './rpgCombatEngine.js';
 import { PET_SPECIES_MAP } from './socialPetService.js';
 
 export interface RpgConfig {
@@ -53,6 +85,16 @@ export const SABOTEUR_PENALTY_PCT = 2;
 export const SABOTEUR_POOL_BONUS_PCT = 20;
 export const PITY_BONUS_PER_FAIL_PCT = 10;
 export const DEFAULT_CREDIT_SCORE = 600;
+
+export const DAILY_ARENA_FIGHTS = 5;
+export const PUBLIC_DUEL_TTL_MS = 10 * 60_000;
+export const MAX_RPG_DUEL_BET = 1_000_000_000;
+export const DAILY_COOP_TICKETS = 2;
+export const COOP_RECRUIT_TTL_MS = 3 * 60_000;
+export const MIN_COOP_PARTY_SIZE = 2;
+export const MAX_COOP_PARTY_SIZE = 4;
+export const WORLD_BOSS_NORMAL_BONUS_CAP = 120;
+export const WORLD_BOSS_HEAVY_BONUS_CAP = 180;
 
 const STAGE_ZH_LABELS: readonly string[] = [
   '一重',
@@ -521,6 +563,14 @@ export function getSalvageValue(item: Pick<RpgItem, 'rarity' | 'enhanceLevel'>):
   return base + Math.max(0, item.enhanceLevel) * Math.round(base * 0.25);
 }
 
+export function getArenaTierLabel(rating: number): string {
+  if (rating >= 1600) return '👑 传说战神';
+  if (rating >= 1350) return '💎 璀璨钻石';
+  if (rating >= 1150) return '🥇 荣耀黄金';
+  if (rating >= 1000) return '🥈 秘银斗士';
+  return '🥉 青铜新锐';
+}
+
 export interface PetSynergyInfo {
   petId: number;
   nickname: string;
@@ -543,6 +593,7 @@ export interface CombatStats {
   classKey: RpgClassKey;
   level: number;
   equippedItems: RpgItem[];
+  affixes: AggregatedAffixBonuses;
   petSynergy: PetSynergyInfo | null;
 }
 
@@ -556,6 +607,8 @@ export interface PendingRpgItem {
   baseAtk: number;
   baseDef: number;
   baseCritBp: number;
+  affixes: RpgAffix[];
+  legendaryEffect: RpgLegendaryEffect | null;
 }
 
 export type ChooseClassResult =
@@ -645,9 +698,44 @@ export type EnhanceItemResult =
       cost?: number;
     };
 
+export type ToggleItemLockResult =
+  | { ok: true; item: RpgItem; locked: boolean }
+  | { ok: false; reason: 'not_found' };
+
+export type ReforgeItemAffixesResult =
+  | {
+      ok: true;
+      item: RpgItem;
+      previousAffixes: RpgAffix[];
+      lockedAffix: RpgAffix | null;
+      costCoins: number;
+      costDust: number;
+      balance: number;
+      arcaneDust: number;
+    }
+  | {
+      ok: false;
+      reason:
+        | 'not_found'
+        | 'cannot_reforge_common'
+        | 'invalid_lock_index'
+        | 'insufficient_funds'
+        | 'insufficient_dust';
+      costCoins?: number;
+      costDust?: number;
+      currentDust?: number;
+    };
+
 export type SalvageItemResult =
-  | { ok: true; salvagedItem: RpgItem; coinsEarned: number; balance: number }
-  | { ok: false; reason: 'not_found' | 'item_equipped' };
+  | {
+      ok: true;
+      salvagedItem: RpgItem;
+      coinsEarned: number;
+      dustEarned: number;
+      arcaneDust: number;
+      balance: number;
+    }
+  | { ok: false; reason: 'not_found' | 'item_equipped' | 'item_locked' };
 
 export interface EquipBestGearChange {
   slot: RpgItemSlot;
@@ -669,6 +757,8 @@ export type BulkSalvageItemsResult =
       ok: true;
       salvagedCount: number;
       totalCoins: number;
+      totalDust: number;
+      arcaneDust: number;
       balance: number;
       byRarity: Partial<Record<RpgItemRarity, number>>;
     }
@@ -705,6 +795,8 @@ export type ClaimIdleHarvestResult =
       legendaryDrops: RpgItem[];
       autoSalvagedCount: number;
       autoSalvagedCoins: number;
+      autoSalvagedDust: number;
+      dustEarned: number;
       adventures: string[];
       character: RpgCharacter;
       balance: number;
@@ -719,7 +811,9 @@ export type RaidBossResult =
   | {
       ok: true;
       runsExecuted: number;
-      rating: 'S' | 'A' | 'B';
+      rating: RpgBattleRating;
+      roundsPlayed: number;
+      highlights: string[];
       tierDef: RpgTierDef;
       xpEarned: number;
       levelsGained: number;
@@ -727,12 +821,14 @@ export type RaidBossResult =
       grossCoins: number;
       garnishedCoins: number;
       netCoins: number;
+      dustEarned: number;
       pillsFound: number;
       elixirsFound: number;
       bankedItems: RpgItem[];
       legendaryDrops: RpgItem[];
       autoSalvagedCount: number;
       autoSalvagedCoins: number;
+      autoSalvagedDust: number;
       character: RpgCharacter;
       balance: number;
     }
@@ -740,6 +836,221 @@ export type RaidBossResult =
       ok: false;
       reason: 'no_class_selected' | 'insufficient_stamina';
     };
+
+export type ChallengeAbyssBossResult =
+  | {
+      ok: true;
+      won: boolean;
+      isFirstClear: boolean;
+      staminaSpent: number;
+      tier: number;
+      tierDef: RpgTierDef;
+      bossName: string;
+      bossMaxHp: number;
+      bossRemainingHp: number;
+      roundsPlayed: number;
+      rating: RpgBattleRating;
+      highlights: string[];
+      xpEarned: number;
+      levelsGained: number;
+      hitGate: boolean;
+      grossCoins: number;
+      garnishedCoins: number;
+      netCoins: number;
+      dustEarned: number;
+      bankedItems: RpgItem[];
+      legendaryDrops: RpgItem[];
+      autoSalvagedCount: number;
+      autoSalvagedCoins: number;
+      autoSalvagedDust: number;
+      character: RpgCharacter;
+      balance: number;
+    }
+  | {
+      ok: false;
+      reason: 'no_class_selected' | 'insufficient_stamina';
+    };
+
+export interface ArenaDailyRewardPreview {
+  canClaim: boolean;
+  claimedToday: boolean;
+  rating: number;
+  tierLabel: string;
+  coins: number;
+  dust: number;
+  fightsUsed: number;
+  fightsRemaining: number;
+}
+
+export type ChallengeArenaResult =
+  | {
+      ok: true;
+      won: boolean;
+      winner: RpgBattleWinner;
+      ratingBefore: number;
+      ratingAfter: number;
+      ratingDelta: number;
+      fightsUsed: number;
+      fightsRemaining: number;
+      grossCoins: number;
+      garnishedCoins: number;
+      netCoins: number;
+      dustEarned: number;
+      report: RpgBattleReport;
+      highlights: string[];
+      character: RpgCharacter;
+      targetCharacter: RpgCharacter;
+      balance: number;
+    }
+  | {
+      ok: false;
+      reason: 'self_target' | 'no_class_selected' | 'daily_limit_reached' | 'target_not_found';
+      dailyLimit?: number;
+    };
+
+export type ClaimDailyArenaRewardResult =
+  | {
+      ok: true;
+      rating: number;
+      tierLabel: string;
+      grossCoins: number;
+      garnishedCoins: number;
+      netCoins: number;
+      dustEarned: number;
+      character: RpgCharacter;
+      balance: number;
+    }
+  | {
+      ok: false;
+      reason: 'no_class_selected' | 'already_claimed';
+    };
+
+export type CreatePublicDuelResult =
+  | {
+      ok: true;
+      duel: RpgDuel;
+      character: RpgCharacter;
+      balance: number;
+    }
+  | {
+      ok: false;
+      reason:
+        | 'self_target'
+        | 'invalid_bet_amount'
+        | 'no_class_selected'
+        | 'pending_duel_exists'
+        | 'deadbeat_blocked'
+        | 'insufficient_funds';
+      required?: number;
+      available?: number;
+    };
+
+export type CancelPublicDuelResult =
+  | {
+      ok: true;
+      duel: RpgDuel;
+      refundedBet: number;
+      balance: number;
+    }
+  | {
+      ok: false;
+      reason: 'not_found' | 'already_resolved' | 'not_challenger';
+    };
+
+export type AcceptPublicDuelResult =
+  | {
+      ok: true;
+      duel: RpgDuel;
+      report: RpgBattleReport;
+      winnerId: string | null;
+      betAmount: number;
+      winnerPayout: number;
+      challengerBalance: number;
+      acceptorBalance: number;
+    }
+  | {
+      ok: false;
+      reason:
+        | 'not_found'
+        | 'already_resolved'
+        | 'expired'
+        | 'own_duel'
+        | 'wrong_opponent'
+        | 'no_class_selected'
+        | 'challenger_unavailable'
+        | 'deadbeat_blocked'
+        | 'insufficient_funds';
+      expectedOpponentId?: string;
+      required?: number;
+      available?: number;
+    };
+
+export type StartCoopRaidResult =
+  | {
+      ok: true;
+      raid: RpgRaid;
+      character: RpgCharacter;
+      ticketsRemaining: number;
+    }
+  | {
+      ok: false;
+      reason: 'no_class_selected' | 'active_raid_exists' | 'no_coop_tickets';
+      dailyLimit?: number;
+      raid?: RpgRaid;
+    };
+
+export type JoinCoopRaidResult =
+  | {
+      ok: true;
+      raid: RpgRaid;
+      character: RpgCharacter;
+    }
+  | {
+      ok: false;
+      reason:
+        | 'not_found'
+        | 'already_started_or_closed'
+        | 'already_joined'
+        | 'party_full'
+        | 'no_class_selected';
+    };
+
+export type LaunchCoopRaidResult =
+  | {
+      ok: true;
+      raid: RpgRaid;
+      report: CoopRaidBattleReport;
+      succeeded: boolean;
+      payouts: RpgRaidPayout[];
+      legendaryDrops: RpgItem[];
+      highlights: string[];
+    }
+  | {
+      ok: false;
+      reason: 'not_found' | 'already_resolved' | 'not_leader' | 'not_enough_members';
+      minMembers?: number;
+    };
+
+export interface RpgWorldBossBonus {
+  bonusDamage: number;
+  classEmoji: string;
+  realmLabel: string;
+}
+
+export interface RpgWorldBossBridge {
+  getBossAttackBonus(
+    guildId: string,
+    userId: string,
+    mode: 'normal' | 'heavy',
+    nowMs: number,
+  ): RpgWorldBossBonus | null;
+  awardBossKillDust(
+    guildId: string,
+    participantUserIds: readonly string[],
+    mvpUserId: string,
+    nowMs: number,
+  ): ReadonlyMap<string, number>;
+}
 
 export interface BreakthroughPreview {
   eligible: boolean;
@@ -848,6 +1159,15 @@ export interface RpgServiceOptions {
   config?: Partial<RpgConfig>;
   guildConfigRepo?: GuildConfigRepo;
   socialPetRepo?: SocialPetRepo;
+  creditLoanService?: Pick<CreditLoanService, 'isDeadbeatBlocked' | 'recordGamblingResult'>;
+  isGamblingBlocked?: (guildId: string, userId: string, nowMs?: number) => boolean;
+  recordGamblingResult?: (
+    guildId: string,
+    userId: string,
+    stake: number,
+    netProfit: number,
+    nowMs: number,
+  ) => void;
   onCoinsEarned?: (
     guildId: string,
     userId: string,
@@ -864,6 +1184,8 @@ export interface RpgServiceOptions {
   ) => void;
   getCreditScore?: (guildId: string, userId: string) => number;
 }
+
+export type RpgLootSource = 'idle' | 'boss' | 'shop' | 'abyss' | 'coop';
 
 function clampUnit(value: number): number {
   if (!Number.isFinite(value)) return 0.5;
@@ -892,13 +1214,21 @@ function computePetSynergy(pet: UserPet): PetSynergyInfo {
   };
 }
 
-function rollItemRarity(
-  tier: number,
-  source: 'idle' | 'boss' | 'shop',
-  rng: () => number,
-): RpgItemRarity {
+function rollItemRarity(tier: number, source: RpgLootSource, rng: () => number): RpgItemRarity {
   const r = clampUnit(rng());
   const offset = Math.max(0, tier - 1);
+
+  if (source === 'abyss') {
+    if (r >= Math.max(0.55, 0.84 - offset * 0.03)) return 'legendary';
+    if (r >= Math.max(0.2, 0.46 - offset * 0.03)) return 'epic';
+    return 'rare';
+  }
+
+  if (source === 'coop') {
+    if (r >= Math.max(0.65, 0.9 - offset * 0.03)) return 'legendary';
+    if (r >= Math.max(0.32, 0.62 - offset * 0.035)) return 'epic';
+    return 'rare';
+  }
 
   if (source === 'boss') {
     if (r >= Math.max(0.75, 0.96 - offset * 0.025)) return 'legendary';
@@ -916,7 +1246,7 @@ function rollItemRarity(
 
 export function generateTierItem(
   tier: number,
-  source: 'idle' | 'boss' | 'shop',
+  source: RpgLootSource,
   rng: () => number,
   minRarity?: RpgItemRarity,
 ): PendingRpgItem {
@@ -933,6 +1263,8 @@ export function generateTierItem(
   const rarityScale = RARITY_STAT_MULT[rarity];
   const variance = 0.9 + clampUnit(rng()) * 0.2;
   const power = tierScale * rarityScale * variance;
+  const affixes = rollRandomAffixes(rarity, rng);
+  const legendaryEffect = rarity === 'legendary' ? rollLegendaryEffect(rng) : null;
 
   if (slot === 'weapon') {
     return {
@@ -943,6 +1275,8 @@ export function generateTierItem(
       baseAtk: Math.max(4, Math.round(10 * power)),
       baseDef: Math.round(1 * power),
       baseCritBp: Math.min(2500, Math.round(180 * rarityScale + safeTier * 30)),
+      affixes,
+      legendaryEffect,
     };
   }
   if (slot === 'armor') {
@@ -954,6 +1288,8 @@ export function generateTierItem(
       baseAtk: 0,
       baseDef: Math.max(3, Math.round(7 * power)),
       baseCritBp: 0,
+      affixes,
+      legendaryEffect,
     };
   }
   return {
@@ -964,6 +1300,8 @@ export function generateTierItem(
     baseAtk: Math.max(2, Math.round(5 * power)),
     baseDef: Math.max(1, Math.round(3 * power)),
     baseCritBp: Math.min(3000, Math.round(260 * rarityScale + safeTier * 38)),
+    affixes,
+    legendaryEffect,
   };
 }
 
@@ -979,7 +1317,7 @@ export function generateShopRpgLoot(
 export function computeIdlePowerMultiplier(stats: CombatStats, tier: number): number {
   let gearScore = 0;
   for (const eq of stats.equippedItems) {
-    gearScore += computeItemScore(eq);
+    gearScore += computeClassAwareItemScore(eq, stats.classKey);
   }
   const gearBonus = Math.min(0.65, Math.sqrt(Math.max(0, gearScore)) * 0.022);
   const petBonus = stats.petSynergy
@@ -1021,12 +1359,32 @@ function getCreditBreakthroughBonus(creditScore: number): number {
   return -5;
 }
 
+function computeStarterBackfillDust(character: Pick<RpgCharacter, 'totalBossKills' | 'level'>): number {
+  return Math.max(25, character.totalBossKills * 8 + character.level * 4);
+}
+
+function computeRatingMultiplier(rating: RpgBattleRating): number {
+  switch (rating) {
+    case 'SSS':
+      return 1.4;
+    case 'S':
+      return 1.25;
+    case 'A':
+      return 1.1;
+    case 'B':
+      return 1.0;
+  }
+}
+
 export class RpgService {
   private readonly config: RpgConfig;
   private readonly configOverrides?: Partial<RpgConfig>;
   private readonly timezone: string;
   private readonly guildConfigRepo?: GuildConfigRepo;
   private readonly socialPetRepo?: SocialPetRepo;
+  private readonly creditLoanService?: RpgServiceOptions['creditLoanService'];
+  private readonly isGamblingBlockedHook?: RpgServiceOptions['isGamblingBlocked'];
+  private readonly recordGamblingResultHook?: RpgServiceOptions['recordGamblingResult'];
   private readonly onCoinsEarned?: RpgServiceOptions['onCoinsEarned'];
   private readonly onCreditChange?: RpgServiceOptions['onCreditChange'];
   private readonly getCreditScore?: RpgServiceOptions['getCreditScore'];
@@ -1042,9 +1400,109 @@ export class RpgService {
     this.timezone = options.timezone ?? 'Asia/Shanghai';
     this.guildConfigRepo = options.guildConfigRepo;
     this.socialPetRepo = options.socialPetRepo;
+    this.creditLoanService = options.creditLoanService;
+    this.isGamblingBlockedHook = options.isGamblingBlocked;
+    this.recordGamblingResultHook = options.recordGamblingResult;
     this.onCoinsEarned = options.onCoinsEarned;
     this.onCreditChange = options.onCreditChange;
     this.getCreditScore = options.getCreditScore;
+
+    this.awakenLegacyDataInTx();
+  }
+
+  awakenLegacyData(): { awakenedItems: number; backfilledCharacters: number } {
+    return this.awakenLegacyDataInTx();
+  }
+
+  private awakenLegacyDataInTx(): { awakenedItems: number; backfilledCharacters: number } {
+    return this.db.transaction(() => {
+      let awakenedItems = 0;
+      const unawakenedItems = this.rpgRepo.listUnawakenedItems();
+      for (const item of unawakenedItems) {
+        const { affixes, legendaryEffect } = awakenLegacyItemAffixes({
+          id: item.id,
+          rarity: item.rarity,
+        });
+        this.rpgRepo.updateItemAffixes(item.id, affixes, legendaryEffect, true);
+        awakenedItems += 1;
+      }
+
+      let backfilledCharacters = 0;
+      const unbackfilledChars = this.rpgRepo.listUnbackfilledCharacters();
+      for (const character of unbackfilledChars) {
+        const starterDust = computeStarterBackfillDust(character);
+        if (this.rpgRepo.backfillCharacterDust(character.guildId, character.userId, starterDust)) {
+          backfilledCharacters += 1;
+        }
+      }
+
+      return { awakenedItems, backfilledCharacters };
+    })();
+  }
+
+  private checkGamblingBlocked(guildId: string, userId: string, nowMs: number): boolean {
+    if (this.isGamblingBlockedHook) {
+      return Boolean(this.isGamblingBlockedHook(guildId, userId, nowMs));
+    }
+    if (this.creditLoanService) {
+      return this.creditLoanService.isDeadbeatBlocked(guildId, userId, nowMs).blocked;
+    }
+    return false;
+  }
+
+  private emitGamblingResult(
+    guildId: string,
+    userId: string,
+    stake: number,
+    netProfit: number,
+    nowMs: number,
+  ): void {
+    if (stake <= 0) return;
+    if (this.recordGamblingResultHook) {
+      this.recordGamblingResultHook(guildId, userId, stake, netProfit, nowMs);
+      return;
+    }
+    if (this.creditLoanService) {
+      this.creditLoanService.recordGamblingResult(guildId, userId, stake, netProfit, nowMs);
+    }
+  }
+
+  private applyCoinRewardInTx(
+    guildId: string,
+    userId: string,
+    rawCoins: number,
+    source: string,
+    nowMs: number,
+  ): { grossCoins: number; garnishedCoins: number; netCoins: number; balance: number } {
+    const grossCoins = Math.max(0, Math.floor(rawCoins));
+    let garnishedCoins = 0;
+    let netCoins = grossCoins;
+    if (grossCoins > 0 && this.onCoinsEarned) {
+      const hookRes = this.onCoinsEarned(guildId, userId, grossCoins, source, nowMs);
+      garnishedCoins = Math.max(0, Math.floor(hookRes.garnished));
+      netCoins = Math.max(0, Math.floor(hookRes.net));
+    }
+    const updatedProfile =
+      netCoins > 0
+        ? this.profileRepo.addCoins(guildId, userId, netCoins)
+        : this.profileRepo.getOrCreate(guildId, userId);
+    return { grossCoins, garnishedCoins, netCoins, balance: updatedProfile.coins };
+  }
+
+  private resolveHeroDisplayName(guildId: string, userId: string): string {
+    const profile = this.profileRepo.getOrCreate(guildId, userId);
+    const nick = profile.cardNickname?.trim();
+    return nick && nick.length > 0 ? nick : `<@${userId}>`;
+  }
+
+  buildCombatantForCharacter(character: RpgCharacter, customName?: string): CombatantSnapshot {
+    const stats = this.computeCombatStatsForCharacter(character);
+    const name = customName ?? this.resolveHeroDisplayName(character.guildId, character.userId);
+    return buildHeroCombatantSnapshot({
+      id: character.userId,
+      name,
+      stats,
+    });
   }
 
   getUserCreditScore(guildId: string, userId: string): number {
@@ -1106,6 +1564,7 @@ export class RpgService {
           userId,
           classKey,
           classSelected: true,
+          dustBackfilled: true,
           stamina: cfg.dailyStamina,
           lastStaminaDate: today,
           lastIdleClaimAt: nowMs,
@@ -1128,6 +1587,7 @@ export class RpgService {
           ...refreshed,
           classKey,
           classSelected: true,
+          dustBackfilled: true,
           lastIdleClaimAt: nowMs,
           updatedAt: nowMs,
         };
@@ -1431,7 +1891,108 @@ export class RpgService {
     })();
   }
 
-  salvageItem(guildId: string, userId: string, itemId: number): SalvageItemResult {
+  toggleItemLock(guildId: string, userId: string, itemId: number): ToggleItemLockResult {
+    return this.db.transaction((): ToggleItemLockResult => {
+      const item = this.rpgRepo.getItemById(itemId);
+      if (!item || item.guildId !== guildId || item.userId !== userId) {
+        return { ok: false, reason: 'not_found' };
+      }
+      const nextLocked = !item.locked;
+      this.rpgRepo.setItemLocked(item.id, guildId, userId, nextLocked);
+      const updated = this.rpgRepo.getItemById(item.id)!;
+      return { ok: true, item: updated, locked: nextLocked };
+    })();
+  }
+
+  reforgeItemAffixes(
+    guildId: string,
+    userId: string,
+    itemId: number,
+    lockedAffixIndex: number | null = null,
+    nowMs = Date.now(),
+    rng: () => number = Math.random,
+  ): ReforgeItemAffixesResult {
+    return this.db.transaction((): ReforgeItemAffixesResult => {
+      const item = this.rpgRepo.getItemById(itemId);
+      if (!item || item.guildId !== guildId || item.userId !== userId) {
+        return { ok: false, reason: 'not_found' };
+      }
+
+      if (getAffixSlotCount(item.rarity) <= 0) {
+        return { ok: false, reason: 'cannot_reforge_common' };
+      }
+
+      let lockedAffix: RpgAffix | null = null;
+      if (lockedAffixIndex !== null) {
+        if (
+          !Number.isInteger(lockedAffixIndex) ||
+          lockedAffixIndex < 0 ||
+          lockedAffixIndex >= item.affixes.length
+        ) {
+          return { ok: false, reason: 'invalid_lock_index' };
+        }
+        lockedAffix = item.affixes[lockedAffixIndex] ?? null;
+      }
+
+      const cost = getReforgeCost(item, lockedAffix !== null);
+      if (!cost) {
+        return { ok: false, reason: 'cannot_reforge_common' };
+      }
+
+      const profile = this.profileRepo.getOrCreate(guildId, userId);
+      if (profile.coins < cost.coins) {
+        return {
+          ok: false,
+          reason: 'insufficient_funds',
+          costCoins: cost.coins,
+          costDust: cost.dust,
+        };
+      }
+
+      const character = this.getOrCreateCharacterInTx(guildId, userId, nowMs);
+      if (character.arcaneDust < cost.dust) {
+        return {
+          ok: false,
+          reason: 'insufficient_dust',
+          costCoins: cost.coins,
+          costDust: cost.dust,
+          currentDust: character.arcaneDust,
+        };
+      }
+
+      const balance = profile.coins - cost.coins;
+      this.profileRepo.save({ ...profile, coins: balance });
+
+      const updatedChar: RpgCharacter = {
+        ...character,
+        arcaneDust: character.arcaneDust - cost.dust,
+        updatedAt: nowMs,
+      };
+      this.rpgRepo.saveCharacter(updatedChar);
+
+      const newAffixes = rollRandomAffixes(item.rarity, rng, lockedAffix);
+      this.rpgRepo.updateItemAffixes(item.id, newAffixes, item.legendaryEffect, true);
+      const updatedItem = this.rpgRepo.getItemById(item.id)!;
+
+      return {
+        ok: true,
+        item: updatedItem,
+        previousAffixes: item.affixes,
+        lockedAffix,
+        costCoins: cost.coins,
+        costDust: cost.dust,
+        balance,
+        arcaneDust: updatedChar.arcaneDust,
+      };
+    })();
+  }
+
+  salvageItem(
+    guildId: string,
+    userId: string,
+    itemId: number,
+    nowMs = Date.now(),
+  ): SalvageItemResult {
     return this.db.transaction((): SalvageItemResult => {
       const item = this.rpgRepo.getItemById(itemId);
       if (!item || item.guildId !== guildId || item.userId !== userId) {
@@ -1440,15 +2001,28 @@ export class RpgService {
       if (item.equipped) {
         return { ok: false, reason: 'item_equipped' };
       }
+      if (item.locked) {
+        return { ok: false, reason: 'item_locked' };
+      }
 
       const coinsEarned = getSalvageValue(item);
+      const dustEarned = getSalvageArcaneDust(item);
       this.rpgRepo.deleteItem(item.id, guildId, userId);
       const updatedProfile = this.profileRepo.addCoins(guildId, userId, coinsEarned);
+      const character = this.getOrCreateCharacterInTx(guildId, userId, nowMs);
+      const updatedChar: RpgCharacter = {
+        ...character,
+        arcaneDust: character.arcaneDust + dustEarned,
+        updatedAt: nowMs,
+      };
+      this.rpgRepo.saveCharacter(updatedChar);
 
       return {
         ok: true,
         salvagedItem: item,
         coinsEarned,
+        dustEarned,
+        arcaneDust: updatedChar.arcaneDust,
         balance: updatedProfile.coins,
       };
     })();
@@ -1461,6 +2035,7 @@ export class RpgService {
         return { ok: false, reason: 'no_items' };
       }
 
+      const character = this.getOrCreateCharacterInTx(guildId, userId, nowMs);
       const slots: readonly RpgItemSlot[] = ['weapon', 'armor', 'accessory'];
       const changed: EquipBestGearChange[] = [];
       let unchangedCount = 0;
@@ -1472,10 +2047,10 @@ export class RpgService {
         }
 
         let best = slotItems[0]!;
-        let bestScore = computeItemScore(best);
+        let bestScore = computeClassAwareItemScore(best, character.classKey);
         for (let i = 1; i < slotItems.length; i++) {
           const candidate = slotItems[i]!;
-          const candidateScore = computeItemScore(candidate);
+          const candidateScore = computeClassAwareItemScore(candidate, character.classKey);
           if (
             candidateScore > bestScore ||
             (candidateScore === bestScore && candidate.enhanceLevel > best.enhanceLevel) ||
@@ -1507,7 +2082,6 @@ export class RpgService {
         }
       }
 
-      const character = this.getOrCreateCharacterInTx(guildId, userId, nowMs);
       const stats = this.computeCombatStatsForCharacter(character);
       return { ok: true, changed, unchangedCount, stats };
     })();
@@ -1517,13 +2091,13 @@ export class RpgService {
     guildId: string,
     userId: string,
     maxRarity: 'uncommon' | 'rare' = 'uncommon',
-    _nowMs = Date.now(),
+    nowMs = Date.now(),
   ): BulkSalvageItemsResult {
     return this.db.transaction((): BulkSalvageItemsResult => {
       const maxOrder = RARITY_ORDER[maxRarity];
       const targets = this.rpgRepo
         .listItems(guildId, userId)
-        .filter((item) => !item.equipped && RARITY_ORDER[item.rarity] <= maxOrder);
+        .filter((item) => !item.equipped && !item.locked && RARITY_ORDER[item.rarity] <= maxOrder);
 
       if (targets.length === 0) {
         return { ok: false, reason: 'nothing_to_salvage' };
@@ -1531,6 +2105,7 @@ export class RpgService {
 
       let salvagedCount = 0;
       let totalCoins = 0;
+      let totalDust = 0;
       const byRarity: Partial<Record<RpgItemRarity, number>> = {};
 
       for (const item of targets) {
@@ -1538,6 +2113,7 @@ export class RpgService {
         if (!deleted) continue;
         salvagedCount += 1;
         totalCoins += getSalvageValue(item);
+        totalDust += getSalvageArcaneDust(item);
         byRarity[item.rarity] = (byRarity[item.rarity] ?? 0) + 1;
       }
 
@@ -1546,10 +2122,20 @@ export class RpgService {
       }
 
       const updatedProfile = this.profileRepo.addCoins(guildId, userId, totalCoins);
+      const character = this.getOrCreateCharacterInTx(guildId, userId, nowMs);
+      const updatedChar: RpgCharacter = {
+        ...character,
+        arcaneDust: character.arcaneDust + totalDust,
+        updatedAt: nowMs,
+      };
+      this.rpgRepo.saveCharacter(updatedChar);
+
       return {
         ok: true,
         salvagedCount,
         totalCoins,
+        totalDust,
+        arcaneDust: updatedChar.arcaneDust,
         balance: updatedProfile.coins,
         byRarity,
       };
@@ -1657,6 +2243,8 @@ export class RpgService {
         legendaryDrops: banked.legendaryDrops,
         autoSalvagedCount: banked.autoSalvagedCount,
         autoSalvagedCoins: banked.autoSalvagedCoins,
+        autoSalvagedDust: banked.autoSalvagedDust,
+        dustEarned: banked.dustEarned,
         adventures,
         character: finalCharacter,
         balance: banked.balance,
@@ -1683,26 +2271,35 @@ export class RpgService {
       const runsExecuted = mode === 'all' ? character.stamina : 1;
       const realm = getRpgRealmInfo(character.level);
       const tierDef = realm.tierDef;
-      const stats = this.computeCombatStatsForCharacter(character);
-
-      const powerScore = stats.atk * 2.5 + stats.maxHp * 0.2 + stats.def * 2;
-      const expectedScore = tierDef.tier * 130;
-      const rating: 'S' | 'A' | 'B' =
-        powerScore >= expectedScore * 1.35 ? 'S' : powerScore >= expectedScore * 0.9 ? 'A' : 'B';
-      const ratingMult = rating === 'S' ? 1.25 : rating === 'A' ? 1.1 : 1.0;
-      const dropChance = rating === 'S' ? 0.85 : 0.75;
+      const heroSnapshot = this.buildCombatantForCharacter(character);
+      const bossSnapshot = buildTierBossCombatant(tierDef.tier, 'normal');
+      const greedMult = 1 + heroSnapshot.affixes.greedBp / 10_000;
 
       let totalXp = 0;
       let totalCoins = 0;
+      let baseDustGain = 0;
       let pillsFound = 0;
       let elixirsFound = 0;
       const pendingItems: PendingRpgItem[] = [];
+      let lastReport: RpgBattleReport | null = null;
+      let lastRating: RpgBattleRating = 'B';
 
       for (let i = 0; i < runsExecuted; i++) {
+        const report = simulateRpgBattle(heroSnapshot, bossSnapshot, { mode: 'full', rng });
+        lastReport = report;
+        const runRating: RpgBattleRating = report.winner === 'left' ? report.rating : 'B';
+        lastRating = runRating;
+        const ratingMult = computeRatingMultiplier(runRating);
+        const dropChance = runRating === 'SSS' ? 0.92 : runRating === 'S' ? 0.85 : 0.75;
+
         const xpVar = 0.9 + clampUnit(rng()) * 0.2;
         const coinVar = 0.9 + clampUnit(rng()) * 0.2;
         totalXp += Math.max(10, Math.round(tierDef.idleXpPerHour * 0.75 * ratingMult * xpVar));
-        totalCoins += Math.max(50, Math.round(tierDef.idleCoinsPerHour * 0.95 * ratingMult * coinVar));
+        totalCoins += Math.max(
+          50,
+          Math.round(tierDef.idleCoinsPerHour * 0.95 * ratingMult * coinVar * greedMult),
+        );
+        baseDustGain += Math.max(2, Math.round((4 + tierDef.tier * 3) * ratingMult * greedMult));
 
         if (clampUnit(rng()) < dropChance) {
           pendingItems.push(generateTierItem(tierDef.tier, 'boss', rng));
@@ -1724,6 +2321,7 @@ export class RpgService {
         },
         xpGain: totalXp,
         coinGain: totalCoins,
+        dustGain: baseDustGain,
         pendingItems,
         source: `rpg_raid_tier${tierDef.tier}`,
         nowMs,
@@ -1742,7 +2340,9 @@ export class RpgService {
       return {
         ok: true,
         runsExecuted,
-        rating,
+        rating: lastRating,
+        roundsPlayed: lastReport?.roundsPlayed ?? 1,
+        highlights: lastReport?.highlights ?? [],
         tierDef,
         xpEarned: totalXp,
         levelsGained: banked.levelsGained,
@@ -1750,17 +2350,1071 @@ export class RpgService {
         grossCoins: banked.grossCoins,
         garnishedCoins: banked.garnishedCoins,
         netCoins: banked.netCoins,
+        dustEarned: banked.dustEarned,
         pillsFound,
         elixirsFound,
         bankedItems: banked.bankedItems,
         legendaryDrops: banked.legendaryDrops,
         autoSalvagedCount: banked.autoSalvagedCount,
         autoSalvagedCoins: banked.autoSalvagedCoins,
+        autoSalvagedDust: banked.autoSalvagedDust,
         character: finalCharacter,
         balance: banked.balance,
       };
     })();
   }
+
+  challengeAbyssBoss(
+    guildId: string,
+    userId: string,
+    nowMs = Date.now(),
+    rng: () => number = Math.random,
+  ): ChallengeAbyssBossResult {
+    return this.db.transaction((): ChallengeAbyssBossResult => {
+      const character = this.getOrCreateCharacterInTx(guildId, userId, nowMs);
+      if (!character.classSelected) {
+        return { ok: false, reason: 'no_class_selected' };
+      }
+
+      const realm = getRpgRealmInfo(character.level);
+      const tier = realm.tier;
+      const tierDef = realm.tierDef;
+      const isFirstClearAttempt = tier > character.abyssClearedTier;
+
+      if (!isFirstClearAttempt && character.stamina < 1) {
+        return { ok: false, reason: 'insufficient_stamina' };
+      }
+
+      const heroSnapshot = this.buildCombatantForCharacter(character);
+      const bossSnapshot = buildTierBossCombatant(tier, 'abyss');
+      const report = simulateRpgBattle(heroSnapshot, bossSnapshot, { mode: 'full', rng });
+
+      if (report.winner !== 'left') {
+        const profile = this.profileRepo.getOrCreate(guildId, userId);
+        return {
+          ok: true,
+          won: false,
+          isFirstClear: false,
+          staminaSpent: 0,
+          tier,
+          tierDef,
+          bossName: bossSnapshot.name,
+          bossMaxHp: bossSnapshot.maxHp,
+          bossRemainingHp: report.rightRemainingHp,
+          roundsPlayed: report.roundsPlayed,
+          rating: report.rating,
+          highlights: report.highlights,
+          xpEarned: 0,
+          levelsGained: 0,
+          hitGate: isAtBreakthroughGate(character.level, character.xp),
+          grossCoins: 0,
+          garnishedCoins: 0,
+          netCoins: 0,
+          dustEarned: 0,
+          bankedItems: [],
+          legendaryDrops: [],
+          autoSalvagedCount: 0,
+          autoSalvagedCoins: 0,
+          autoSalvagedDust: 0,
+          character,
+          balance: profile.coins,
+        };
+      }
+
+      const greedMult = 1 + heroSnapshot.affixes.greedBp / 10_000;
+      const staminaSpent = isFirstClearAttempt ? 0 : 1;
+      const xpGain = isFirstClearAttempt
+        ? Math.max(50, Math.round(tierDef.idleXpPerHour * 1.5))
+        : Math.max(30, Math.round(tierDef.idleXpPerHour * 1.1));
+      const coinGain = isFirstClearAttempt
+        ? Math.round((tier * 12_000 + tierDef.idleCoinsPerHour * 2) * greedMult)
+        : Math.round(tierDef.idleCoinsPerHour * 1.4 * greedMult);
+      const baseDustGain = isFirstClearAttempt
+        ? tier * 35
+        : Math.max(10, Math.round((12 + tier * 6) * greedMult));
+
+      const minDropRarity: RpgItemRarity = isFirstClearAttempt ? 'epic' : 'rare';
+      const pendingItems: PendingRpgItem[] = [
+        generateTierItem(tier, 'abyss', rng, minDropRarity),
+      ];
+
+      const banked = this.bankLootInTx({
+        guildId,
+        userId,
+        character: {
+          ...character,
+          stamina: character.stamina - staminaSpent,
+          abyssClearedTier: Math.max(character.abyssClearedTier, tier),
+        },
+        xpGain,
+        coinGain,
+        dustGain: baseDustGain,
+        pendingItems,
+        source: isFirstClearAttempt
+          ? `rpg_abyss_first_clear_tier${tier}`
+          : `rpg_abyss_farm_tier${tier}`,
+        nowMs,
+      });
+
+      const finalCharacter: RpgCharacter = {
+        ...banked.updatedCharacter,
+        totalClears: banked.updatedCharacter.totalClears + 1,
+        totalBossKills: banked.updatedCharacter.totalBossKills + 1,
+        updatedAt: nowMs,
+      };
+      this.rpgRepo.saveCharacter(finalCharacter);
+
+      return {
+        ok: true,
+        won: true,
+        isFirstClear: isFirstClearAttempt,
+        staminaSpent,
+        tier,
+        tierDef,
+        bossName: bossSnapshot.name,
+        bossMaxHp: bossSnapshot.maxHp,
+        bossRemainingHp: report.rightRemainingHp,
+        roundsPlayed: report.roundsPlayed,
+        rating: report.rating,
+        highlights: report.highlights,
+        xpEarned: xpGain,
+        levelsGained: banked.levelsGained,
+        hitGate: banked.hitGate,
+        grossCoins: banked.grossCoins,
+        garnishedCoins: banked.garnishedCoins,
+        netCoins: banked.netCoins,
+        dustEarned: banked.dustEarned,
+        bankedItems: banked.bankedItems,
+        legendaryDrops: banked.legendaryDrops,
+        autoSalvagedCount: banked.autoSalvagedCount,
+        autoSalvagedCoins: banked.autoSalvagedCoins,
+        autoSalvagedDust: banked.autoSalvagedDust,
+        character: finalCharacter,
+        balance: banked.balance,
+      };
+    })();
+  }
+
+  // ── Async Arena (Daily 5 Free Fights + Daily Rating Stipend) ──
+
+  getArenaLeaderboard(
+    guildId: string,
+    limit = 10,
+    offset = 0,
+  ): { items: RpgCharacter[]; total: number } {
+    return this.rpgRepo.getArenaLeaderboard(guildId, limit, offset);
+  }
+
+  getArenaRank(guildId: string, userId: string): { rank: number; total: number } | null {
+    return this.rpgRepo.getArenaRank(guildId, userId);
+  }
+
+  listArenaCandidates(guildId: string, excludeUserId: string, limit = 15): RpgCharacter[] {
+    return this.rpgRepo.listArenaCandidates(guildId, excludeUserId, limit);
+  }
+
+  previewDailyArenaReward(
+    guildId: string,
+    userId: string,
+    nowMs = Date.now(),
+  ): ArenaDailyRewardPreview {
+    const character = this.getOrCreateCharacter(guildId, userId, nowMs);
+    const today = getDateKey(nowMs, this.timezone);
+    const claimedToday = character.arenaRewardDate === today;
+    const rating = character.arenaRating;
+    const coins = Math.round(2500 + Math.max(0, rating - 800) * 4);
+    const dust = Math.max(8, Math.round(8 + Math.max(0, rating - 900) / 50));
+    const fightsUsed = character.arenaFightsToday;
+    const fightsRemaining = Math.max(0, DAILY_ARENA_FIGHTS - fightsUsed);
+    return {
+      canClaim: character.classSelected && !claimedToday,
+      claimedToday,
+      rating,
+      tierLabel: getArenaTierLabel(rating),
+      coins,
+      dust,
+      fightsUsed,
+      fightsRemaining,
+    };
+  }
+
+  challengeArenaOpponent(
+    guildId: string,
+    actorId: string,
+    targetId: string,
+    nowMs = Date.now(),
+    rng: () => number = Math.random,
+  ): ChallengeArenaResult {
+    if (actorId === targetId) {
+      return { ok: false, reason: 'self_target' };
+    }
+
+    return this.db.transaction((): ChallengeArenaResult => {
+      const actor = this.getOrCreateCharacterInTx(guildId, actorId, nowMs);
+      if (!actor.classSelected) {
+        return { ok: false, reason: 'no_class_selected' };
+      }
+      if (actor.arenaFightsToday >= DAILY_ARENA_FIGHTS) {
+        return {
+          ok: false,
+          reason: 'daily_limit_reached',
+          dailyLimit: DAILY_ARENA_FIGHTS,
+        };
+      }
+
+      const target = this.rpgRepo.getCharacter(guildId, targetId);
+      if (!target || !target.classSelected) {
+        return { ok: false, reason: 'target_not_found' };
+      }
+
+      const left = this.buildCombatantForCharacter(actor);
+      const right = this.buildCombatantForCharacter(target);
+      const report = simulateRpgBattle(left, right, { mode: 'full', rng });
+
+      const ratingBefore = actor.arenaRating;
+      const expected = 1 / (1 + Math.pow(10, (target.arenaRating - ratingBefore) / 400));
+      const won = report.winner === 'left';
+
+      let ratingDelta: number;
+      if (won) {
+        ratingDelta = Math.max(15, Math.min(32, Math.round(15 + (1 - expected) * 17)));
+      } else {
+        ratingDelta = -Math.max(15, Math.min(32, Math.round(15 + expected * 17)));
+      }
+      const ratingAfter = Math.max(600, ratingBefore + ratingDelta);
+
+      const rawCoins = won
+        ? Math.round(1800 + ratingBefore * 1.5)
+        : 500;
+      const dustEarned = won
+        ? 10 + Math.floor(Math.max(0, ratingBefore - 1000) / 200) * 2
+        : 4;
+
+      const coinRes = this.applyCoinRewardInTx(
+        guildId,
+        actorId,
+        rawCoins,
+        won ? 'rpg_arena_win' : 'rpg_arena_consolation',
+        nowMs,
+      );
+
+      const updatedActor: RpgCharacter = {
+        ...actor,
+        arenaRating: ratingAfter,
+        arenaFightsToday: actor.arenaFightsToday + 1,
+        arcaneDust: actor.arcaneDust + dustEarned,
+        updatedAt: nowMs,
+      };
+      this.rpgRepo.saveCharacter(updatedActor);
+
+      return {
+        ok: true,
+        won,
+        winner: report.winner,
+        ratingBefore,
+        ratingAfter,
+        ratingDelta,
+        fightsUsed: updatedActor.arenaFightsToday,
+        fightsRemaining: Math.max(0, DAILY_ARENA_FIGHTS - updatedActor.arenaFightsToday),
+        grossCoins: coinRes.grossCoins,
+        garnishedCoins: coinRes.garnishedCoins,
+        netCoins: coinRes.netCoins,
+        dustEarned,
+        report,
+        highlights: report.highlights,
+        character: updatedActor,
+        targetCharacter: target,
+        balance: coinRes.balance,
+      };
+    })();
+  }
+
+  claimDailyArenaReward(
+    guildId: string,
+    userId: string,
+    nowMs = Date.now(),
+  ): ClaimDailyArenaRewardResult {
+    return this.db.transaction((): ClaimDailyArenaRewardResult => {
+      const character = this.getOrCreateCharacterInTx(guildId, userId, nowMs);
+      if (!character.classSelected) {
+        return { ok: false, reason: 'no_class_selected' };
+      }
+
+      const today = getDateKey(nowMs, this.timezone);
+      if (character.arenaRewardDate === today) {
+        return { ok: false, reason: 'already_claimed' };
+      }
+
+      const rating = character.arenaRating;
+      const rawCoins = Math.round(2500 + Math.max(0, rating - 800) * 4);
+      const dustEarned = Math.max(8, Math.round(8 + Math.max(0, rating - 900) / 50));
+
+      const coinRes = this.applyCoinRewardInTx(
+        guildId,
+        userId,
+        rawCoins,
+        'rpg_arena_daily_reward',
+        nowMs,
+      );
+
+      const updatedChar: RpgCharacter = {
+        ...character,
+        arenaRewardDate: today,
+        arcaneDust: character.arcaneDust + dustEarned,
+        updatedAt: nowMs,
+      };
+      this.rpgRepo.saveCharacter(updatedChar);
+
+      return {
+        ok: true,
+        rating,
+        tierLabel: getArenaTierLabel(rating),
+        grossCoins: coinRes.grossCoins,
+        garnishedCoins: coinRes.garnishedCoins,
+        netCoins: coinRes.netCoins,
+        dustEarned,
+        character: updatedChar,
+        balance: coinRes.balance,
+      };
+    })();
+  }
+
+  // ── Public Duels (#游戏聊天, 10m TTL, Full vs Equalized, 0..1B Bet) ──
+
+  getPublicDuelById(duelId: number): RpgDuel | null {
+    return this.rpgRepo.getDuelById(duelId);
+  }
+
+  getPendingDuelForUser(guildId: string, userId: string): RpgDuel | null {
+    return this.rpgRepo.getPendingDuelForUser(guildId, userId);
+  }
+
+  bindPublicDuelMessage(duelId: number, messageId: string, channelId?: string): void {
+    this.rpgRepo.bindDuelMessage(duelId, messageId, channelId);
+  }
+
+  createPublicDuel(input: {
+    guildId: string;
+    channelId: string;
+    challengerId: string;
+    opponentId?: string | null;
+    rulesMode: RpgDuelRulesMode;
+    betAmount: number;
+    nowMs?: number;
+  }): CreatePublicDuelResult {
+    const nowMs = input.nowMs ?? Date.now();
+    const opponentId = input.opponentId?.trim() || null;
+    if (opponentId && opponentId === input.challengerId) {
+      return { ok: false, reason: 'self_target' };
+    }
+
+    if (
+      typeof input.betAmount !== 'number' ||
+      !Number.isFinite(input.betAmount) ||
+      !Number.isInteger(input.betAmount) ||
+      input.betAmount < 0 ||
+      input.betAmount > MAX_RPG_DUEL_BET
+    ) {
+      return { ok: false, reason: 'invalid_bet_amount' };
+    }
+    const betAmount = input.betAmount;
+
+    return this.db.transaction((): CreatePublicDuelResult => {
+      const character = this.getOrCreateCharacterInTx(input.guildId, input.challengerId, nowMs);
+      if (!character.classSelected) {
+        return { ok: false, reason: 'no_class_selected' };
+      }
+
+      if (this.rpgRepo.getPendingDuelForUser(input.guildId, input.challengerId)) {
+        return { ok: false, reason: 'pending_duel_exists' };
+      }
+
+      const profile = this.profileRepo.getOrCreate(input.guildId, input.challengerId);
+      let nextBalance = profile.coins;
+
+      if (betAmount > 0) {
+        if (this.checkGamblingBlocked(input.guildId, input.challengerId, nowMs)) {
+          return { ok: false, reason: 'deadbeat_blocked' };
+        }
+        if (profile.coins < betAmount) {
+          return {
+            ok: false,
+            reason: 'insufficient_funds',
+            required: betAmount,
+            available: profile.coins,
+          };
+        }
+        nextBalance = profile.coins - betAmount;
+        this.profileRepo.save({ ...profile, coins: nextBalance });
+      }
+
+      const duel = this.rpgRepo.createDuel({
+        guildId: input.guildId,
+        channelId: input.channelId,
+        challengerId: input.challengerId,
+        opponentId,
+        rulesMode: input.rulesMode,
+        betAmount,
+        createdAt: nowMs,
+        expiresAt: nowMs + PUBLIC_DUEL_TTL_MS,
+      });
+
+      return { ok: true, duel, character, balance: nextBalance };
+    })();
+  }
+
+  cancelPublicDuelAndRefund(
+    duelId: number,
+    actorIdOrSystem: string | null = null,
+    nowMs = Date.now(),
+  ): CancelPublicDuelResult {
+    return this.db.transaction((): CancelPublicDuelResult => {
+      const duel = this.rpgRepo.getDuelById(duelId);
+      if (!duel) {
+        return { ok: false, reason: 'not_found' };
+      }
+      if (duel.status !== 'pending') {
+        return { ok: false, reason: 'already_resolved' };
+      }
+      if (actorIdOrSystem !== null && actorIdOrSystem !== duel.challengerId) {
+        return { ok: false, reason: 'not_challenger' };
+      }
+
+      const refundedBet = duel.betAmount;
+      const updatedProfile =
+        refundedBet > 0
+          ? this.profileRepo.addCoins(duel.guildId, duel.challengerId, refundedBet)
+          : this.profileRepo.getOrCreate(duel.guildId, duel.challengerId);
+
+      const cancelled: RpgDuel = {
+        ...duel,
+        status: 'cancelled',
+        resultSummary:
+          actorIdOrSystem === null
+            ? '公屏战书发送失败，已自动撤回并全额退还押注。'
+            : '发起人已撤回战书，托管押注已全额退回。',
+        resolvedAt: nowMs,
+      };
+      this.rpgRepo.saveDuel(cancelled);
+
+      return {
+        ok: true,
+        duel: cancelled,
+        refundedBet,
+        balance: updatedProfile.coins,
+      };
+    })();
+  }
+
+  acceptPublicDuel(
+    duelId: number,
+    acceptorId: string,
+    nowMs = Date.now(),
+    rng: () => number = Math.random,
+  ): AcceptPublicDuelResult {
+    return this.db.transaction((): AcceptPublicDuelResult => {
+      const duel = this.rpgRepo.getDuelById(duelId);
+      if (!duel) {
+        return { ok: false, reason: 'not_found' };
+      }
+      if (duel.status !== 'pending') {
+        return { ok: false, reason: 'already_resolved' };
+      }
+      if (duel.expiresAt <= nowMs) {
+        if (duel.betAmount > 0) {
+          this.profileRepo.addCoins(duel.guildId, duel.challengerId, duel.betAmount);
+        }
+        this.rpgRepo.saveDuel({
+          ...duel,
+          status: 'expired',
+          resultSummary: '战书已逾时失效，托管押注已退还发起人。',
+          resolvedAt: nowMs,
+        });
+        return { ok: false, reason: 'expired' };
+      }
+      if (acceptorId === duel.challengerId) {
+        return { ok: false, reason: 'own_duel' };
+      }
+      if (duel.opponentId !== null && duel.opponentId !== acceptorId) {
+        return {
+          ok: false,
+          reason: 'wrong_opponent',
+          expectedOpponentId: duel.opponentId,
+        };
+      }
+
+      const acceptorChar = this.getOrCreateCharacterInTx(duel.guildId, acceptorId, nowMs);
+      if (!acceptorChar.classSelected) {
+        return { ok: false, reason: 'no_class_selected' };
+      }
+
+      const challengerChar = this.rpgRepo.getCharacter(duel.guildId, duel.challengerId);
+      if (!challengerChar || !challengerChar.classSelected) {
+        return { ok: false, reason: 'challenger_unavailable' };
+      }
+
+      const betAmount = duel.betAmount;
+      if (betAmount > 0) {
+        if (this.checkGamblingBlocked(duel.guildId, acceptorId, nowMs)) {
+          return { ok: false, reason: 'deadbeat_blocked' };
+        }
+        const acceptorProfile = this.profileRepo.getOrCreate(duel.guildId, acceptorId);
+        if (acceptorProfile.coins < betAmount) {
+          return {
+            ok: false,
+            reason: 'insufficient_funds',
+            required: betAmount,
+            available: acceptorProfile.coins,
+          };
+        }
+        this.profileRepo.save({
+          ...acceptorProfile,
+          coins: acceptorProfile.coins - betAmount,
+        });
+      }
+
+      const left = this.buildCombatantForCharacter(challengerChar);
+      const right = this.buildCombatantForCharacter(acceptorChar);
+      const report = simulateRpgBattle(left, right, { mode: duel.rulesMode, rng });
+
+      let winnerId: string | null = null;
+      let winnerPayout = 0;
+
+      if (report.winner === 'draw') {
+        if (betAmount > 0) {
+          this.profileRepo.addCoins(duel.guildId, duel.challengerId, betAmount);
+          this.profileRepo.addCoins(duel.guildId, acceptorId, betAmount);
+        }
+      } else {
+        winnerId = report.winner === 'left' ? duel.challengerId : acceptorId;
+        const loserId = report.winner === 'left' ? acceptorId : duel.challengerId;
+        if (betAmount > 0) {
+          winnerPayout = betAmount * 2;
+          this.profileRepo.addCoins(duel.guildId, winnerId, winnerPayout);
+          this.emitGamblingResult(duel.guildId, winnerId, betAmount, betAmount, nowMs);
+          this.emitGamblingResult(duel.guildId, loserId, betAmount, -betAmount, nowMs);
+        }
+      }
+
+      const modeLabel = duel.rulesMode === 'equalized' ? '⚖️ 同阶拉平局' : '🔥 满配神装局';
+      const resultSummary =
+        winnerId === null
+          ? `🤝 ${modeLabel}鏖战 ${report.roundsPlayed} 回合握手言和${betAmount > 0 ? `，双方押注 ${betAmount.toLocaleString()} 已全额退回` : ''}！`
+          : `🏆 ${modeLabel}第 ${report.roundsPlayed} 回合分出胜负：<@${winnerId}> 获胜（评级 ${report.rating}）${betAmount > 0 ? `，独揽奖池 ${winnerPayout.toLocaleString()}！` : '！'}`;
+
+      const settledDuel: RpgDuel = {
+        ...duel,
+        opponentId: acceptorId,
+        status: 'completed',
+        winnerId,
+        resultSummary,
+        highlights: report.highlights,
+        resolvedAt: nowMs,
+      };
+      this.rpgRepo.saveDuel(settledDuel);
+
+      const challengerBalance = this.profileRepo.getOrCreate(duel.guildId, duel.challengerId).coins;
+      const acceptorBalance = this.profileRepo.getOrCreate(duel.guildId, acceptorId).coins;
+
+      return {
+        ok: true,
+        duel: settledDuel,
+        report,
+        winnerId,
+        betAmount,
+        winnerPayout,
+        challengerBalance,
+        acceptorBalance,
+      };
+    })();
+  }
+
+  expireDuePublicDuels(nowMs = Date.now()): RpgDuel[] {
+    const due = this.rpgRepo.listDuePendingDuels(nowMs);
+    const expired: RpgDuel[] = [];
+    for (const candidate of due) {
+      const settled = this.db.transaction((): RpgDuel | null => {
+        const duel = this.rpgRepo.getDuelById(candidate.id);
+        if (!duel || duel.status !== 'pending' || duel.expiresAt > nowMs) {
+          return null;
+        }
+        if (duel.betAmount > 0) {
+          this.profileRepo.addCoins(duel.guildId, duel.challengerId, duel.betAmount);
+        }
+        const next: RpgDuel = {
+          ...duel,
+          status: 'expired',
+          resultSummary: '战书逾时无人应战，已自动撤回并全额退还托管押注。',
+          resolvedAt: nowMs,
+        };
+        this.rpgRepo.saveDuel(next);
+        return next;
+      })();
+      if (settled) {
+        expired.push(settled);
+      }
+    }
+    return expired;
+  }
+
+  // ── 2~4 Player Co-op Raids (#游戏聊天, 3m Recruitment, Auto-Mercenary Fill) ──
+
+  getCoopRaidById(raidId: number): RpgRaid | null {
+    return this.rpgRepo.getRaidById(raidId);
+  }
+
+  getRecruitingRaidForLeader(guildId: string, leaderId: string): RpgRaid | null {
+    return this.rpgRepo.getRecruitingRaidForLeader(guildId, leaderId);
+  }
+
+  bindCoopRaidMessage(raidId: number, messageId: string, channelId?: string): void {
+    this.rpgRepo.bindRaidMessage(raidId, messageId, channelId);
+  }
+
+  startCoopRaidLobby(
+    guildId: string,
+    channelId: string,
+    leaderId: string,
+    nowMs = Date.now(),
+  ): StartCoopRaidResult {
+    return this.db.transaction((): StartCoopRaidResult => {
+      const character = this.getOrCreateCharacterInTx(guildId, leaderId, nowMs);
+      if (!character.classSelected) {
+        return { ok: false, reason: 'no_class_selected' };
+      }
+
+      const existing = this.rpgRepo.getRecruitingRaidForLeader(guildId, leaderId);
+      if (existing) {
+        return { ok: false, reason: 'active_raid_exists', raid: existing };
+      }
+
+      if (character.coopTicketsToday >= DAILY_COOP_TICKETS) {
+        return {
+          ok: false,
+          reason: 'no_coop_tickets',
+          dailyLimit: DAILY_COOP_TICKETS,
+        };
+      }
+
+      const updatedChar: RpgCharacter = {
+        ...character,
+        coopTicketsToday: character.coopTicketsToday + 1,
+        updatedAt: nowMs,
+      };
+      this.rpgRepo.saveCharacter(updatedChar);
+
+      const realm = getRpgRealmInfo(updatedChar.level);
+      const boss = buildCoopRaidBossCombatant(realm.tier, MIN_COOP_PARTY_SIZE);
+      const raid = this.rpgRepo.createRaid({
+        guildId,
+        channelId,
+        leaderId,
+        tier: realm.tier,
+        bossName: realm.tierDef.bossName,
+        bossMaxHp: boss.maxHp,
+        bossRemainingHp: boss.maxHp,
+        members: [leaderId],
+        createdAt: nowMs,
+        expiresAt: nowMs + COOP_RECRUIT_TTL_MS,
+      });
+
+      return {
+        ok: true,
+        raid,
+        character: updatedChar,
+        ticketsRemaining: Math.max(0, DAILY_COOP_TICKETS - updatedChar.coopTicketsToday),
+      };
+    })();
+  }
+
+  cancelCoopRaidAndRefund(raidId: number, nowMs = Date.now()): boolean {
+    return this.db.transaction((): boolean => {
+      const raid = this.rpgRepo.getRaidById(raidId);
+      if (!raid || raid.status !== 'recruiting') {
+        return false;
+      }
+      const leader = this.rpgRepo.getCharacter(raid.guildId, raid.leaderId);
+      if (leader) {
+        this.rpgRepo.saveCharacter({
+          ...leader,
+          coopTicketsToday: Math.max(0, leader.coopTicketsToday - 1),
+          updatedAt: nowMs,
+        });
+      }
+      this.rpgRepo.saveRaid({
+        ...raid,
+        status: 'cancelled',
+        resultSummary: '公屏集结招募发送失败，已退还今日团本发车券。',
+        resolvedAt: nowMs,
+      });
+      return true;
+    })();
+  }
+
+  joinCoopRaidLobby(raidId: number, userId: string, nowMs = Date.now()): JoinCoopRaidResult {
+    return this.db.transaction((): JoinCoopRaidResult => {
+      const raid = this.rpgRepo.getRaidById(raidId);
+      if (!raid) {
+        return { ok: false, reason: 'not_found' };
+      }
+      if (raid.status !== 'recruiting' || raid.expiresAt <= nowMs) {
+        return { ok: false, reason: 'already_started_or_closed' };
+      }
+      if (raid.members.includes(userId)) {
+        return { ok: false, reason: 'already_joined' };
+      }
+      if (raid.members.length >= MAX_COOP_PARTY_SIZE) {
+        return { ok: false, reason: 'party_full' };
+      }
+
+      const character = this.getOrCreateCharacterInTx(raid.guildId, userId, nowMs);
+      if (!character.classSelected) {
+        return { ok: false, reason: 'no_class_selected' };
+      }
+
+      const nextMembers = [...raid.members, userId];
+      const scaledBoss = buildCoopRaidBossCombatant(raid.tier, nextMembers.length);
+      const updatedRaid: RpgRaid = {
+        ...raid,
+        members: nextMembers,
+        bossMaxHp: scaledBoss.maxHp,
+        bossRemainingHp: scaledBoss.maxHp,
+      };
+      this.rpgRepo.saveRaid(updatedRaid);
+
+      return { ok: true, raid: updatedRaid, character };
+    })();
+  }
+
+  private buildFallbackGuardianMercenary(tier: number, index: number): CoopPartyMemberInput {
+    const safeTier = Math.max(1, Math.min(RPG_TIERS.length, Math.floor(tier)));
+    const level = (safeTier - 1) * STAGES_PER_TIER + 7;
+    const classDef = RPG_CLASS_MAP.get('paladin')!;
+    const extraLevels = Math.max(0, level - 1);
+    const tierScale = 1 + (safeTier - 1) * 0.52;
+
+    const affixes = createEmptyAffixBonuses();
+    affixes.thornsBp = 900;
+    affixes.dmgReduceBp = 800;
+    affixes.lifestealBp = 600;
+    if (safeTier >= 5) {
+      affixes.legendaryEffects.push('titan_aegis');
+    }
+
+    return {
+      id: `merc:guardian:${index}`,
+      name: '🛡️ 圣殿守护佣兵',
+      classKey: 'paladin',
+      level,
+      maxHp: Math.round(classDef.baseHp + extraLevels * classDef.hpPerLevel + 95 * tierScale),
+      atk: Math.round(classDef.baseAtk + extraLevels * classDef.atkPerLevel + 24 * tierScale),
+      def: Math.round(classDef.baseDef + extraLevels * classDef.defPerLevel + 18 * tierScale),
+      critBp: Math.min(7500, Math.round(classDef.baseCritBp + extraLevels * classDef.critBpPerLevel + 500)),
+      dodgeBp: classDef.baseDodgeBp,
+      affixes,
+      pet: null,
+      isMercenary: true,
+    };
+  }
+
+  launchCoopRaid(
+    raidId: number,
+    actorIdOrSystem: string | null,
+    nowMs = Date.now(),
+    rng: () => number = Math.random,
+  ): LaunchCoopRaidResult {
+    return this.db.transaction((): LaunchCoopRaidResult => {
+      const raid = this.rpgRepo.getRaidById(raidId);
+      if (!raid) {
+        return { ok: false, reason: 'not_found' };
+      }
+      if (raid.status !== 'recruiting') {
+        return { ok: false, reason: 'already_resolved' };
+      }
+      if (actorIdOrSystem !== null) {
+        if (actorIdOrSystem !== raid.leaderId) {
+          return { ok: false, reason: 'not_leader' };
+        }
+        if (raid.members.length < MIN_COOP_PARTY_SIZE) {
+          return {
+            ok: false,
+            reason: 'not_enough_members',
+            minMembers: MIN_COOP_PARTY_SIZE,
+          };
+        }
+      }
+
+      const party: CoopPartyMemberInput[] = [];
+      const humanChars = new Map<string, RpgCharacter>();
+
+      for (const memberId of raid.members) {
+        const ch = this.getOrCreateCharacterInTx(raid.guildId, memberId, nowMs);
+        humanChars.set(memberId, ch);
+        const snap = this.buildCombatantForCharacter(ch);
+        party.push({ ...snap, isMercenary: false });
+      }
+
+      const mercIds: string[] = [];
+      if (actorIdOrSystem === null && party.length < MIN_COOP_PARTY_SIZE) {
+        const lb = this.rpgRepo.getLeaderboard(raid.guildId, 12, 0);
+        for (const candidate of lb.items) {
+          if (party.length >= MIN_COOP_PARTY_SIZE) break;
+          if (!candidate.classSelected) continue;
+          if (raid.members.includes(candidate.userId) || mercIds.includes(candidate.userId)) {
+            continue;
+          }
+          const mercName = `佣兵·${this.resolveHeroDisplayName(raid.guildId, candidate.userId)}`;
+          const snap = this.buildCombatantForCharacter(candidate, mercName);
+          party.push({ ...snap, isMercenary: true });
+          mercIds.push(candidate.userId);
+        }
+
+        let fallbackIdx = 1;
+        while (party.length < MIN_COOP_PARTY_SIZE) {
+          const guardian = this.buildFallbackGuardianMercenary(raid.tier, fallbackIdx);
+          party.push(guardian);
+          mercIds.push(guardian.id);
+          fallbackIdx += 1;
+        }
+      }
+
+      const report = simulateCoopRaidBattle(party, raid.tier, rng);
+      const tierDef = RPG_TIER_MAP.get(raid.tier) ?? RPG_TIERS[0]!;
+      const synergyMult = 1 + report.partySynergyBonusPct / 100;
+      const payouts: RpgRaidPayout[] = [];
+      const allLegendaryDrops: RpgItem[] = [];
+
+      for (const memberStat of report.members) {
+        const isLeader = !memberStat.isMercenary && memberStat.userId === raid.leaderId;
+        const isMvp = report.mvpUserId === memberStat.userId;
+
+        if (memberStat.isMercenary) {
+          const mercSnap = party.find((p) => p.id === memberStat.userId);
+          payouts.push({
+            userId: memberStat.userId,
+            name: memberStat.name,
+            classKey: memberStat.classKey,
+            level: mercSnap?.level ?? raid.tier * STAGES_PER_TIER,
+            isLeader: false,
+            isMercenary: true,
+            isMvp,
+            damageDealt: memberStat.damageDealt,
+            damageTaken: memberStat.damageTaken,
+            grossCoins: 0,
+            garnishedCoins: 0,
+            netCoins: 0,
+            dustEarned: 0,
+            xpEarned: 0,
+            itemsDropped: [],
+          });
+          continue;
+        }
+
+        const char =
+          humanChars.get(memberStat.userId) ??
+          this.getOrCreateCharacterInTx(raid.guildId, memberStat.userId, nowMs);
+        const snap = party.find((p) => p.id === memberStat.userId);
+        const greedMult = 1 + (snap?.affixes.greedBp ?? 0) / 10_000;
+
+        if (isLeader) {
+          const xpGain = report.succeeded
+            ? Math.max(40, Math.round(tierDef.idleXpPerHour * 1.2 * synergyMult))
+            : Math.max(15, Math.round(tierDef.idleXpPerHour * 0.35));
+          const coinGain = report.succeeded
+            ? Math.round((2500 + tierDef.idleCoinsPerHour * 1.3) * synergyMult * greedMult)
+            : Math.round(tierDef.idleCoinsPerHour * 0.4);
+          const baseDust = report.succeeded
+            ? Math.round((15 + raid.tier * 8) * greedMult) + (isMvp ? 10 : 0)
+            : 5 + raid.tier * 2 + (isMvp ? 5 : 0);
+
+          const pendingItems: PendingRpgItem[] = [];
+          if (report.succeeded) {
+            pendingItems.push(generateTierItem(raid.tier, 'coop', rng, 'rare'));
+            if (clampUnit(rng()) < 0.35) {
+              pendingItems.push(generateTierItem(raid.tier, 'coop', rng));
+            }
+          }
+
+          const banked = this.bankLootInTx({
+            guildId: raid.guildId,
+            userId: memberStat.userId,
+            character: char,
+            xpGain,
+            coinGain,
+            dustGain: baseDust,
+            pendingItems,
+            source: `rpg_coop_leader_tier${raid.tier}`,
+            nowMs,
+          });
+
+          const finalLeader: RpgCharacter = {
+            ...banked.updatedCharacter,
+            totalClears: banked.updatedCharacter.totalClears + (report.succeeded ? 1 : 0),
+            totalBossKills: banked.updatedCharacter.totalBossKills + (report.succeeded ? 1 : 0),
+            updatedAt: nowMs,
+          };
+          this.rpgRepo.saveCharacter(finalLeader);
+          allLegendaryDrops.push(...banked.legendaryDrops);
+
+          payouts.push({
+            userId: memberStat.userId,
+            name: memberStat.name,
+            classKey: memberStat.classKey,
+            level: finalLeader.level,
+            isLeader: true,
+            isMercenary: false,
+            isMvp,
+            damageDealt: memberStat.damageDealt,
+            damageTaken: memberStat.damageTaken,
+            grossCoins: banked.grossCoins,
+            garnishedCoins: banked.garnishedCoins,
+            netCoins: banked.netCoins,
+            dustEarned: banked.dustEarned,
+            xpEarned: xpGain,
+            itemsDropped: banked.bankedItems.map((it) => ({
+              id: it.id,
+              name: it.name,
+              rarity: it.rarity,
+              slot: it.slot,
+            })),
+          });
+        } else {
+          // Human joiner assist rewards (unlimited daily assists!)
+          const xpGain = report.succeeded
+            ? Math.max(20, Math.round(tierDef.idleXpPerHour * 0.4))
+            : Math.max(10, Math.round(tierDef.idleXpPerHour * 0.15));
+          const coinGain = report.succeeded
+            ? Math.round((1200 + tierDef.idleCoinsPerHour * 0.45) * synergyMult * greedMult)
+            : Math.round(tierDef.idleCoinsPerHour * 0.2);
+          const dustGain = report.succeeded
+            ? Math.round((8 + raid.tier * 3) * greedMult) + (isMvp ? 10 : 0)
+            : 4 + raid.tier + (isMvp ? 5 : 0);
+
+          const banked = this.bankLootInTx({
+            guildId: raid.guildId,
+            userId: memberStat.userId,
+            character: char,
+            xpGain,
+            coinGain,
+            dustGain,
+            pendingItems: [],
+            source: `rpg_coop_assist_tier${raid.tier}`,
+            nowMs,
+          });
+          this.rpgRepo.saveCharacter(banked.updatedCharacter);
+
+          payouts.push({
+            userId: memberStat.userId,
+            name: memberStat.name,
+            classKey: memberStat.classKey,
+            level: banked.updatedCharacter.level,
+            isLeader: false,
+            isMercenary: false,
+            isMvp,
+            damageDealt: memberStat.damageDealt,
+            damageTaken: memberStat.damageTaken,
+            grossCoins: banked.grossCoins,
+            garnishedCoins: banked.garnishedCoins,
+            netCoins: banked.netCoins,
+            dustEarned: banked.dustEarned,
+            xpEarned: xpGain,
+            itemsDropped: [],
+          });
+        }
+      }
+
+      const resultSummary = report.succeeded
+        ? `🎉 ${party.length} 人集结小队（羁绊 +${report.partySynergyBonusPct}%）第 ${report.roundsPlayed} 回合讨伐「${raid.bossName}」大获全胜！`
+        : `💥 鏖战 ${report.roundsPlayed} 回合未能击破「${raid.bossName}」（剩余生命 ${report.bossRemainingHp}/${report.bossMaxHp}），已发放参战抚恤奖励。`;
+
+      const settledRaid: RpgRaid = {
+        ...raid,
+        bossMaxHp: report.bossMaxHp,
+        bossRemainingHp: report.bossRemainingHp,
+        mercIds,
+        status: report.succeeded ? 'completed' : 'failed',
+        mvpUserId: report.mvpUserId,
+        resultSummary,
+        highlights: report.highlights,
+        payouts,
+        resolvedAt: nowMs,
+      };
+      this.rpgRepo.saveRaid(settledRaid);
+
+      return {
+        ok: true,
+        raid: settledRaid,
+        report,
+        succeeded: report.succeeded,
+        payouts,
+        legendaryDrops: allLegendaryDrops,
+        highlights: report.highlights,
+      };
+    })();
+  }
+
+  settleDueCoopRaids(
+    nowMs = Date.now(),
+    rng: () => number = Math.random,
+  ): Array<Extract<LaunchCoopRaidResult, { ok: true }>> {
+    const due = this.rpgRepo.listDueRecruitingRaids(nowMs);
+    const settled: Array<Extract<LaunchCoopRaidResult, { ok: true }>> = [];
+    for (const raid of due) {
+      const res = this.launchCoopRaid(raid.id, null, nowMs, rng);
+      if (res.ok) {
+        settled.push(res);
+      }
+    }
+    return settled;
+  }
+
+  // ── World Boss Bridge (decoupled adapter for WorldEventService) ──
+
+  createWorldBossBridge(rng: () => number = Math.random): RpgWorldBossBridge {
+    return {
+      getBossAttackBonus: (guildId, userId, mode, _nowMs) => {
+        const character = this.rpgRepo.getCharacter(guildId, userId);
+        if (!character || !character.classSelected) {
+          return null;
+        }
+        const stats = this.computeCombatStatsForCharacter(character);
+        const realm = getRpgRealmInfo(character.level);
+        const classDef = RPG_CLASS_MAP.get(character.classKey) ?? RPG_CLASSES[0]!;
+
+        const rawNormal = Math.max(8, Math.round(stats.atk * 0.35 + realm.tier * 6));
+        const bonusDamage =
+          mode === 'heavy'
+            ? Math.min(WORLD_BOSS_HEAVY_BONUS_CAP, Math.round(rawNormal * 1.5))
+            : Math.min(WORLD_BOSS_NORMAL_BONUS_CAP, rawNormal);
+
+        return {
+          bonusDamage,
+          classEmoji: classDef.emoji,
+          realmLabel: `${realm.tierDef.name}·${realm.stageZh}`,
+        };
+      },
+
+      awardBossKillDust: (guildId, participantUserIds, mvpUserId, _nowMs) => {
+        return this.db.transaction(() => {
+          const awarded = new Map<string, number>();
+          const uniqueUsers = new Set<string>(participantUserIds);
+          for (const uid of uniqueUsers) {
+            const character = this.rpgRepo.getCharacter(guildId, uid);
+            if (!character || !character.classSelected) {
+              continue;
+            }
+            const baseDust = 8 + Math.floor(clampUnit(rng()) * 11); // 8..18 inclusive
+            const totalDust = baseDust + (uid === mvpUserId ? 8 : 0);
+            this.rpgRepo.addArcaneDust(guildId, uid, totalDust);
+            awarded.set(uid, totalDust);
+          }
+          return awarded;
+        })();
+      },
+    };
+  }
+
+  // ── Breakthrough Trials ──
 
   computeBreakthroughPreview(
     guildId: string,
@@ -2118,6 +3772,8 @@ export class RpgService {
         staminaBuysToday: 0,
         pillBuysToday: 0,
         elixirBuysToday: 0,
+        arenaFightsToday: 0,
+        coopTicketsToday: 0,
         updatedAt: nowMs,
       };
       dirty = true;
@@ -2147,6 +3803,7 @@ export class RpgService {
       def += eff.def;
       critBp += eff.critBp;
     }
+    const affixes = aggregateEquippedAffixes(equippedItems);
 
     let petSynergy: PetSynergyInfo | null = null;
     if (this.socialPetRepo) {
@@ -2168,6 +3825,7 @@ export class RpgService {
       classKey: character.classKey,
       level: character.level,
       equippedItems,
+      affixes,
       petSynergy,
     };
   }
@@ -2179,6 +3837,7 @@ export class RpgService {
     const realm = getRpgRealmInfo(character.level);
     const stats = this.computeCombatStatsForCharacter(character);
     const powerMultiplier = computeIdlePowerMultiplier(stats, realm.tier);
+    const greedMult = 1 + stats.affixes.greedBp / 10_000;
 
     const anchorMs = character.lastIdleClaimAt > 0 ? character.lastIdleClaimAt : nowMs;
     const rawElapsedMs = Math.max(0, nowMs - anchorMs);
@@ -2194,7 +3853,7 @@ export class RpgService {
 
     const estimatedXp = Math.floor(realm.tierDef.idleXpPerHour * effectiveHours * powerMultiplier);
     const estimatedCoins = Math.floor(
-      realm.tierDef.idleCoinsPerHour * effectiveHours * powerMultiplier,
+      realm.tierDef.idleCoinsPerHour * effectiveHours * powerMultiplier * greedMult,
     );
     const canClaim = character.classSelected && accruedMs >= MIN_IDLE_CLAIM_MS;
     const waitSeconds = canClaim ? 0 : Math.ceil(Math.max(0, MIN_IDLE_CLAIM_MS - accruedMs) / 1000);
@@ -2224,7 +3883,10 @@ export class RpgService {
     const atMaxTier = !targetTierDef || character.level >= MAX_RPG_LEVEL;
     const needXp = xpNeededForRpgLevel(character.level);
 
-    const pillsUsed = Math.max(0, Math.min(MAX_TRIAL_PILLS, character.trialPillsStaged, character.promoPills));
+    const pillsUsed = Math.max(
+      0,
+      Math.min(MAX_TRIAL_PILLS, character.trialPillsStaged, character.promoPills),
+    );
     const usedGuard = character.trialUseGuard && character.guardElixirs > 0;
 
     const baseRatePct = targetTierDef ? fromRealm.tierDef.breakthroughBasePct : 0;
@@ -2270,6 +3932,7 @@ export class RpgService {
     character: RpgCharacter;
     xpGain: number;
     coinGain: number;
+    dustGain?: number;
     pendingItems: PendingRpgItem[];
     source: string;
     nowMs: number;
@@ -2278,6 +3941,8 @@ export class RpgService {
     legendaryDrops: RpgItem[];
     autoSalvagedCount: number;
     autoSalvagedCoins: number;
+    autoSalvagedDust: number;
+    dustEarned: number;
     grossCoins: number;
     garnishedCoins: number;
     netCoins: number;
@@ -2297,6 +3962,7 @@ export class RpgService {
     const bankedItems: RpgItem[] = [];
     let autoSalvagedCount = 0;
     let autoSalvagedCoins = 0;
+    let autoSalvagedDust = 0;
 
     for (const item of sortedPending) {
       if (bankedItems.length < availableSlots) {
@@ -2312,35 +3978,28 @@ export class RpgService {
           baseCritBp: item.baseCritBp,
           enhanceLevel: 0,
           equipped: false,
+          affixes: item.affixes,
+          legendaryEffect: item.legendaryEffect,
+          affixesAwakened: true,
           createdAt: input.nowMs,
         });
         bankedItems.push(created);
       } else {
         autoSalvagedCount += 1;
         autoSalvagedCoins += getSalvageValue({ rarity: item.rarity, enhanceLevel: 0 });
+        autoSalvagedDust += getSalvageArcaneDust({ rarity: item.rarity, enhanceLevel: 0 });
       }
     }
 
-    const grossCoins = Math.max(0, Math.floor(input.coinGain)) + autoSalvagedCoins;
-    let garnishedCoins = 0;
-    let netCoins = grossCoins;
-    if (grossCoins > 0 && this.onCoinsEarned) {
-      const hookRes = this.onCoinsEarned(
-        input.guildId,
-        input.userId,
-        grossCoins,
-        input.source,
-        input.nowMs,
-      );
-      garnishedCoins = Math.max(0, Math.floor(hookRes.garnished));
-      netCoins = Math.max(0, Math.floor(hookRes.net));
-    }
+    const coinRes = this.applyCoinRewardInTx(
+      input.guildId,
+      input.userId,
+      Math.max(0, Math.floor(input.coinGain)) + autoSalvagedCoins,
+      input.source,
+      input.nowMs,
+    );
 
-    const updatedProfile =
-      netCoins > 0
-        ? this.profileRepo.addCoins(input.guildId, input.userId, netCoins)
-        : this.profileRepo.getOrCreate(input.guildId, input.userId);
-
+    const dustEarned = Math.max(0, Math.floor(input.dustGain ?? 0)) + autoSalvagedDust;
     const { updated: leveledChar, levelsGained, hitGate } = applyCharacterXp(
       input.character,
       input.xpGain,
@@ -2353,13 +4012,19 @@ export class RpgService {
       legendaryDrops,
       autoSalvagedCount,
       autoSalvagedCoins,
-      grossCoins,
-      garnishedCoins,
-      netCoins,
+      autoSalvagedDust,
+      dustEarned,
+      grossCoins: coinRes.grossCoins,
+      garnishedCoins: coinRes.garnishedCoins,
+      netCoins: coinRes.netCoins,
       levelsGained,
       hitGate,
-      updatedCharacter: { ...leveledChar, updatedAt: input.nowMs },
-      balance: updatedProfile.coins,
+      updatedCharacter: {
+        ...leveledChar,
+        arcaneDust: leveledChar.arcaneDust + dustEarned,
+        updatedAt: input.nowMs,
+      },
+      balance: coinRes.balance,
     };
   }
 
@@ -2397,25 +4062,14 @@ export class RpgService {
 
       const basePrize = input.targetTier * 6000;
       const saboteurBonusMult = 1 + Math.max(0, input.saboteurCount) * (SABOTEUR_POOL_BONUS_PCT / 100);
-      const grossCoins = Math.round(basePrize * saboteurBonusMult);
-      let garnishedCoins = 0;
-      let netCoins = grossCoins;
-      if (grossCoins > 0 && this.onCoinsEarned) {
-        const hookRes = this.onCoinsEarned(
-          input.guildId,
-          input.userId,
-          grossCoins,
-          `rpg_breakthrough_tier${input.targetTier}`,
-          input.nowMs,
-        );
-        garnishedCoins = Math.max(0, Math.floor(hookRes.garnished));
-        netCoins = Math.max(0, Math.floor(hookRes.net));
-      }
-
-      const updatedProfile =
-        netCoins > 0
-          ? this.profileRepo.addCoins(input.guildId, input.userId, netCoins)
-          : this.profileRepo.getOrCreate(input.guildId, input.userId);
+      const rawPrize = Math.round(basePrize * saboteurBonusMult);
+      const coinRes = this.applyCoinRewardInTx(
+        input.guildId,
+        input.userId,
+        rawPrize,
+        `rpg_breakthrough_tier${input.targetTier}`,
+        input.nowMs,
+      );
 
       const creditDelta = 15;
       if (this.onCreditChange) {
@@ -2439,14 +4093,14 @@ export class RpgService {
 
       return {
         toRealm,
-        grossCoins,
-        garnishedCoins,
-        netCoins,
+        grossCoins: coinRes.grossCoins,
+        garnishedCoins: coinRes.garnishedCoins,
+        netCoins: coinRes.netCoins,
         creditDelta,
         xpLost: 0,
         injuredUntil: finalChar.injuredUntil,
         character: finalChar,
-        balance: updatedProfile.coins,
+        balance: coinRes.balance,
       };
     }
 

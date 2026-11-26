@@ -174,6 +174,8 @@ describe('env & database schema', () => {
           'rpg_items',
           'rpg_runs',
           'rpg_trials',
+          'rpg_duels',
+          'rpg_raids',
         ]),
       );
 
@@ -931,8 +933,45 @@ describe('env & database schema', () => {
       elixirBuysToday: 0,
       trialPillsStaged: 0,
       trialUseGuard: false,
+      arcaneDust: 0,
+      dustBackfilled: false,
+      abyssClearedTier: 0,
+      arenaRating: 1000,
+      arenaFightsToday: 0,
+      arenaRewardDate: null,
+      coopTicketsToday: 0,
       updatedAt: 50000,
     });
+
+    const duel = rpgRepo.createDuel({
+      guildId: 'g1',
+      channelId: 'ch-game',
+      challengerId: 'legacy-hero',
+      opponentId: null,
+      rulesMode: 'equalized',
+      betAmount: 5000,
+      createdAt: 100_000,
+      expiresAt: 700_000,
+    });
+    expect(duel.status).toBe('pending');
+    rpgRepo.bindDuelMessage(duel.id, 'msg-d-1');
+    expect(rpgRepo.getPendingDuelForUser('g1', 'legacy-hero')?.messageId).toBe('msg-d-1');
+    expect(rpgRepo.listDuePendingDuels(700_000)).toHaveLength(1);
+
+    const raid = rpgRepo.createRaid({
+      guildId: 'g1',
+      channelId: 'ch-game',
+      leaderId: 'legacy-hero',
+      tier: 2,
+      bossName: '骸骨领主',
+      bossMaxHp: 5000,
+      createdAt: 100_000,
+      expiresAt: 280_000,
+    });
+    expect(raid.status).toBe('recruiting');
+    rpgRepo.bindRaidMessage(raid.id, 'msg-r-1');
+    expect(rpgRepo.getRecruitingRaidForLeader('g1', 'legacy-hero')?.messageId).toBe('msg-r-1');
+    expect(rpgRepo.listDueRecruitingRaids(280_000)).toHaveLength(1);
 
     const trial = rpgRepo.createTrial({
       guildId: 'g1',
