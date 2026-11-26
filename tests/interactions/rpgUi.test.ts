@@ -42,11 +42,7 @@ import { LevelingService } from '../../src/services/levelingService.js';
 import { LlmClient } from '../../src/services/llmClient.js';
 import { MultiplayerService } from '../../src/services/multiplayerService.js';
 import { RolePanelService } from '../../src/services/rolePanelService.js';
-import {
-  RPG_CHAPTERS,
-  RpgService,
-  type RpgRunState,
-} from '../../src/services/rpgService.js';
+import { RpgService, getRpgRealmInfo } from '../../src/services/rpgService.js';
 import { ShopService } from '../../src/services/shopService.js';
 import { SocialPetService } from '../../src/services/socialPetService.js';
 import { TicketService } from '../../src/services/ticketService.js';
@@ -54,16 +50,17 @@ import { WorldEventService } from '../../src/services/worldEventService.js';
 import type { AppContext } from '../../src/ui/embeds.js';
 import type { BuiltMenuMessage, MenuActor } from '../../src/ui/menuShared.js';
 import {
-  buildRpgChaptersView,
+  buildPublicTrialCard,
   buildRpgClassSwitchView,
   buildRpgGearView,
   buildRpgHomeView,
-  buildRpgRunView,
-  buildRpgTabletopRunView,
+  buildRpgTrialView,
 } from '../../src/ui/rpgMenuBuilder.js';
 
 const GUILD_ID = 'g-rpg-ui';
 const USER_ID = 'u-hero-1';
+const GAME_CHAT_ID = 'ch-game-chat';
+const OTHER_CHANNEL_ID = 'ch-random-2';
 const NOW = Date.UTC(2026, 4, 15, 10, 0, 0);
 
 function createTestCtx(): AppContext {
@@ -182,13 +179,26 @@ interface MockPayload {
 
 interface MockChannel {
   id: string;
+  name: string;
+  isTextBased: () => boolean;
+  isThread: () => boolean;
   isSendable: () => boolean;
   send: ReturnType<typeof vi.fn<(payload: MockPayload) => Promise<{ id: string }>>>;
 }
 
-function makeMockChannel(sendable = true, failSend = false): MockChannel {
+function makeMockChannel(opts?: {
+  id?: string;
+  name?: string;
+  sendable?: boolean;
+  failSend?: boolean;
+}): MockChannel {
+  const sendable = opts?.sendable ?? true;
+  const failSend = opts?.failSend ?? false;
   return {
-    id: 'ch-rpg-1',
+    id: opts?.id ?? GAME_CHAT_ID,
+    name: opts?.name ?? '游戏聊天',
+    isTextBased: () => true,
+    isThread: () => false,
     isSendable: () => sendable,
     send: failSend
       ? vi.fn(async () => {
@@ -215,16 +225,37 @@ function createButtonMock(opts: {
   userId?: string;
   guildId?: string;
   channel?: MockChannel;
+  guildChannels?: MockChannel[];
+  messageEdit?: ReturnType<typeof vi.fn<(payload: MockPayload) => Promise<void>>>;
 }) {
   const userId = opts.userId ?? USER_ID;
-  const channel = opts.channel ?? makeMockChannel(true);
+  const channel = opts.channel ?? makeMockChannel();
+  const channelCache = new Map<string, MockChannel>();
+  for (const ch of opts.guildChannels ?? [channel]) {
+    channelCache.set(ch.id, ch);
+  }
   const update = vi.fn(async (_payload: MockPayload) => undefined);
   const reply = vi.fn(async (_payload: MockPayload) => undefined);
+  const messageEdit = opts.messageEdit ?? vi.fn(async (_payload: MockPayload) => undefined);
   const interaction = {
     customId: opts.customId,
     guildId: opts.guildId ?? GUILD_ID,
     channelId: channel.id,
     channel,
+    guild: {
+      id: opts.guildId ?? GUILD_ID,
+      channels: { cache: channelCache },
+    },
+    client: {
+      channels: {
+        cache: channelCache,
+        fetch: vi.fn(async (id: string) => channelCache.get(id) ?? null),
+      },
+    },
+    message: {
+      id: 'orig-msg-1',
+      edit: messageEdit,
+    },
     user: {
       id: userId,
       displayName: '亚瑟勇者',
@@ -240,6 +271,7 @@ function createButtonMock(opts: {
     update,
     reply,
     channel,
+    messageEdit,
   };
 }
 
@@ -251,7 +283,7 @@ function createStringSelectMock(opts: {
   channel?: MockChannel;
 }) {
   const userId = opts.userId ?? USER_ID;
-  const channel = opts.channel ?? makeMockChannel(true);
+  const channel = opts.channel ?? makeMockChannel();
   const update = vi.fn(async (_payload: MockPayload) => undefined);
   const reply = vi.fn(async (_payload: MockPayload) => undefined);
   const interaction = {
@@ -347,987 +379,403 @@ function extractSelects(msg: BuiltMenuMessage | MockPayload): APIStringSelectCom
   return out;
 }
 
-function saveCustomRun(ctx: AppContext, run: RpgRunState): void {
-  ctx.repos.rpg.upsertRun({
-    guildId: GUILD_ID,
-    userId: USER_ID,
-    chapter: run.chapter,
-    floor: run.floor,
-    stateJson: JSON.stringify(run),
-    updatedAt: NOW,
-  });
-}
-
-describe('RPG UI Builders', () => {
-  it('renders newbie 4-class onboarding screen when classSelected is false', () => {
+describe('RPG UI Builders, Slash Command, & Interactions', () => {
+  it('handles /冒险 command guards and opens onboarding vs home view', async () => {
     const ctx = createTestCtx();
-    const view = buildRpgHomeView(ctx, GUILD_ID, makeActor(), undefined, NOW);
-    assertDiscordComponentLimits(view);
 
-    const embed = view.embeds[0]!.toJSON();
-    expect(embed.title).toContain('选择你的初始职业');
-    expect(embed.description).toContain('圣殿战士');
-    expect(embed.description).toContain('奥术法师');
-    expect(embed.description).toContain('暗影游侠');
-    expect(embed.description).toContain('辉光圣骑士');
+    // Rejects DM usage
+    const dmSlash = createSlashMock({ guildId: null });
+    await adventureCommand.execute(dmSlash.interaction, ctx);
+    expect(dmSlash.reply).toHaveBeenCalledTimes(1);
+    expect(dmSlash.reply.mock.calls[0]![0].flags).toBe(MessageFlags.Ephemeral);
 
-    const ids = extractButtons(view).map((b) => b.custom_id);
-    expect(ids).toEqual([
-      'rpg:pick_class:warrior',
-      'rpg:pick_class:mage',
-      'rpg:pick_class:ranger',
-      'rpg:pick_class:paladin',
-      'menu:nav:home',
-    ]);
-  });
+    // Rejects when rpg module disabled
+    const cfg = ctx.repos.guildConfig.getOrCreate(GUILD_ID);
+    ctx.repos.guildConfig.updateModules(GUILD_ID, { ...cfg.modules, rpg: false });
+    const disabledSlash = createSlashMock();
+    await adventureCommand.execute(disabledSlash.interaction, ctx);
+    expect(disabledSlash.reply.mock.calls[0]![0].embeds?.[0]?.toJSON().title).toContain('未开启');
+    ctx.repos.guildConfig.updateModules(GUILD_ID, { ...cfg.modules, rpg: true });
 
-  it('renders hero home profile with active pet synergy, gear slots, and active run banner', () => {
-    const ctx = createTestCtx();
+    // First-time user gets 4-class onboarding
+    const firstSlash = createSlashMock();
+    await adventureCommand.execute(firstSlash.interaction, ctx);
+    const onboardingPayload = firstSlash.reply.mock.calls[0]![0];
+    assertDiscordComponentLimits(onboardingPayload);
+    expect(onboardingPayload.embeds?.[0]?.toJSON().title).toContain('选择你的初始职业');
+    const btns = extractButtons(onboardingPayload);
+    expect(btns.filter((b) => b.custom_id.startsWith('rpg:pick_class:'))).toHaveLength(4);
+
+    // After selecting class -> opens new tier-based idle/boss home view
     ctx.services.rpg.chooseOrSwitchClass(GUILD_ID, USER_ID, 'mage', NOW);
+    const homeSlash = createSlashMock();
+    await adventureCommand.execute(homeSlash.interaction, ctx);
+    const homePayload = homeSlash.reply.mock.calls[0]![0];
+    assertDiscordComponentLimits(homePayload);
+    expect(homePayload.embeds?.[0]?.toJSON().title).toContain('十阶秘境与破境大厅');
 
-    // Give active pet
-    ctx.repos.socialPet.createPet({
-      guildId: GUILD_ID,
-      ownerId: USER_ID,
-      speciesKey: 'dragon_cub',
-      nickname: '小火龙',
-      rarity: 'SSR',
-      trait: '狂暴',
-      hp: 200,
-      atk: 80,
-      spd: 40,
-      critRate: 0.2,
-      isActive: true,
-      createdAt: NOW,
+    ctx.db.close();
+  });
+
+  it('builds RPG Home, Trial, PublicTrialCard, Gear, and ClassSwitch views within Discord limits', () => {
+    const ctx = createTestCtx();
+    ctx.services.rpg.chooseOrSwitchClass(GUILD_ID, USER_ID, 'warrior', NOW - 26 * 3_600_000);
+    // Mark injured & at tier-1 gate
+    ctx.repos.rpg.saveCharacter({
+      ...ctx.services.rpg.getOrCreateCharacter(GUILD_ID, USER_ID, NOW),
+      level: 9,
+      xp: 3500,
+      injuredUntil: NOW + 1_800_000,
+      promoPills: 2,
+      guardElixirs: 1,
+      lastIdleClaimAt: NOW - 25 * 3_600_000,
     });
 
-    // Equip a weapon
-    const weapon = ctx.repos.rpg.createItem({
+    const homeMsg = buildRpgHomeView(ctx, GUILD_ID, makeActor(), undefined, NOW);
+    assertDiscordComponentLimits(homeMsg);
+    const homeDesc = homeMsg.embeds[0]!.toJSON().description ?? '';
+    expect(homeDesc).toContain('已满 24h 上限');
+    expect(homeDesc).toContain('破境反噬重伤');
+    expect(homeDesc).toContain('已达当前阶位九重巅峰');
+    const homeBtns = extractButtons(homeMsg);
+    expect(homeBtns.find((b) => b.custom_id === 'rpg:act:claim_idle')?.disabled).not.toBe(true);
+    expect(homeBtns.find((b) => b.custom_id === 'rpg:act:heal_injury')).toBeDefined();
+
+    const trialMsg = buildRpgTrialView(ctx, GUILD_ID, makeActor(), undefined, NOW);
+    assertDiscordComponentLimits(trialMsg);
+    const trialDesc = trialMsg.embeds[0]!.toJSON().description ?? '';
+    expect(trialDesc).toContain('黑铁阶·一重');
+    expect(trialDesc).toContain('晋升秘药');
+    const trialBtns = extractButtons(trialMsg);
+    expect(trialBtns.find((b) => b.custom_id === 'rpg:trial:solo')?.disabled).not.toBe(true);
+    expect(trialBtns.find((b) => b.custom_id === 'rpg:trial:public')?.disabled).not.toBe(true);
+
+    // Build pending & settled public trial cards
+    const started = ctx.services.rpg.startPublicBreakthroughTrial(GUILD_ID, GAME_CHAT_ID, USER_ID, NOW);
+    expect(started.ok).toBe(true);
+    if (started.ok) {
+      const econ = ctx.repos.guildConfig.getOrCreate(GUILD_ID).economy;
+      const pendingCard = buildPublicTrialCard(started.trial, econ, undefined, NOW);
+      assertDiscordComponentLimits(pendingCard);
+      expect(extractButtons(pendingCard).map((b) => b.custom_id)).toEqual([
+        `rpg:trial_help:${started.trial.id}`,
+        `rpg:trial_jeer:${started.trial.id}`,
+        `rpg:trial_settle:${started.trial.id}`,
+      ]);
+
+      ctx.services.rpg.interactPublicTrial(started.trial.id, 'u-sup-1', 'help', NOW + 1000);
+      const settled = ctx.services.rpg.settlePublicTrial(
+        started.trial.id,
+        USER_ID,
+        NOW + 2000,
+        () => 0.0,
+      );
+      expect(settled.ok).toBe(true);
+      if (settled.ok) {
+        const doneCard = buildPublicTrialCard(settled.trial, econ, settled.supporterPayouts, NOW + 2000);
+        assertDiscordComponentLimits(doneCard);
+        expect(doneCard.components).toHaveLength(0);
+        expect(doneCard.embeds[0]!.toJSON().description).toContain('<@u-sup-1>');
+      }
+    }
+
+    // Add items and verify Gear view & ClassSwitch view
+    ctx.repos.rpg.createItem({
       guildId: GUILD_ID,
       userId: USER_ID,
-      name: '虚空星杖',
+      name: '秘银圣剑',
       slot: 'weapon',
       rarity: 'epic',
       baseHp: 20,
       baseAtk: 40,
-      baseDef: 5,
+      baseDef: 8,
       baseCritBp: 500,
-      enhanceLevel: 2,
       equipped: true,
+      enhanceLevel: 2,
       createdAt: NOW,
     });
-    expect(weapon.equipped).toBe(true);
+    const gearView = buildRpgGearView(ctx, GUILD_ID, makeActor(), null, undefined, NOW);
+    assertDiscordComponentLimits(gearView);
+    expect(extractSelects(gearView)).toHaveLength(1);
 
-    const view = buildRpgHomeView(ctx, GUILD_ID, makeActor(), undefined, NOW);
-    assertDiscordComponentLimits(view);
-    const desc = view.embeds[0]!.toJSON().description ?? '';
-    expect(desc).toContain('奥术法师');
-    expect(desc).toContain('小火龙');
-    expect(desc).toContain('虚空星杖');
-    expect(desc).toContain('+2');
-    expect(desc).toContain('0 / 6');
-    expect(desc).toContain('武力');
-    expect(desc).toContain('奥术');
-    expect(desc).toContain('灵巧');
-    expect(desc).toContain('魅力');
-    const idleHomeIds = extractButtons(view).map((b) => b.custom_id);
-    expect(idleHomeIds).toContain('rpg:nav:chapters:tabletop');
-    expect(idleHomeIds).toContain('rpg:nav:chapters:classic');
+    const switchView = buildRpgClassSwitchView(ctx, GUILD_ID, makeActor(), undefined, NOW);
+    assertDiscordComponentLimits(switchView);
+    expect(switchView.embeds[0]!.toJSON().description).toContain(getRpgRealmInfo(10).fullLabel);
 
-    // Start a classic run and confirm banner + continue button
-    const started = ctx.services.rpg.startRun(GUILD_ID, USER_ID, 1, NOW, () => 0.1);
-    expect(started.ok).toBe(true);
-    const viewWithRun = buildRpgHomeView(ctx, GUILD_ID, makeActor(), undefined, NOW);
-    assertDiscordComponentLimits(viewWithRun);
-    expect(viewWithRun.embeds[0]!.toJSON().description).toContain('进行中的地下城冒险');
-    const runBtnIds = extractButtons(viewWithRun).map((b) => b.custom_id);
-    expect(runBtnIds).toContain('rpg:nav:run');
-    expect(runBtnIds).not.toContain('rpg:nav:chapters:tabletop');
-
-    // Retreat classic run and start a tabletop run -> confirm tabletop banner + resume button
-    ctx.services.rpg.actInRun(GUILD_ID, USER_ID, 'retreat', NOW);
-    const startedTt = ctx.services.rpg.startTabletopRun(GUILD_ID, USER_ID, 1, NOW, () => 0.1);
-    expect(startedTt.ok).toBe(true);
-    const viewWithTt = buildRpgHomeView(ctx, GUILD_ID, makeActor(), undefined, NOW);
-    assertDiscordComponentLimits(viewWithTt);
-    expect(viewWithTt.embeds[0]!.toJSON().description).toContain('进行中的博德跑团');
-    const ttBtnIds = extractButtons(viewWithTt).map((b) => b.custom_id);
-    expect(ttBtnIds).toContain('rpg:nav:tabletop_run');
+    ctx.db.close();
   });
 
-  it('renders all 6 chapters in both tabletop (default) and classic modes with locked chapters disabled', () => {
-    const ctx = createTestCtx();
-    ctx.services.rpg.chooseOrSwitchClass(GUILD_ID, USER_ID, 'warrior', NOW);
-
-    const ttView = buildRpgChaptersView(ctx, GUILD_ID, makeActor(), undefined, NOW);
-    assertDiscordComponentLimits(ttView);
-    const ttDesc = ttView.embeds[0]!.toJSON().description ?? '';
-    for (const ch of RPG_CHAPTERS) {
-      expect(ttDesc).toContain(ch.name);
-      expect(ttDesc).toContain(ch.boss.name);
-    }
-    const ttButtons = extractButtons(ttView);
-    expect(ttButtons.find((b) => b.custom_id === 'rpg:start_tt:1')?.disabled).toBe(false);
-    expect(ttButtons.find((b) => b.custom_id === 'rpg:start_tt:2')?.disabled).toBe(true);
-    expect(ttButtons.find((b) => b.custom_id === 'rpg:start_tt:6')?.disabled).toBe(true);
-    expect(ttButtons.find((b) => b.custom_id === 'rpg:nav:chapters:classic')).toBeDefined();
-
-    const classicView = buildRpgChaptersView(ctx, GUILD_ID, makeActor(), undefined, NOW, 'classic');
-    assertDiscordComponentLimits(classicView);
-    const classicButtons = extractButtons(classicView);
-    expect(classicButtons.find((b) => b.custom_id === 'rpg:start:1')?.disabled).toBe(false);
-    expect(classicButtons.find((b) => b.custom_id === 'rpg:start:2')?.disabled).toBe(true);
-    expect(classicButtons.find((b) => b.custom_id === 'rpg:nav:chapters:tabletop')).toBeDefined();
-  });
-
-  it('renders seamless Baldur tabletop story card with live odds, lastOutcome blockquote, and potion disabled at full HP', () => {
-    const ctx = createTestCtx();
-    ctx.services.rpg.chooseOrSwitchClass(GUILD_ID, USER_ID, 'paladin', NOW);
-    ctx.services.creditLoan.adjustCredit(GUILD_ID, USER_ID, 300, '金卡测试', NOW); // score = 900
-
-    const started = ctx.services.rpg.startTabletopRun(GUILD_ID, USER_ID, 1, NOW, () => 0.0);
-    expect(started.ok).toBe(true);
-    const initialView = buildRpgTabletopRunView(ctx, GUILD_ID, makeActor(), undefined, NOW);
-    assertDiscordComponentLimits(initialView);
-    const initDesc = initialView.embeds[0]!.toJSON().description ?? '';
-    expect(initDesc).toContain('第 1/5 幕');
-    expect(initDesc).toContain('❤️ HP');
-    const initButtons = extractButtons(initialView);
-    const choiceBtns = initButtons.filter((b) => b.custom_id.startsWith('rpg:tt_choice:'));
-    expect(choiceBtns).toHaveLength(3);
-    expect(initButtons.find((b) => b.custom_id === 'rpg:tt_act:potion')?.disabled).toBe(true);
-    expect(initButtons.find((b) => b.custom_id === 'rpg:tt_share')).toBeDefined();
-    expect(initButtons.find((b) => b.custom_id === 'rpg:tt_act:retreat')).toBeDefined();
-
-    // Advance one choice with Nat 20 -> next scene renders Nat 20 blockquote at top
-    const firstChoiceId = choiceBtns[0]!.custom_id.replace('rpg:tt_choice:', '');
-    const step = ctx.services.rpg.actInTabletopRun(
-      GUILD_ID,
-      USER_ID,
-      { type: 'choice', choiceId: firstChoiceId },
-      NOW + 1000,
-      () => 0.97,
-    );
-    expect(step.ok).toBe(true);
-    const nextView = buildRpgTabletopRunView(ctx, GUILD_ID, makeActor(), undefined, NOW + 1000);
-    assertDiscordComponentLimits(nextView);
-    const nextDesc = nextView.embeds[0]!.toJSON().description ?? '';
-    expect(nextDesc).toContain('第 2/5 幕');
-    expect(nextDesc).toMatch(/大成功|免检通过|D20/);
-  });
-
-  it('renders combat, event, and floor_clear run views and falls back to home when no run exists', () => {
-    const ctx = createTestCtx();
-    ctx.services.rpg.chooseOrSwitchClass(GUILD_ID, USER_ID, 'paladin', NOW);
-
-    // Fallback when no active run
-    const fallback = buildRpgRunView(ctx, GUILD_ID, makeActor(), undefined, NOW);
-    expect(fallback.embeds[0]!.toJSON().title).toContain('勇者档案');
-
-    // Combat phase with cooldown > 0 and potions = 0
-    const baseRun: RpgRunState = {
-      chapter: 1,
-      floor: 2,
-      phase: 'combat',
-      turn: 2,
-      classKey: 'paladin',
-      playerHp: 110,
-      playerMaxHp: 155,
-      playerAtk: 25,
-      playerDef: 12,
-      playerCritBp: 1200,
-      playerDodgeBp: 600,
-      skillCooldown: 2,
-      potionsLeft: 0,
-      atkBuffPct: 0,
-      petSynergy: null,
-      enemy: {
-        name: '哥布林斥候',
-        emoji: '👺',
-        kind: 'monster',
-        hp: 45,
-        maxHp: 78,
-        atk: 17,
-        def: 4,
-        armorBreakTurns: 1,
-        burnTurns: 0,
-        burnDamage: 0,
-      },
-      event: null,
-      pendingCoins: 1200,
-      pendingXp: 40,
-      pendingItems: [],
-      logs: ['⚔️ 第 2 层遭遇 👺 **哥布林斥候**！'],
-    };
-    saveCustomRun(ctx, baseRun);
-
-    const combatView = buildRpgRunView(ctx, GUILD_ID, makeActor(), undefined, NOW);
-    assertDiscordComponentLimits(combatView);
-    const combatButtons = extractButtons(combatView);
-    expect(combatButtons.find((b) => b.custom_id === 'rpg:act:attack')?.disabled).toBe(false);
-    expect(combatButtons.find((b) => b.custom_id === 'rpg:act:skill')?.disabled).toBe(true);
-    expect(combatButtons.find((b) => b.custom_id === 'rpg:act:potion')?.disabled).toBe(true);
-    expect(combatButtons.find((b) => b.custom_id === 'rpg:act:retreat')?.disabled).toBe(false);
-
-    // Event phase
-    saveCustomRun(ctx, {
-      ...baseRun,
-      phase: 'event',
-      enemy: null,
-      event: {
-        key: 'tavern',
-        title: '🍺 迷雾旅店',
-        description: '地下城深处的神秘酒馆。',
-        optionALabel: '豪赌一把',
-        optionBLabel: '稳健痛饮',
-      },
-    });
-    const eventView = buildRpgRunView(ctx, GUILD_ID, makeActor(), undefined, NOW);
-    assertDiscordComponentLimits(eventView);
-    expect(eventView.embeds[0]!.toJSON().description).toContain('迷雾旅店');
-    const eventIds = extractButtons(eventView).map((b) => b.custom_id);
-    expect(eventIds).toContain('rpg:act:event_a');
-    expect(eventIds).toContain('rpg:act:event_b');
-    expect(eventIds).toContain('rpg:act:retreat');
-
-    // Floor-clear phase
-    saveCustomRun(ctx, {
-      ...baseRun,
-      phase: 'floor_clear',
-      enemy: null,
-      event: null,
-      potionsLeft: 2,
-    });
-    const clearView = buildRpgRunView(ctx, GUILD_ID, makeActor(), undefined, NOW);
-    assertDiscordComponentLimits(clearView);
-    const clearIds = extractButtons(clearView).map((b) => b.custom_id);
-    expect(clearIds).toContain('rpg:act:next_floor');
-    expect(clearIds).toContain('rpg:act:retreat');
-  });
-
-  it('renders gear view with <= 25 select options prioritizing equipped & legendary items', () => {
-    const ctx = createTestCtx();
-    ctx.services.rpg.chooseOrSwitchClass(GUILD_ID, USER_ID, 'ranger', NOW);
-
-    for (let i = 0; i < 27; i++) {
-      ctx.repos.rpg.createItem({
-        guildId: GUILD_ID,
-        userId: USER_ID,
-        name: `普通装备#${i + 1}`,
-        slot: 'weapon',
-        rarity: 'common',
-        baseHp: 5,
-        baseAtk: 8,
-        baseDef: 1,
-        baseCritBp: 100,
-        createdAt: NOW + i,
-      });
-    }
-    const legItem = ctx.repos.rpg.createItem({
-      guildId: GUILD_ID,
-      userId: USER_ID,
-      name: '弑神星陨弓',
-      slot: 'weapon',
-      rarity: 'legendary',
-      baseHp: 50,
-      baseAtk: 120,
-      baseDef: 10,
-      baseCritBp: 1500,
-      enhanceLevel: 3,
-      equipped: true,
-      createdAt: NOW + 99,
-    });
-
-    const view = buildRpgGearView(ctx, GUILD_ID, makeActor(), legItem.id, undefined, NOW);
-    assertDiscordComponentLimits(view);
-    const selects = extractSelects(view);
-    expect(selects).toHaveLength(1);
-    expect(selects[0]!.custom_id).toBe('rpg:gear_select');
-    expect(selects[0]!.options).toHaveLength(25);
-    expect(selects[0]!.options[0]!.value).toBe(String(legItem.id));
-
-    const buttons = extractButtons(view);
-    expect(buttons.find((b) => b.custom_id === `rpg:gear_unequip:${legItem.id}`)).toBeDefined();
-    expect(buttons.find((b) => b.custom_id === `rpg:gear_salvage:${legItem.id}`)?.disabled).toBe(
-      true,
-    );
-    expect(buttons.find((b) => b.custom_id === 'rpg:gear_equip_best')).toBeDefined();
-    expect(buttons.find((b) => b.custom_id === 'rpg:gear_bulk_salvage')?.disabled).toBe(false);
-  });
-
-  it('renders class switch view with current class disabled and switch cost displayed', () => {
-    const ctx = createTestCtx();
-    ctx.services.rpg.chooseOrSwitchClass(GUILD_ID, USER_ID, 'warrior', NOW);
-
-    const view = buildRpgClassSwitchView(ctx, GUILD_ID, makeActor(), undefined, NOW);
-    assertDiscordComponentLimits(view);
-    const desc = view.embeds[0]!.toJSON().description ?? '';
-    expect(desc).toContain('10000');
-
-    const buttons = extractButtons(view);
-    expect(buttons.find((b) => b.custom_id === 'rpg:pick_class:warrior')?.disabled).toBe(true);
-    expect(buttons.find((b) => b.custom_id === 'rpg:pick_class:mage')?.disabled).toBe(false);
-  });
-});
-
-describe('RPG Interaction Handlers & Public Broadcasts', () => {
-  it('blocks rpg button and select interactions cleanly when cfg.modules.rpg is disabled', async () => {
-    const ctx = createTestCtx();
-    const cfg = ctx.repos.guildConfig.getOrCreate(GUILD_ID);
-    ctx.repos.guildConfig.updateModules(GUILD_ID, { ...cfg.modules, rpg: false });
-
-    const btn = createButtonMock({ customId: 'rpg:nav:home' });
-    await handleRpgButton(btn.interaction, ctx);
-    expect(btn.reply).toHaveBeenCalledTimes(1);
-    expect(btn.update).not.toHaveBeenCalled();
-    expect(btn.reply.mock.calls[0]![0].flags).toBe(MessageFlags.Ephemeral);
-
-    const sel = createStringSelectMock({ customId: 'rpg:gear_select', values: ['1'] });
-    await handleRpgStringSelect(sel.interaction, ctx);
-    expect(sel.reply).toHaveBeenCalledTimes(1);
-    expect(sel.update).not.toHaveBeenCalled();
-  });
-
-  it('handles class pick, switch, stamina purchase, navigation, and gear management lifecycle', async () => {
+  it('handles onboarding, idle claim, boss raids, alchemy, heal injury, and solo breakthrough', async () => {
     const ctx = createTestCtx();
     ctx.repos.profile.addCoins(GUILD_ID, USER_ID, 50_000);
+    const gameChat = makeMockChannel({ id: GAME_CHAT_ID, name: '游戏聊天' });
 
-    // 1. First free class selection
-    const pick = createButtonMock({ customId: 'rpg:pick_class:warrior' });
+    // Pick class via button
+    const pick = createButtonMock({ customId: 'rpg:pick_class:ranger', channel: gameChat });
     await handleRpgButton(pick.interaction, ctx);
-    expect(pick.update).toHaveBeenCalledTimes(1);
-    expect(ctx.repos.rpg.getCharacter(GUILD_ID, USER_ID)?.classKey).toBe('warrior');
+    expect(ctx.repos.rpg.getCharacter(GUILD_ID, USER_ID)?.classKey).toBe('ranger');
 
-    // 2. Paid class switch
-    const sw = createButtonMock({ customId: 'rpg:pick_class:mage' });
-    await handleRpgButton(sw.interaction, ctx);
-    expect(ctx.repos.rpg.getCharacter(GUILD_ID, USER_ID)?.classKey).toBe('mage');
-    expect(ctx.repos.profile.getOrCreate(GUILD_ID, USER_ID).coins).toBe(40_000);
+    // Too soon idle claim gives info feedback
+    const claimSoon = createButtonMock({ customId: 'rpg:act:claim_idle', channel: gameChat });
+    await handleRpgButton(claimSoon.interaction, ctx);
+    expect(claimSoon.update.mock.calls[0]![0].embeds?.[0]?.toJSON().description).toContain('未满 1 分钟');
 
-    // 3. Buy stamina potion
-    const staminaBefore = ctx.repos.rpg.getCharacter(GUILD_ID, USER_ID)!.stamina;
-    const potion = createButtonMock({ customId: 'rpg:act:buy_stamina' });
-    await handleRpgButton(potion.interaction, ctx);
-    expect(ctx.repos.rpg.getCharacter(GUILD_ID, USER_ID)!.stamina).toBe(staminaBefore + 1);
-
-    // 4. Nav buttons
-    for (const id of ['rpg:nav:chapters', 'rpg:nav:gear', 'rpg:nav:class', 'rpg:nav:home']) {
-      const nav = createButtonMock({ customId: id });
-      await handleRpgButton(nav.interaction, ctx);
-      expect(nav.update).toHaveBeenCalledTimes(1);
-      assertDiscordComponentLimits(nav.update.mock.calls[0]![0]);
-    }
-
-    // 5. Gear select / equip / enhance / unequip / salvage
-    const item = ctx.repos.rpg.createItem({
-      guildId: GUILD_ID,
-      userId: USER_ID,
-      name: '星辉权杖',
-      slot: 'weapon',
-      rarity: 'rare',
-      baseHp: 15,
-      baseAtk: 30,
-      baseDef: 3,
-      baseCritBp: 400,
-      createdAt: NOW,
+    // Backdate idle timer by 3 hours -> claim succeeds
+    const curChar = ctx.services.rpg.getOrCreateCharacter(GUILD_ID, USER_ID);
+    ctx.repos.rpg.saveCharacter({
+      ...curChar,
+      lastIdleClaimAt: Date.now() - 3 * 3_600_000,
     });
+    const claimOk = createButtonMock({ customId: 'rpg:act:claim_idle', channel: gameChat });
+    await handleRpgButton(claimOk.interaction, ctx);
+    expect(claimOk.update.mock.calls[0]![0].embeds?.[0]?.toJSON().description).toContain('挂机收菜成功');
 
-    const sel = createStringSelectMock({ customId: 'rpg:gear_select', values: [String(item.id)] });
-    await handleRpgStringSelect(sel.interaction, ctx);
-    expect(sel.update).toHaveBeenCalledTimes(1);
+    // Raid 1 & Raid all
+    const raidOne = createButtonMock({ customId: 'rpg:act:raid_one', channel: gameChat });
+    await handleRpgButton(raidOne.interaction, ctx);
+    expect(raidOne.update.mock.calls[0]![0].embeds?.[0]?.toJSON().description).toContain('胜利');
+    expect(ctx.repos.rpg.getCharacter(GUILD_ID, USER_ID)?.totalBossKills).toBe(1);
 
-    const equipBtn = createButtonMock({ customId: `rpg:gear_equip:${item.id}` });
-    await handleRpgButton(equipBtn.interaction, ctx);
-    expect(ctx.repos.rpg.getItemById(item.id)?.equipped).toBe(true);
+    const raidAll = createButtonMock({ customId: 'rpg:act:raid_all', channel: gameChat });
+    await handleRpgButton(raidAll.interaction, ctx);
+    expect(ctx.repos.rpg.getCharacter(GUILD_ID, USER_ID)?.stamina).toBe(0);
 
-    // +0 -> +1 has 100% rate
-    const enhBtn = createButtonMock({ customId: `rpg:gear_enhance:${item.id}` });
-    await handleRpgButton(enhBtn.interaction, ctx);
-    expect(ctx.repos.rpg.getItemById(item.id)?.enhanceLevel).toBe(1);
+    // Buy stamina & buy alchemy pills/elixirs & loadout
+    const buyStam = createButtonMock({ customId: 'rpg:act:buy_stamina', channel: gameChat });
+    await handleRpgButton(buyStam.interaction, ctx);
+    expect(ctx.repos.rpg.getCharacter(GUILD_ID, USER_ID)?.stamina).toBe(1);
 
-    const unequipBtn = createButtonMock({ customId: `rpg:gear_unequip:${item.id}` });
-    await handleRpgButton(unequipBtn.interaction, ctx);
-    expect(ctx.repos.rpg.getItemById(item.id)?.equipped).toBe(false);
+    const pillsBefore = ctx.repos.rpg.getCharacter(GUILD_ID, USER_ID)?.promoPills ?? 0;
+    const elixirsBefore = ctx.repos.rpg.getCharacter(GUILD_ID, USER_ID)?.guardElixirs ?? 0;
+    const buyPill = createButtonMock({ customId: 'rpg:alchemy:buy_pill', channel: gameChat });
+    await handleRpgButton(buyPill.interaction, ctx);
+    const buyElixir = createButtonMock({ customId: 'rpg:alchemy:buy_elixir', channel: gameChat });
+    await handleRpgButton(buyElixir.interaction, ctx);
+    expect(ctx.repos.rpg.getCharacter(GUILD_ID, USER_ID)?.promoPills).toBe(pillsBefore + 1);
+    expect(ctx.repos.rpg.getCharacter(GUILD_ID, USER_ID)?.guardElixirs).toBe(elixirsBefore + 1);
 
-    const salvageBtn = createButtonMock({ customId: `rpg:gear_salvage:${item.id}` });
-    await handleRpgButton(salvageBtn.interaction, ctx);
-    expect(ctx.repos.rpg.getItemById(item.id)).toBeNull();
+    const cyclePill = createButtonMock({ customId: 'rpg:trial:cycle_pills', channel: gameChat });
+    await handleRpgButton(cyclePill.interaction, ctx);
+    const toggleGuard = createButtonMock({ customId: 'rpg:trial:toggle_guard', channel: gameChat });
+    await handleRpgButton(toggleGuard.interaction, ctx);
+    expect(ctx.repos.rpg.getCharacter(GUILD_ID, USER_ID)?.trialPillsStaged).toBe(1);
+    expect(ctx.repos.rpg.getCharacter(GUILD_ID, USER_ID)?.trialUseGuard).toBe(true);
+
+    // Set gate & injure -> test heal injury and solo breakthrough
+    ctx.repos.rpg.saveCharacter({
+      ...ctx.services.rpg.getOrCreateCharacter(GUILD_ID, USER_ID),
+      level: 9,
+      xp: 3500,
+      injuredUntil: Date.now() + 3_000_000,
+    });
+    const healBtn = createButtonMock({ customId: 'rpg:act:heal_injury', channel: gameChat });
+    await handleRpgButton(healBtn.interaction, ctx);
+    expect(ctx.repos.rpg.getCharacter(GUILD_ID, USER_ID)?.injuredUntil).toBe(0);
+
+    const randSpy = vi.spyOn(Math, 'random').mockReturnValue(0.0);
+    const soloBtn = createButtonMock({ customId: 'rpg:trial:solo', channel: gameChat });
+    await handleRpgButton(soloBtn.interaction, ctx);
+    randSpy.mockRestore();
+    expect(ctx.repos.rpg.getCharacter(GUILD_ID, USER_ID)?.level).toBe(10);
+    expect(
+      gameChat.send.mock.calls.some(([p]) => (p.content ?? '').includes('单人冲关成功')),
+    ).toBe(true);
+
+    ctx.db.close();
   });
 
-  it('broadcasts publicly on chapter first clear and legendary drops after updating ephemeral panel', async () => {
+  it('strictly locks public breakthrough trial & broadcasts to #游戏聊天 and auto-refunds on send failure', async () => {
     const ctx = createTestCtx();
-    ctx.services.rpg.chooseOrSwitchClass(GUILD_ID, USER_ID, 'warrior', NOW);
-
-    // Set up a Boss encounter on floor 5 with 1 HP left and a pending legendary item
-    saveCustomRun(ctx, {
-      chapter: 1,
-      floor: 5,
-      phase: 'combat',
-      turn: 1,
-      classKey: 'warrior',
-      playerHp: 170,
-      playerMaxHp: 170,
-      playerAtk: 100,
-      playerDef: 20,
-      playerCritBp: 1500,
-      playerDodgeBp: 500,
-      skillCooldown: 0,
-      potionsLeft: 3,
-      atkBuffPct: 0,
-      petSynergy: null,
-      enemy: {
-        name: '哥布林酋长·格鲁克',
-        emoji: '👑',
-        kind: 'boss',
-        hp: 1,
-        maxHp: 195,
-        atk: 26,
-        def: 8,
-        armorBreakTurns: 0,
-        burnTurns: 0,
-        burnDamage: 0,
-        bossSkillName: '部落咆哮重击',
-      },
-      event: null,
-      pendingCoins: 2000,
-      pendingXp: 100,
-      pendingItems: [
-        {
-          name: '晨曦裁决者',
-          slot: 'weapon',
-          rarity: 'legendary',
-          baseHp: 40,
-          baseAtk: 90,
-          baseDef: 10,
-          baseCritBp: 1200,
-        },
-      ],
-      logs: ['🔥 首领降临！'],
+    ctx.services.rpg.chooseOrSwitchClass(GUILD_ID, USER_ID, 'paladin');
+    ctx.repos.rpg.saveCharacter({
+      ...ctx.services.rpg.getOrCreateCharacter(GUILD_ID, USER_ID),
+      level: 9,
+      xp: 3500,
+      promoPills: 2,
+      guardElixirs: 1,
+      trialPillsStaged: 2,
+      trialUseGuard: true,
     });
 
-    const channel = makeMockChannel(true);
-    const atkBtn = createButtonMock({ customId: 'rpg:act:attack', channel });
-    await handleRpgButton(atkBtn.interaction, ctx);
-
-    // Ephemeral panel updated to Home view with victory summary
-    expect(atkBtn.update).toHaveBeenCalledTimes(1);
-    expect(atkBtn.reply).not.toHaveBeenCalled();
-    const updatedDesc = atkBtn.update.mock.calls[0]![0].embeds?.[0]?.toJSON().description ?? '';
-    expect(updatedDesc).toContain('通关成功');
-    expect(updatedDesc).toContain('首通双倍奖励');
-
-    // Public celebratory broadcast fired after update
-    expect(channel.send).toHaveBeenCalledTimes(1);
-    const pubPayload = channel.send.mock.calls[0]![0];
-    const pubEmbed = pubPayload.embeds?.[0]?.toJSON();
-    expect(pubEmbed?.title).toContain('章节首通');
-    expect(pubEmbed?.title).toContain('传说橙装');
-    expect(pubEmbed?.description).toContain('晨曦裁决者');
-
-    // Also verify retreat with a legendary drop triggers legendary public broadcast safely
-    saveCustomRun(ctx, {
-      chapter: 1,
-      floor: 3,
-      phase: 'floor_clear',
-      turn: 1,
-      classKey: 'warrior',
-      playerHp: 120,
-      playerMaxHp: 170,
-      playerAtk: 30,
-      playerDef: 15,
-      playerCritBp: 1000,
-      playerDodgeBp: 500,
-      skillCooldown: 0,
-      potionsLeft: 2,
-      atkBuffPct: 0,
-      petSynergy: null,
-      enemy: null,
-      event: null,
-      pendingCoins: 1500,
-      pendingXp: 80,
-      pendingItems: [
-        {
-          name: '永恒神佑战甲',
-          slot: 'armor',
-          rarity: 'legendary',
-          baseHp: 180,
-          baseAtk: 0,
-          baseDef: 35,
-          baseCritBp: 0,
-        },
-      ],
-      logs: [],
+    // 1. Guild without #游戏聊天 refuses public trial without consuming pills
+    const randomChannel = makeMockChannel({ id: OTHER_CHANNEL_ID, name: '生图区' });
+    const noGameChatBtn = createButtonMock({
+      customId: 'rpg:trial:public',
+      channel: randomChannel,
+      guildChannels: [randomChannel],
     });
-
-    const failChannel = makeMockChannel(true, true);
-    const retreatBtn = createButtonMock({ customId: 'rpg:act:retreat', channel: failChannel });
-    // Even if channel.send throws 50013, handler does not reject or double-reply
-    await expect(handleRpgButton(retreatBtn.interaction, ctx)).resolves.toBeUndefined();
-    expect(retreatBtn.update).toHaveBeenCalledTimes(1);
-    expect(retreatBtn.reply).not.toHaveBeenCalled();
-    expect(failChannel.send).toHaveBeenCalledTimes(1);
-  });
-
-  it('handles defeat summary and start chapter flow cleanly', async () => {
-    const ctx = createTestCtx();
-    ctx.services.rpg.chooseOrSwitchClass(GUILD_ID, USER_ID, 'mage', NOW);
-
-    const startBtn = createButtonMock({ customId: 'rpg:start:1' });
-    await handleRpgButton(startBtn.interaction, ctx);
-    expect(startBtn.update).toHaveBeenCalledTimes(1);
-    expect(ctx.services.rpg.getActiveRun(GUILD_ID, USER_ID)).not.toBeNull();
-
-    // Force lethal enemy blow
-    saveCustomRun(ctx, {
-      chapter: 1,
-      floor: 2,
-      phase: 'combat',
-      turn: 1,
-      classKey: 'mage',
-      playerHp: 1,
-      playerMaxHp: 115,
-      playerAtk: 10,
-      playerDef: 1,
-      playerCritBp: 0,
-      playerDodgeBp: 0,
-      skillCooldown: 0,
-      potionsLeft: 0,
-      atkBuffPct: 0,
-      petSynergy: null,
-      enemy: {
-        name: '狂暴哥布林萨满',
-        emoji: '🪄',
-        kind: 'elite',
-        hp: 999,
-        maxHp: 999,
-        atk: 500,
-        def: 50,
-        armorBreakTurns: 0,
-        burnTurns: 0,
-        burnDamage: 0,
-      },
-      event: null,
-      pendingCoins: 3000,
-      pendingXp: 90,
-      pendingItems: [
-        {
-          name: '秘银魔杖',
-          slot: 'weapon',
-          rarity: 'uncommon',
-          baseHp: 10,
-          baseAtk: 15,
-          baseDef: 2,
-          baseCritBp: 200,
-        },
-      ],
-      logs: [],
-    });
-
-    const atkBtn = createButtonMock({ customId: 'rpg:act:attack' });
-    await handleRpgButton(atkBtn.interaction, ctx);
-    expect(atkBtn.update).toHaveBeenCalledTimes(1);
-    expect(ctx.services.rpg.getActiveRun(GUILD_ID, USER_ID)).toBeNull();
-    const desc = atkBtn.update.mock.calls[0]![0].embeds?.[0]?.toJSON().description ?? '';
-    expect(desc).toContain('探险战败');
-    expect(desc).toContain('3000');
-  });
-
-  it('handles combat errors (cooldown/no potions/phase mismatch), event choice, next_floor, and debt garnishing summary', async () => {
-    const ctx = createTestCtx();
-    ctx.services.rpg.chooseOrSwitchClass(GUILD_ID, USER_ID, 'paladin', NOW);
-
-    // Combat phase with cooldown & 0 potions
-    saveCustomRun(ctx, {
-      chapter: 1,
-      floor: 1,
-      phase: 'combat',
-      turn: 1,
-      classKey: 'paladin',
-      playerHp: 120,
-      playerMaxHp: 155,
-      playerAtk: 25,
-      playerDef: 12,
-      playerCritBp: 1200,
-      playerDodgeBp: 600,
-      skillCooldown: 2,
-      potionsLeft: 0,
-      atkBuffPct: 0,
-      petSynergy: null,
-      enemy: {
-        name: '哥布林斥候',
-        emoji: '👺',
-        kind: 'monster',
-        hp: 70,
-        maxHp: 78,
-        atk: 17,
-        def: 4,
-        armorBreakTurns: 0,
-        burnTurns: 0,
-        burnDamage: 0,
-      },
-      event: null,
-      pendingCoins: 4000,
-      pendingXp: 50,
-      pendingItems: [],
-      logs: [],
-    });
-
-    const cdBtn = createButtonMock({ customId: 'rpg:act:skill' });
-    await handleRpgButton(cdBtn.interaction, ctx);
-    expect(cdBtn.update.mock.calls[0]![0].embeds?.[0]?.toJSON().description).toContain('冷却中');
-
-    const potBtn = createButtonMock({ customId: 'rpg:act:potion' });
-    await handleRpgButton(potBtn.interaction, ctx);
-    expect(potBtn.update.mock.calls[0]![0].embeds?.[0]?.toJSON().description).toContain('药水已经全部用完');
-
-    const badPhase = createButtonMock({ customId: 'rpg:act:next_floor' });
-    await handleRpgButton(badPhase.interaction, ctx);
-    expect(badPhase.update.mock.calls[0]![0].embeds?.[0]?.toJSON().description).toContain('当前阶段无法执行');
-
-    // Event phase -> event_b transitions to floor_clear -> next_floor advances to floor 2
-    saveCustomRun(ctx, {
-      chapter: 1,
-      floor: 1,
-      phase: 'event',
-      turn: 1,
-      classKey: 'paladin',
-      playerHp: 100,
-      playerMaxHp: 155,
-      playerAtk: 25,
-      playerDef: 12,
-      playerCritBp: 1200,
-      playerDodgeBp: 600,
-      skillCooldown: 0,
-      potionsLeft: 1,
-      atkBuffPct: 0,
-      petSynergy: null,
-      enemy: null,
-      event: {
-        key: 'tavern',
-        title: '🍺 迷雾旅店',
-        description: '迷雾中的小酒馆。',
-        optionALabel: '豪赌',
-        optionBLabel: '痛饮麦酒',
-      },
-      pendingCoins: 4000,
-      pendingXp: 50,
-      pendingItems: [],
-      logs: [],
-    });
-
-    const evBtn = createButtonMock({ customId: 'rpg:act:event_b' });
-    await handleRpgButton(evBtn.interaction, ctx);
-    expect(ctx.services.rpg.getActiveRun(GUILD_ID, USER_ID)?.phase).toBe('floor_clear');
-
-    const nextBtn = createButtonMock({ customId: 'rpg:act:next_floor' });
-    await handleRpgButton(nextBtn.interaction, ctx);
-    expect(ctx.services.rpg.getActiveRun(GUILD_ID, USER_ID)?.floor).toBe(2);
-
-    // Create an overdue loan to verify debt garnish appears in retreat summary
-    ctx.repos.creditLoan.createLoan({
-      guildId: GUILD_ID,
-      userId: USER_ID,
-      loanType: 'usury',
-      principal: 10_000,
-      dailyRate: 0.12,
-      remainingPrincipal: 10_000,
-      accruedInterest: 1200,
-      status: 'overdue',
-      termDays: 2,
-      createdAt: NOW - 5 * 86_400_000,
-      dueAt: NOW - 3 * 86_400_000,
-      lastAccrualDate: '2026-05-14',
-    });
-
-    const retreatBtn = createButtonMock({ customId: 'rpg:act:retreat' });
-    await handleRpgButton(retreatBtn.interaction, ctx);
-    const retreatDesc = retreatBtn.update.mock.calls[0]![0].embeds?.[0]?.toJSON().description ?? '';
-    expect(retreatDesc).toContain('安全撤退');
-    expect(retreatDesc).toContain('自动抵扣逾期债务');
-  });
-
-  it('handles full tabletop interaction lifecycle: Boss P1/P2 victory, Nat 20 / Nat 1 / manual share broadcasts, potion, retreat, defeat, and bribe error', async () => {
-    const ctx = createTestCtx();
-    ctx.services.rpg.chooseOrSwitchClass(GUILD_ID, USER_ID, 'warrior', NOW);
-
-    // 1. Dual-mode chapters nav & start tabletop Ch 1
-    for (const id of ['rpg:nav:chapters:tabletop', 'rpg:nav:chapters:classic']) {
-      const nav = createButtonMock({ customId: id });
-      await handleRpgButton(nav.interaction, ctx);
-      expect(nav.update).toHaveBeenCalledTimes(1);
-      assertDiscordComponentLimits(nav.update.mock.calls[0]![0]);
-    }
-
-    const startTt = createButtonMock({ customId: 'rpg:start_tt:1' });
-    await handleRpgButton(startTt.interaction, ctx);
-    expect(startTt.update).toHaveBeenCalledTimes(1);
-    assertDiscordComponentLimits(startTt.update.mock.calls[0]![0]);
-    expect(ctx.services.rpg.getActiveTabletopRun(GUILD_ID, USER_ID)).not.toBeNull();
-
-    // 2. Manual share (📢 晒出名场面) updates ephemeral panel first and broadcasts highlight publicly
-    const shareChannel = makeMockChannel(true);
-    const shareBtn = createButtonMock({ customId: 'rpg:tt_share', channel: shareChannel });
-    await handleRpgButton(shareBtn.interaction, ctx);
-    expect(shareBtn.update).toHaveBeenCalledTimes(1);
-    expect(shareBtn.update.mock.calls[0]![0].embeds?.[0]?.toJSON().description).toContain(
-      '晒出到本频道',
+    await handleRpgButton(noGameChatBtn.interaction, ctx);
+    expect(noGameChatBtn.update.mock.calls[0]![0].embeds?.[0]?.toJSON().description).toContain(
+      '未找到「#游戏聊天」',
     );
-    expect(shareChannel.send).toHaveBeenCalledTimes(1);
-    expect(shareChannel.send.mock.calls[0]![0].embeds?.[0]?.toJSON().title).toContain('名场面');
+    expect(ctx.services.rpg.getPendingTrialForUser(GUILD_ID, USER_ID)).toBeNull();
+    expect(ctx.repos.rpg.getCharacter(GUILD_ID, USER_ID)?.promoPills).toBe(2);
 
-    // 3. Play through Acts 1..4 -> Boss P1 -> Boss P2 -> Victory with Math.random mocked to 0.97 (Nat 20!)
-    const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.97);
-    let nat20BroadcastSeen = false;
-    let victoryDesc = '';
-    let victoryChannel: MockChannel | null = null;
-
-    try {
-      for (let i = 0; i < 8; i++) {
-        const current = ctx.services.rpg.getActiveTabletopRun(GUILD_ID, USER_ID);
-        if (!current) break;
-        const ch = makeMockChannel(true);
-        const choiceId = current.currentChoiceIds[0]!;
-        const choiceBtn = createButtonMock({ customId: `rpg:tt_choice:${choiceId}`, channel: ch });
-        await handleRpgButton(choiceBtn.interaction, ctx);
-        expect(choiceBtn.update).toHaveBeenCalledTimes(1);
-        assertDiscordComponentLimits(choiceBtn.update.mock.calls[0]![0]);
-
-        const desc = choiceBtn.update.mock.calls[0]![0].embeds?.[0]?.toJSON().description ?? '';
-        if (ctx.services.rpg.getActiveTabletopRun(GUILD_ID, USER_ID) === null) {
-          victoryDesc = desc;
-          victoryChannel = ch;
-          break;
-        }
-        if (ch.send.mock.calls.length > 0) {
-          const pubTitle = ch.send.mock.calls[0]![0].embeds?.[0]?.toJSON().title ?? '';
-          if (pubTitle.includes('自然20')) {
-            nat20BroadcastSeen = true;
-          }
-        }
-      }
-    } finally {
-      randomSpy.mockRestore();
-    }
-
-    expect(nat20BroadcastSeen).toBe(true);
-    expect(victoryDesc).toContain('博德跑团通关');
-    expect(victoryChannel?.send).toHaveBeenCalledTimes(1);
-    expect(victoryChannel?.send.mock.calls[0]![0].embeds?.[0]?.toJSON().title).toContain(
-      '章节首通',
-    );
-
-    // 4. Test bribe error, potion, and retreat
-    const start2 = createButtonMock({ customId: 'rpg:start_tt:1' });
-    await handleRpgButton(start2.interaction, ctx);
-    const run2 = ctx.services.rpg.getActiveTabletopRun(GUILD_ID, USER_ID)!;
-    // Drain pocket coins to 0 and force ch1_goblin_toll with bribe + low HP
-    const prof = ctx.repos.profile.getOrCreate(GUILD_ID, USER_ID);
-    ctx.repos.profile.save({ ...prof, coins: 0 });
-    ctx.repos.rpg.upsertRun({
-      guildId: GUILD_ID,
-      userId: USER_ID,
-      chapter: 1,
-      floor: 1,
-      stateJson: JSON.stringify({
-        ...run2,
-        currentSceneId: 'ch1_goblin_toll',
-        currentChoiceIds: ['ch1_toll_bribe', 'ch1_toll_agility', 'ch1_toll_charm'],
-        playerHp: 50,
-        pendingCoins: 2400,
-      }),
-      updatedAt: NOW,
+    // 2. When #游戏聊天 send throws -> cancels trial and refunds pills & guard elixir
+    const brokenGameChat = makeMockChannel({
+      id: GAME_CHAT_ID,
+      name: '游戏聊天',
+      failSend: true,
     });
-
-    const bribeErrBtn = createButtonMock({ customId: 'rpg:tt_choice:ch1_toll_bribe' });
-    await handleRpgButton(bribeErrBtn.interaction, ctx);
-    expect(bribeErrBtn.update.mock.calls[0]![0].embeds?.[0]?.toJSON().description).toContain('不足');
-
-    const potionBtn = createButtonMock({ customId: 'rpg:tt_act:potion' });
-    await handleRpgButton(potionBtn.interaction, ctx);
-    expect(potionBtn.update.mock.calls[0]![0].embeds?.[0]?.toJSON().description).toContain(
-      '饮用生命药水',
-    );
-    expect(ctx.services.rpg.getActiveTabletopRun(GUILD_ID, USER_ID)?.playerHp).toBeGreaterThan(50);
-
-    // Fund pocket coins and execute coin bribe as normal-credit player -> renders 金币开道 (NOT 金卡刷脸)
-    ctx.repos.profile.addCoins(GUILD_ID, USER_ID, 5000);
-    const bribeOkBtn = createButtonMock({ customId: 'rpg:tt_choice:ch1_toll_bribe' });
-    await handleRpgButton(bribeOkBtn.interaction, ctx);
-    const bribeOkDesc = bribeOkBtn.update.mock.calls[0]![0].embeds?.[0]?.toJSON().description ?? '';
-    expect(bribeOkDesc).toContain('金币开道');
-    expect(bribeOkDesc).not.toContain('金卡刷脸');
-
-    const retreatBtn = createButtonMock({ customId: 'rpg:tt_act:retreat' });
-    await handleRpgButton(retreatBtn.interaction, ctx);
-    expect(retreatBtn.update.mock.calls[0]![0].embeds?.[0]?.toJSON().description).toContain(
-      '安全撤退',
-    );
-    expect(ctx.services.rpg.getActiveTabletopRun(GUILD_ID, USER_ID)).toBeNull();
-
-    // 5. Test Nat 1 broadcast & defeat summary
-    const start3 = createButtonMock({ customId: 'rpg:start_tt:1' });
-    await handleRpgButton(start3.interaction, ctx);
-    const run3 = ctx.services.rpg.getActiveTabletopRun(GUILD_ID, USER_ID)!;
-    ctx.repos.rpg.upsertRun({
-      guildId: GUILD_ID,
-      userId: USER_ID,
-      chapter: 1,
-      floor: 1,
-      stateJson: JSON.stringify({
-        ...run3,
-        currentSceneId: 'ch1_goblin_toll',
-        currentChoiceIds: ['ch1_toll_agility', 'ch1_toll_charm', 'ch1_toll_bribe'],
-        playerHp: 1,
-        pendingCoins: 1800,
-      }),
-      updatedAt: NOW,
+    const failedSendBtn = createButtonMock({
+      customId: 'rpg:trial:public',
+      channel: randomChannel,
+      guildChannels: [randomChannel, brokenGameChat],
     });
+    await handleRpgButton(failedSendBtn.interaction, ctx);
+    expect(failedSendBtn.update.mock.calls[0]![0].embeds?.[0]?.toJSON().description).toContain(
+      '全额退还',
+    );
+    expect(ctx.services.rpg.getPendingTrialForUser(GUILD_ID, USER_ID)).toBeNull();
+    expect(ctx.repos.rpg.getCharacter(GUILD_ID, USER_ID)?.promoPills).toBe(2);
+    expect(ctx.repos.rpg.getCharacter(GUILD_ID, USER_ID)?.guardElixirs).toBe(1);
 
-    const nat1Spy = vi.spyOn(Math, 'random').mockReturnValue(0.0);
-    const nat1Channel = makeMockChannel(true);
-    try {
-      const nat1Btn = createButtonMock({
-        customId: 'rpg:tt_choice:ch1_toll_agility',
-        channel: nat1Channel,
-      });
-      await handleRpgButton(nat1Btn.interaction, ctx);
-      expect(nat1Btn.update).toHaveBeenCalledTimes(1);
-      expect(nat1Btn.update.mock.calls[0]![0].embeds?.[0]?.toJSON().description).toContain(
-        '跑团团灭',
-      );
-      expect(nat1Channel.send).toHaveBeenCalledTimes(1);
-      expect(nat1Channel.send.mock.calls[0]![0].embeds?.[0]?.toJSON().title).toContain('自然1');
-    } finally {
-      nat1Spy.mockRestore();
-    }
+    // 3. When user clicks from #生图区 while #游戏聊天 exists -> card is strictly sent into #游戏聊天
+    const gameChat = makeMockChannel({ id: GAME_CHAT_ID, name: '游戏聊天' });
+    const launchBtn = createButtonMock({
+      customId: 'rpg:trial:public',
+      channel: randomChannel,
+      guildChannels: [randomChannel, gameChat],
+    });
+    await handleRpgButton(launchBtn.interaction, ctx);
+    expect(randomChannel.send).not.toHaveBeenCalled();
+    expect(gameChat.send).toHaveBeenCalledTimes(1);
+    const trial = ctx.services.rpg.getPendingTrialForUser(GUILD_ID, USER_ID)!;
+    expect(trial).not.toBeNull();
+    expect(trial.channelId).toBe(GAME_CHAT_ID);
+    expect(trial.messageId).toBe('pub-msg-1');
+
+    // 4. Owner cannot help/jeer own trial (ephemeral reply, no message edit)
+    const selfHelp = createButtonMock({
+      customId: `rpg:trial_help:${trial.id}`,
+      userId: USER_ID,
+      channel: gameChat,
+    });
+    await handleRpgButton(selfHelp.interaction, ctx);
+    expect(selfHelp.reply).toHaveBeenCalledTimes(1);
+    expect(selfHelp.reply.mock.calls[0]![0].flags).toBe(MessageFlags.Ephemeral);
+    expect(selfHelp.update).not.toHaveBeenCalled();
+
+    // 5. Another player helps & third player jeers -> updates public card
+    const supHelp = createButtonMock({
+      customId: `rpg:trial_help:${trial.id}`,
+      userId: 'u-sup-1',
+      channel: gameChat,
+    });
+    await handleRpgButton(supHelp.interaction, ctx);
+    expect(supHelp.update).toHaveBeenCalledTimes(1);
+
+    const sabJeer = createButtonMock({
+      customId: `rpg:trial_jeer:${trial.id}`,
+      userId: 'u-sab-1',
+      channel: gameChat,
+    });
+    await handleRpgButton(sabJeer.interaction, ctx);
+    expect(sabJeer.update).toHaveBeenCalledTimes(1);
+
+    // Non-owner cannot early-settle
+    const nonOwnerSettle = createButtonMock({
+      customId: `rpg:trial_settle:${trial.id}`,
+      userId: 'u-sup-1',
+      channel: gameChat,
+    });
+    await handleRpgButton(nonOwnerSettle.interaction, ctx);
+    expect(nonOwnerSettle.reply).toHaveBeenCalledTimes(1);
+    expect(nonOwnerSettle.reply.mock.calls[0]![0].flags).toBe(MessageFlags.Ephemeral);
+
+    // Owner settles trial -> succeeds & updates card to remove buttons
+    const randSpy = vi.spyOn(Math, 'random').mockReturnValue(0.0);
+    const ownerSettle = createButtonMock({
+      customId: `rpg:trial_settle:${trial.id}`,
+      userId: USER_ID,
+      channel: gameChat,
+    });
+    await handleRpgButton(ownerSettle.interaction, ctx);
+    randSpy.mockRestore();
+    expect(ownerSettle.update).toHaveBeenCalledTimes(1);
+    expect(ownerSettle.update.mock.calls[0]![0].components).toHaveLength(0);
+    expect(ctx.repos.rpg.getCharacter(GUILD_ID, USER_ID)?.level).toBe(10);
+
+    // Clicking stale help button after settlement gives ephemeral error AND refreshes stale card
+    const staleHelp = createButtonMock({
+      customId: `rpg:trial_help:${trial.id}`,
+      userId: 'u-late-1',
+      channel: gameChat,
+    });
+    await handleRpgButton(staleHelp.interaction, ctx);
+    expect(staleHelp.reply.mock.calls[0]![0].flags).toBe(MessageFlags.Ephemeral);
+    expect(staleHelp.messageEdit).toHaveBeenCalledTimes(1);
+
+    ctx.db.close();
   });
 
-  it('handles ⚡ 一键穿最强 (rpg:gear_equip_best) and ♻️ 一键拆白绿装 (rpg:gear_bulk_salvage)', async () => {
+  it('handles gear select, equip, best equip, enhance, unequip, salvage, and bulk salvage', async () => {
     const ctx = createTestCtx();
-    ctx.services.rpg.chooseOrSwitchClass(GUILD_ID, USER_ID, 'ranger', NOW);
+    ctx.services.rpg.chooseOrSwitchClass(GUILD_ID, USER_ID, 'warrior');
+    ctx.repos.profile.addCoins(GUILD_ID, USER_ID, 20_000);
 
-    const weakWeapon = ctx.repos.rpg.createItem({
+    const commonItem = ctx.repos.rpg.createItem({
       guildId: GUILD_ID,
       userId: USER_ID,
-      name: '猎人木弓',
+      name: '锈铁长剑',
       slot: 'weapon',
       rarity: 'common',
       baseHp: 5,
       baseAtk: 10,
-      baseDef: 1,
+      baseDef: 2,
       baseCritBp: 100,
-      equipped: true,
+      equipped: false,
+      enhanceLevel: 0,
       createdAt: NOW,
     });
-    const strongWeapon = ctx.repos.rpg.createItem({
+    const rareItem = ctx.repos.rpg.createItem({
       guildId: GUILD_ID,
       userId: USER_ID,
-      name: '暗影追魂弓',
+      name: '秘银重剑',
       slot: 'weapon',
-      rarity: 'epic',
-      baseHp: 30,
-      baseAtk: 85,
-      baseDef: 8,
-      baseCritBp: 900,
+      rarity: 'rare',
+      baseHp: 25,
+      baseAtk: 45,
+      baseDef: 10,
+      baseCritBp: 400,
+      equipped: false,
+      enhanceLevel: 0,
       createdAt: NOW + 1,
     });
-    const junkArmor = ctx.repos.rpg.createItem({
-      guildId: GUILD_ID,
-      userId: USER_ID,
-      name: '精钢锁甲',
-      slot: 'armor',
-      rarity: 'uncommon',
-      baseHp: 35,
-      baseAtk: 0,
-      baseDef: 8,
-      baseCritBp: 0,
-      createdAt: NOW + 2,
-    });
-    const rareArmor = ctx.repos.rpg.createItem({
-      guildId: GUILD_ID,
-      userId: USER_ID,
-      name: '影步轻铠',
-      slot: 'armor',
-      rarity: 'rare',
-      baseHp: 90,
-      baseAtk: 0,
-      baseDef: 22,
-      baseCritBp: 0,
-      createdAt: NOW + 3,
-    });
 
-    // 1. Equip best -> swaps weapon to strongWeapon & equips rareArmor
+    const selectMock = createStringSelectMock({
+      customId: 'rpg:gear_select',
+      values: [String(rareItem.id)],
+    });
+    await handleRpgStringSelect(selectMock.interaction, ctx);
+    expect(selectMock.update).toHaveBeenCalledTimes(1);
+
     const bestBtn = createButtonMock({ customId: 'rpg:gear_equip_best' });
     await handleRpgButton(bestBtn.interaction, ctx);
-    expect(bestBtn.update).toHaveBeenCalledTimes(1);
-    assertDiscordComponentLimits(bestBtn.update.mock.calls[0]![0]);
-    expect(bestBtn.update.mock.calls[0]![0].embeds?.[0]?.toJSON().description).toContain(
-      '一键换装完成',
+    expect(ctx.repos.rpg.listItems(GUILD_ID, USER_ID).find((i) => i.id === rareItem.id)?.equipped).toBe(
+      true,
     );
-    expect(ctx.repos.rpg.getItemById(strongWeapon.id)?.equipped).toBe(true);
-    expect(ctx.repos.rpg.getItemById(rareArmor.id)?.equipped).toBe(true);
-    expect(ctx.repos.rpg.getItemById(weakWeapon.id)?.equipped).toBe(false);
 
-    // 2. Bulk salvage -> destroys unequipped weakWeapon (common) & junkArmor (uncommon), keeps equipped epic/rare
-    const coinsBefore = ctx.repos.profile.getOrCreate(GUILD_ID, USER_ID).coins;
+    const randSpy = vi.spyOn(Math, 'random').mockReturnValue(0.0);
+    const enhBtn = createButtonMock({ customId: `rpg:gear_enhance:${rareItem.id}` });
+    await handleRpgButton(enhBtn.interaction, ctx);
+    randSpy.mockRestore();
+    expect(
+      ctx.repos.rpg.listItems(GUILD_ID, USER_ID).find((i) => i.id === rareItem.id)?.enhanceLevel,
+    ).toBe(1);
+
     const bulkBtn = createButtonMock({ customId: 'rpg:gear_bulk_salvage' });
     await handleRpgButton(bulkBtn.interaction, ctx);
-    expect(bulkBtn.update).toHaveBeenCalledTimes(1);
-    assertDiscordComponentLimits(bulkBtn.update.mock.calls[0]![0]);
-    expect(bulkBtn.update.mock.calls[0]![0].embeds?.[0]?.toJSON().description).toContain(
-      '一键拆解 **2** 件白绿装',
-    );
-    expect(ctx.repos.rpg.getItemById(weakWeapon.id)).toBeNull();
-    expect(ctx.repos.rpg.getItemById(junkArmor.id)).toBeNull();
-    expect(ctx.repos.rpg.getItemById(strongWeapon.id)).not.toBeNull();
-    expect(ctx.repos.rpg.getItemById(rareArmor.id)).not.toBeNull();
-    expect(ctx.repos.profile.getOrCreate(GUILD_ID, USER_ID).coins).toBeGreaterThan(coinsBefore);
-  });
-});
+    expect(
+      ctx.repos.rpg.listItems(GUILD_ID, USER_ID).find((i) => i.id === commonItem.id),
+    ).toBeUndefined();
 
-describe('/冒险 Slash Command', () => {
-  it('exposes Chinese command name 冒险 and respects module toggle', async () => {
-    expect(adventureCommand.name).toBe('冒险');
-    const json = adventureCommand.data.toJSON() as { name: string };
-    expect(json.name).toBe('冒险');
+    const unequipBtn = createButtonMock({ customId: `rpg:gear_unequip:${rareItem.id}` });
+    await handleRpgButton(unequipBtn.interaction, ctx);
+    const salvageBtn = createButtonMock({ customId: `rpg:gear_salvage:${rareItem.id}` });
+    await handleRpgButton(salvageBtn.interaction, ctx);
+    expect(ctx.repos.rpg.listItems(GUILD_ID, USER_ID)).toHaveLength(0);
 
-    const ctx = createTestCtx();
-    const cfg = ctx.repos.guildConfig.getOrCreate(GUILD_ID);
-    ctx.repos.guildConfig.updateModules(GUILD_ID, { ...cfg.modules, rpg: false });
-
-    const { interaction, reply } = createSlashMock();
-    await adventureCommand.execute(interaction, ctx);
-    expect(reply).toHaveBeenCalledTimes(1);
-    expect(reply.mock.calls[0]![0].flags).toBe(MessageFlags.Ephemeral);
-    expect(reply.mock.calls[0]![0].embeds?.[0]?.toJSON().title).toContain('模块未开启');
-  });
-
-  it('replies ephemerally with home view when idle and run view when an active run exists', async () => {
-    const ctx = createTestCtx();
-    ctx.services.rpg.chooseOrSwitchClass(GUILD_ID, USER_ID, 'ranger', NOW);
-
-    const idle = createSlashMock();
-    await adventureCommand.execute(idle.interaction, ctx);
-    expect(idle.reply).toHaveBeenCalledTimes(1);
-    expect(idle.reply.mock.calls[0]![0].flags).toBe(MessageFlags.Ephemeral);
-    expect(idle.reply.mock.calls[0]![0].embeds?.[0]?.toJSON().title).toContain('暗影游侠');
-
-    ctx.services.rpg.startRun(GUILD_ID, USER_ID, 1, NOW, () => 0.1);
-    const running = createSlashMock();
-    await adventureCommand.execute(running.interaction, ctx);
-    expect(running.reply).toHaveBeenCalledTimes(1);
-    expect(running.reply.mock.calls[0]![0].flags).toBe(MessageFlags.Ephemeral);
-    expect(running.reply.mock.calls[0]![0].embeds?.[0]?.toJSON().title).toContain('第 1 章');
-
-    // Also verify /冒险 auto-resumes tabletop run
-    ctx.services.rpg.actInRun(GUILD_ID, USER_ID, 'retreat', NOW);
-    ctx.services.rpg.startTabletopRun(GUILD_ID, USER_ID, 1, NOW, () => 0.1);
-    const runningTt = createSlashMock();
-    await adventureCommand.execute(runningTt.interaction, ctx);
-    expect(runningTt.reply).toHaveBeenCalledTimes(1);
-    expect(runningTt.reply.mock.calls[0]![0].flags).toBe(MessageFlags.Ephemeral);
-    expect(runningTt.reply.mock.calls[0]![0].embeds?.[0]?.toJSON().author?.name).toContain(
-      '博德跑团中',
-    );
+    ctx.db.close();
   });
 });

@@ -1,11 +1,7 @@
 import { MessageFlags, SlashCommandBuilder, type ChatInputCommandInteraction } from 'discord.js';
 import type { AppContext, CommandDefinition } from '../../ui/embeds.js';
 import { applyZh } from '../../ui/localization.js';
-import {
-  buildRpgHomeView,
-  buildRpgRunView,
-  buildRpgTabletopRunView,
-} from '../../ui/rpgMenuBuilder.js';
+import { buildRpgHomeView } from '../../ui/rpgMenuBuilder.js';
 import { checkMemberIsBotAdmin, requireGuildMember, requireModuleEnabled } from '../guards.js';
 
 export const adventureCommand: CommandDefinition = {
@@ -13,11 +9,11 @@ export const adventureCommand: CommandDefinition = {
   data: applyZh(
     new SlashCommandBuilder()
       .setName('冒险')
-      .setDescription('开启或继续西幻地下城文字冒险（4职业/6章节/装备强化/战宠助战）'),
+      .setDescription('开启西幻十阶挂机、速刷秘境Boss、炼金秘药与60秒全服破境试炼'),
     '冒险',
-    '开启或继续西幻地下城文字冒险（4职业/6章节/装备强化/战宠助战）',
+    '开启西幻十阶挂机、速刷秘境Boss、炼金秘药与60秒全服破境试炼',
     '冒險',
-    '開啟或繼續西幻地下城文字冒險（4職業/6章節/裝備強化/戰寵助戰）',
+    '開啟西幻十階掛機、速刷秘境Boss、煉金秘藥與60秒全服破境試煉',
   ),
   async execute(interaction: ChatInputCommandInteraction, ctx: AppContext): Promise<void> {
     const guildCtx = await requireGuildMember(interaction);
@@ -35,13 +31,7 @@ export const adventureCommand: CommandDefinition = {
     };
 
     const nowMs = Date.now();
-    const activeMode = ctx.services.rpg.getAnyActiveRunMode(guildCtx.guildId, interaction.user.id);
-    const msg =
-      activeMode === 'tabletop'
-        ? buildRpgTabletopRunView(ctx, guildCtx.guildId, actor, undefined, nowMs)
-        : activeMode === 'classic'
-          ? buildRpgRunView(ctx, guildCtx.guildId, actor, undefined, nowMs)
-          : buildRpgHomeView(ctx, guildCtx.guildId, actor, undefined, nowMs);
+    const msg = buildRpgHomeView(ctx, guildCtx.guildId, actor, undefined, nowMs);
 
     await interaction.reply({
       ...msg,

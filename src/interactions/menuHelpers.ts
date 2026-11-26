@@ -17,6 +17,8 @@ import {
   type StringSelectMenuInteraction,
   type UserSelectMenuInteraction,
 } from 'discord.js';
+import type { GuildConfig } from '../config/defaults.js';
+import type { GuildConfigRepo } from '../db/repositories/guildConfigRepo.js';
 import type { ModuleKey } from '../config/defaults.js';
 import { checkMemberIsBotAdmin } from '../commands/guards.js';
 import type { AppContext } from '../ui/embeds.js';
@@ -302,14 +304,56 @@ export async function sendPublicBroadcast(
   }
 }
 
+/**
+ * Resolves the dedicated game-chat channel ID for world events and RPG public broadcasts.
+ * Prefers configured eventChannelId; otherwise scans guild text channels named "游戏聊天"
+ * and persists it once found. Returns null if no dedicated channel exists.
+ */
+export function resolveGameChatChannelId(
+  guild: Guild | null | undefined,
+  cfg: GuildConfig,
+  configRepo?: GuildConfigRepo,
+): string | null {
+  if (cfg.games.eventChannelId) {
+    return cfg.games.eventChannelId;
+  }
+  const cache = guild?.channels?.cache;
+  if (!cache || typeof cache.values !== 'function') {
+    return null;
+  }
+  for (const ch of cache.values()) {
+    const isText = typeof ch.isTextBased === 'function' ? ch.isTextBased() : false;
+    const isThread = typeof ch.isThread === 'function' ? ch.isThread() : false;
+    if (
+      isText &&
+      !isThread &&
+      typeof ch.name === 'string' &&
+      ch.name.trim() === '游戏聊天'
+    ) {
+      if (configRepo) {
+        configRepo.updateGames(cfg.guildId, {
+          ...cfg.games,
+          eventChannelId: ch.id,
+        });
+      }
+      return ch.id;
+    }
+  }
+  return null;
+}
+
 export async function sendToChannel(
   client: Client,
   channelId: string,
   payload: MessageCreateOptions,
+  guild?: Guild | null,
 ): Promise<string | null> {
   try {
-    const cached = client.channels.cache.get(channelId);
-    const ch = cached ?? (await client.channels.fetch(channelId).catch(() => null));
+    const ch =
+      client.channels.cache.get(channelId) ??
+      guild?.channels.cache.get(channelId) ??
+      (await client.channels.fetch(channelId).catch(() => null)) ??
+      (guild ? await guild.channels.fetch(channelId).catch(() => null) : null);
     if (ch && ch.isSendable()) {
       const m = await ch.send(payload);
       return m.id;
@@ -332,7 +376,8 @@ export async function editChannelMessage(
     const ch =
       guild?.channels.cache.get(channelId) ??
       client.channels.cache.get(channelId) ??
-      (await client.channels.fetch(channelId).catch(() => null));
+      (await client.channels.fetch(channelId).catch(() => null)) ??
+      (guild ? await guild.channels.fetch(channelId).catch(() => null) : null);
     if (!ch || !ch.isTextBased()) return;
     const msg = await ch.messages.fetch(messageId).catch(() => null);
     if (msg) {

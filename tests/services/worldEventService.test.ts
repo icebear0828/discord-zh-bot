@@ -246,6 +246,29 @@ describe('WorldEventService (predictions, chest, boss, auto-spawn)', () => {
       }
     }
 
+    // Once eventChannelId is bound, messages from OTHER channels neither count nor spawn
+    configRepo.updateGames('g1', {
+      ...configRepo.getOrCreate('g1').games,
+      eventChannelId: 'ch-game-chat',
+    });
+    expect(worldEvent.tryAutoSpawnOnMessage('g1', 'ch-draw', 100_000, () => 0.9)).toBeNull();
+    expect(worldEvent.tryAutoSpawnOnMessage('g1', 'ch-draw', 101_000, () => 0.9)).toBeNull();
+    expect(worldEvent.tryAutoSpawnOnMessage('g1', 'ch-draw', 102_000, () => 0.9)).toBeNull();
+    expect(worldEvent.tryAutoSpawnOnMessage('g1', 'ch-draw', 103_000, () => 0.9)).toBeNull();
+    // Counter must still be 0 in ch-game-chat (need full 3 messages in ch-game-chat)
+    expect(worldEvent.tryAutoSpawnOnMessage('g1', 'ch-game-chat', 104_000, () => 0.9)).toBeNull();
+    expect(worldEvent.tryAutoSpawnOnMessage('g1', 'ch-game-chat', 105_000, () => 0.9)).toBeNull();
+    const bossInGameChat = worldEvent.tryAutoSpawnOnMessage('g1', 'ch-game-chat', 106_000, () => 0.9);
+    expect(bossInGameChat).not.toBeNull();
+    expect(bossInGameChat?.channelId).toBe('ch-game-chat');
+    if (bossInGameChat) {
+      worldEvent.expireWorldEventIfDue(bossInGameChat.id, 106_000 + 20 * 60_000);
+    }
+    configRepo.updateGames('g1', {
+      ...configRepo.getOrCreate('g1').games,
+      eventChannelId: null,
+    });
+
     // Monster pet with ATK=9999 -> petBonus MUST be capped at PET_BOSS_BONUS_CAP (80)!
     socialPetRepo.createPet({
       guildId: 'g1',

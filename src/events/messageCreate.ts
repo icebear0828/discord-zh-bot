@@ -1,5 +1,5 @@
 import { Events, type Client, type Message } from 'discord.js';
-import { sendToChannel } from '../interactions/menuHelpers.js';
+import { resolveGameChatChannelId, sendToChannel } from '../interactions/menuHelpers.js';
 import { resolveDiscordUserMentions } from '../services/aiRegex.js';
 import {
   stripBotMention,
@@ -454,21 +454,28 @@ export async function handleMessageCreate(
     console.error('[leveling] 处理消息经验失败:', err);
   }
 
-  // 2. World Event auto-spawn (isolated; checks both worldEvents & economy, skips tickets & ignored channels)
+  // 2. World Event auto-spawn (isolated; only counts and spawns inside the dedicated #游戏聊天 / eventChannelId)
   try {
     const cfg = ctx.repos.guildConfig.getOrCreate(message.guild.id);
     const isTicketChannel = Boolean(ctx.repos.ticket.getByChannel(message.channelId));
     const isIgnoredChannel = cfg.leveling.ignoredChannelIds.includes(message.channelId);
+    const targetEventChannelId = resolveGameChatChannelId(
+      message.guild,
+      cfg,
+      ctx.repos.guildConfig,
+    );
 
     if (
       cfg.modules.worldEvents &&
       cfg.modules.economy &&
       !isTicketChannel &&
-      !isIgnoredChannel
+      !isIgnoredChannel &&
+      targetEventChannelId !== null &&
+      message.channelId === targetEventChannelId
     ) {
       const spawned = ctx.services.worldEvent.tryAutoSpawnOnMessage(
         message.guild.id,
-        message.channelId,
+        targetEventChannelId,
       );
       if (spawned) {
         const payload =

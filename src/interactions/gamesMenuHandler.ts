@@ -44,6 +44,7 @@ import {
   parseNumberInRange,
   parsePositiveInt,
   prefilledField,
+  resolveGameChatChannelId,
   respondFromModal,
   sendPublicBroadcast,
   sendToChannel,
@@ -266,9 +267,16 @@ async function spawnAndPostWorldEvent(
   }
 
   const cfg = ctx.repos.guildConfig.getOrCreate(guildId);
-  const targetChannelId = cfg.games.eventChannelId ?? interaction.channelId;
+  const targetChannelId = resolveGameChatChannelId(
+    interaction.guild,
+    cfg,
+    ctx.repos.guildConfig,
+  );
   if (!targetChannelId) {
-    return { type: 'error', text: '找不到可用频道以发送事件卡片。' };
+    return {
+      type: 'error',
+      text: '未绑定世界事件频道且未找到 #游戏聊天，请先在下方频道选择器指定游戏聊天频道！',
+    };
   }
 
   const event =
@@ -847,15 +855,31 @@ export async function tryHandleGamesMenuButton(
               content: `👹 世界 Boss **${detail.event.name}** 正在肆虐，快来集火！`,
               ...buildWorldBossCard(detail.event, detail.participants, cfg.economy),
             };
-      const broadcast = await sendPublicBroadcast(interaction, payload);
-      if (broadcast.sent && broadcast.messageId) {
-        const targetChannelId = interaction.channelId ?? oldChannelId;
+      const gameChatChannelId = resolveGameChatChannelId(
+        interaction.guild,
+        cfg,
+        ctx.repos.guildConfig,
+      );
+      let sent = false;
+      let sentMsgId: string | null = null;
+      let targetChannelId = oldChannelId;
+      if (gameChatChannelId && gameChatChannelId !== interaction.channelId) {
+        sentMsgId = await sendToChannel(interaction.client, gameChatChannelId, payload);
+        sent = Boolean(sentMsgId);
+        targetChannelId = gameChatChannelId;
+      } else {
+        const broadcast = await sendPublicBroadcast(interaction, payload);
+        sent = broadcast.sent;
+        sentMsgId = broadcast.messageId;
+        targetChannelId = gameChatChannelId ?? interaction.channelId ?? oldChannelId;
+      }
+      if (sent && sentMsgId) {
         ctx.services.worldEvent.bindWorldEventMessage(
           detail.event.id,
-          broadcast.messageId,
+          sentMsgId,
           targetChannelId,
         );
-        if (oldMessageId && (oldMessageId !== broadcast.messageId || oldChannelId !== targetChannelId)) {
+        if (oldMessageId && (oldMessageId !== sentMsgId || oldChannelId !== targetChannelId)) {
           await editChannelMessage(
             interaction.client,
             oldChannelId,
@@ -871,9 +895,12 @@ export async function tryHandleGamesMenuButton(
           guildId,
           actor,
           { page: 'world_status' },
-          broadcast.sent
-            ? { type: 'success', text: '📢 事件卡片已发送到当前频道（旧卡片按钮已禁用）！' }
-            : { type: 'error', text: '无法在当前频道发送消息。' },
+          sent
+            ? {
+                type: 'success',
+                text: `📢 事件卡片已发送到 <#${targetChannelId}>（旧卡片按钮已禁用）！`,
+              }
+            : { type: 'error', text: '无法在目标频道发送消息。' },
         ),
       );
       return true;
@@ -1138,7 +1165,7 @@ export async function tryHandleGamesMenuButton(
             type: 'success',
             text: nextCh
               ? `📌 已绑定 <#${nextCh}> 为世界事件专属发布频道。`
-              : '📌 已解绑专属事件频道，改为在活跃发言频道随机降临。',
+              : '📌 已解绑专属事件频道，将自动锁定 #游戏聊天（未找到则暂停刷出）。',
           },
         ),
       );

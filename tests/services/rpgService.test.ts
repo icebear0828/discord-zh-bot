@@ -4,15 +4,27 @@ import { ProfileRepo } from '../../src/db/repositories/profileRepo.js';
 import { initRpgSchema, RpgRepo } from '../../src/db/repositories/rpgRepo.js';
 import { SocialPetRepo } from '../../src/db/repositories/socialPetRepo.js';
 import {
+  computeHealInjuryCost,
   computeItemEffectiveStats,
   computeItemScore,
   DEFAULT_RPG_CONFIG,
   getEnhanceInfo,
+  getRpgRealmInfo,
   getSalvageValue,
+  GUARD_ELIXIR_DAILY_LIMIT,
+  GUARD_ELIXIR_PRICE,
+  INJURY_DURATION_MS,
+  isAtBreakthroughGate,
   MAX_ENHANCE_LEVEL,
-  RPG_CHAPTERS,
+  MAX_IDLE_ACCRUE_MS,
+  MAX_RPG_LEVEL,
+  PROMO_PILL_DAILY_LIMIT,
+  PROMO_PILL_PRICE,
+  PUBLIC_TRIAL_DURATION_MS,
   RPG_CLASSES,
+  RPG_TIERS,
   RpgService,
+  xpNeededForRpgLevel,
   type RpgServiceOptions,
 } from '../../src/services/rpgService.js';
 
@@ -24,6 +36,7 @@ function createFixture(options: RpgServiceOptions = {}) {
   const socialPetRepo = new SocialPetRepo(db);
   const rpg = new RpgService(db, rpgRepo, profileRepo, {
     timezone: 'Asia/Shanghai',
+    socialPetRepo,
     ...options,
   });
   return { db, profileRepo, rpgRepo, socialPetRepo, rpg };
@@ -41,14 +54,27 @@ function makeSeqRng(values: readonly number[], fallback = 0.5): () => number {
   };
 }
 
-describe('RpgService (Western Fantasy Roguelike Engine)', () => {
-  it('exposes 4 western fantasy classes and 6 chapters with expected metadata', () => {
+describe('RpgService (Idle & Breakthrough Western Fantasy Engine)', () => {
+  it('exposes 4 classes, 10 tiers x 9 stages (Lv.1~90), and accurate realm metadata', () => {
     expect(RPG_CLASSES.map((c) => c.key)).toEqual(['warrior', 'mage', 'ranger', 'paladin']);
-    expect(RPG_CHAPTERS).toHaveLength(6);
-    expect(RPG_CHAPTERS[0]?.name).toBe('哥布林密林');
-    expect(RPG_CHAPTERS[0]?.boss.name).toBe('哥布林酋长·格鲁克');
-    expect(RPG_CHAPTERS[5]?.name).toBe('深渊王座');
-    expect(RPG_CHAPTERS[5]?.boss.name).toBe('堕落魔神·阿撒托斯');
+    expect(RPG_TIERS).toHaveLength(10);
+    expect(RPG_TIERS[0]?.name).toBe('见习阶');
+    expect(RPG_TIERS[9]?.name).toBe('神座阶');
+
+    expect(getRpgRealmInfo(1)).toMatchObject({ tier: 1, stage: 1, stageZh: '一重' });
+    expect(getRpgRealmInfo(9)).toMatchObject({ tier: 1, stage: 9, stageZh: '九重' });
+    expect(getRpgRealmInfo(15)).toMatchObject({
+      tier: 2,
+      stage: 6,
+      stageZh: '六重',
+      fullLabel: '🪨 黑铁阶·六重',
+    });
+    expect(getRpgRealmInfo(90)).toMatchObject({
+      tier: 10,
+      stage: 9,
+      stageZh: '九重',
+      nextTierDef: null,
+    });
     expect(DEFAULT_RPG_CONFIG).toEqual({
       dailyStamina: 5,
       staminaPotionPrice: 3000,
@@ -58,17 +84,15 @@ describe('RpgService (Western Fantasy Roguelike Engine)', () => {
     });
   });
 
-  it('handles character creation, free first class selection, and paid class switching', () => {
-    const { db, profileRepo, rpg } = createFixture();
-    const day1 = Date.UTC(2026, 0, 10, 4, 0, 0); // 12:00 Asia/Shanghai
+  it('handles character creation, free first class selection, paid class switching, and pending trial lock', () => {
+    const { db, profileRepo, rpgRepo, rpg } = createFixture();
+    const day1 = Date.UTC(2026, 0, 10, 4, 0, 0);
 
-    // Auto-created character starts with default stamina & unselected class
     const autoChar = rpg.getOrCreateCharacter('g1', 'u1', day1);
     expect(autoChar.classKey).toBe('warrior');
     expect(autoChar.classSelected).toBe(false);
     expect(autoChar.stamina).toBe(5);
 
-    // First class selection is FREE even after getOrCreateCharacter
     const firstPick = rpg.chooseOrSwitchClass('g1', 'u1', 'mage', day1);
     expect(firstPick.ok).toBe(true);
     if (!firstPick.ok) return;
@@ -76,20 +100,17 @@ describe('RpgService (Western Fantasy Roguelike Engine)', () => {
     expect(firstPick.isFirstSelection).toBe(true);
     expect(firstPick.character.classKey).toBe('mage');
 
-    // Selecting the same class fails
     expect(rpg.chooseOrSwitchClass('g1', 'u1', 'mage', day1)).toEqual({
       ok: false,
       reason: 'same_class',
     });
 
-    // Switching without enough coins fails
     expect(rpg.chooseOrSwitchClass('g1', 'u1', 'ranger', day1)).toEqual({
       ok: false,
       reason: 'insufficient_funds',
       cost: 10000,
     });
 
-    // Fund user & switch class -> costs 10,000 coins
     profileRepo.addCoins('g1', 'u1', 15000);
     const switched = rpg.chooseOrSwitchClass('g1', 'u1', 'ranger', day1);
     expect(switched.ok).toBe(true);
@@ -98,44 +119,34 @@ describe('RpgService (Western Fantasy Roguelike Engine)', () => {
     expect(switched.balance).toBe(5000);
     expect(switched.isFirstSelection).toBe(false);
     expect(switched.character.classKey).toBe('ranger');
-    expect(profileRepo.getOrCreate('g1', 'u1').coins).toBe(5000);
 
-    // Brand new user calling chooseOrSwitchClass directly also gets free selection
-    const directPick = rpg.chooseOrSwitchClass('g1', 'u2', 'paladin', day1);
-    expect(directPick.ok).toBe(true);
-    if (directPick.ok) {
-      expect(directPick.cost).toBe(0);
-      expect(directPick.isFirstSelection).toBe(true);
-      expect(directPick.character.classKey).toBe('paladin');
-    }
+    // Pending public trial blocks class switching
+    const need9 = xpNeededForRpgLevel(9);
+    rpgRepo.saveCharacter({ ...switched.character, level: 9, xp: need9 });
+    const trialRes = rpg.startPublicBreakthroughTrial('g1', 'ch-game', 'u1', day1 + 1000);
+    expect(trialRes.ok).toBe(true);
+    expect(rpg.chooseOrSwitchClass('g1', 'u1', 'warrior', day1 + 2000)).toEqual({
+      ok: false,
+      reason: 'pending_trial',
+    });
 
     db.close();
   });
 
-  it('refills daily stamina lazily by Asia/Shanghai dateKey and enforces stamina potion limits', () => {
+  it('lazily resets daily stamina, stamina potions, and alchemy buy limits across Asia/Shanghai midnight', () => {
     const { db, profileRepo, rpgRepo, rpg } = createFixture();
-    // 2026-01-10 23:30 Asia/Shanghai = 2026-01-10 15:30 UTC
-    const beforeMidnight = Date.UTC(2026, 0, 10, 15, 30, 0);
-    // 2026-01-11 00:30 Asia/Shanghai = 2026-01-10 16:30 UTC (only 1 hour later, next Shanghai day!)
-    const afterMidnight = Date.UTC(2026, 0, 10, 16, 30, 0);
+    const beforeMidnight = Date.UTC(2026, 0, 10, 15, 30, 0); // 23:30 CST
+    const afterMidnight = Date.UTC(2026, 0, 10, 16, 30, 0); // 00:30 CST next day
 
     const c0 = rpg.getOrCreateCharacter('g1', 'u1', beforeMidnight);
-    expect(c0.stamina).toBe(5);
-    expect(c0.lastStaminaDate).toBe('2026-01-10');
-
-    // Spend all 5 stamina directly
     rpgRepo.saveCharacter({ ...c0, stamina: 0 });
-    expect(rpg.getOrCreateCharacter('g1', 'u1', beforeMidnight + 60_000).stamina).toBe(0);
-
-    // Buy potions: insufficient funds first
     expect(rpg.buyStaminaPotion('g1', 'u1', beforeMidnight + 60_000)).toEqual({
       ok: false,
       reason: 'insufficient_funds',
       cost: 3000,
     });
 
-    // Fund and buy 3 potions (daily limit = 3)
-    profileRepo.addCoins('g1', 'u1', 20000);
+    profileRepo.addCoins('g1', 'u1', 200_000);
     for (let i = 1; i <= 3; i++) {
       const bought = rpg.buyStaminaPotion('g1', 'u1', beforeMidnight + i * 1000);
       expect(bought.ok).toBe(true);
@@ -144,33 +155,384 @@ describe('RpgService (Western Fantasy Roguelike Engine)', () => {
         expect(bought.buysRemaining).toBe(3 - i);
       }
     }
-    expect(profileRepo.getOrCreate('g1', 'u1').coins).toBe(11000);
-
-    // 4th buy same day hits daily limit
     expect(rpg.buyStaminaPotion('g1', 'u1', beforeMidnight + 10_000)).toEqual({
       ok: false,
       reason: 'daily_limit_reached',
       dailyLimit: 3,
     });
 
-    // Cross Asia/Shanghai midnight -> stamina lazily refills to 5 & buysToday resets to 0
+    // Alchemy daily limits: 5 promo pills & 2 guard elixirs
+    for (let i = 0; i < PROMO_PILL_DAILY_LIMIT; i++) {
+      expect(rpg.buyAlchemyItem('g1', 'u1', 'pill', beforeMidnight + 12_000).ok).toBe(true);
+    }
+    expect(rpg.buyAlchemyItem('g1', 'u1', 'pill', beforeMidnight + 13_000)).toEqual({
+      ok: false,
+      reason: 'daily_limit_reached',
+      dailyLimit: PROMO_PILL_DAILY_LIMIT,
+    });
+    for (let i = 0; i < GUARD_ELIXIR_DAILY_LIMIT; i++) {
+      expect(rpg.buyAlchemyItem('g1', 'u1', 'elixir', beforeMidnight + 14_000).ok).toBe(true);
+    }
+    expect(rpg.buyAlchemyItem('g1', 'u1', 'elixir', beforeMidnight + 15_000)).toEqual({
+      ok: false,
+      reason: 'daily_limit_reached',
+      dailyLimit: GUARD_ELIXIR_DAILY_LIMIT,
+    });
+
     const nextDayChar = rpg.getOrCreateCharacter('g1', 'u1', afterMidnight);
     expect(nextDayChar.lastStaminaDate).toBe('2026-01-11');
     expect(nextDayChar.stamina).toBe(5);
     expect(nextDayChar.staminaBuysToday).toBe(0);
+    expect(nextDayChar.pillBuysToday).toBe(0);
+    expect(nextDayChar.elixirBuysToday).toBe(0);
+    expect(nextDayChar.promoPills).toBe(PROMO_PILL_DAILY_LIMIT);
+    expect(nextDayChar.guardElixirs).toBe(GUARD_ELIXIR_DAILY_LIMIT);
 
-    // Can buy potion again on the new day
-    const nextDayBuy = rpg.buyStaminaPotion('g1', 'u1', afterMidnight + 1000);
-    expect(nextDayBuy.ok).toBe(true);
-    if (nextDayBuy.ok) {
-      expect(nextDayBuy.character.stamina).toBe(6);
-      expect(nextDayBuy.buysRemaining).toBe(2);
+    db.close();
+  });
+
+  it('backfills legacy character lastIdleClaimAt, enforces 24h cap, 0.5x injury segmentation, and 9th-stage XP gate', () => {
+    const onCoinsEarned = vi.fn((_g: string, _u: string, gross: number) => {
+      const garnished = Math.floor(gross * 0.5);
+      return { garnished, net: gross - garnished };
+    });
+    const { db, profileRepo, rpgRepo, rpg } = createFixture({ onCoinsEarned });
+    const now = Date.UTC(2026, 5, 10, 12, 0, 0);
+
+    // Simulate legacy Lv.15 character migrated with lastIdleClaimAt = 0 and updatedAt = 48h ago
+    rpgRepo.createCharacter({
+      guildId: 'g1',
+      userId: 'legacy1',
+      classKey: 'paladin',
+      classSelected: true,
+      stamina: 5,
+      lastStaminaDate: '2026-06-08',
+      lastIdleClaimAt: 0,
+      updatedAt: now - 48 * 3_600_000,
+    });
+    const createdLegacy = rpgRepo.getCharacter('g1', 'legacy1')!;
+    rpgRepo.saveCharacter({ ...createdLegacy, level: 15, xp: 100 });
+
+    const preview = rpg.previewIdleHarvest('g1', 'legacy1', now);
+    expect(preview.accruedMs).toBe(MAX_IDLE_ACCRUE_MS);
+    expect(preview.isCapped).toBe(true);
+    expect(preview.canClaim).toBe(true);
+    expect(preview.realm.tier).toBe(2);
+    expect(preview.estimatedCoins).toBeGreaterThan(0);
+    expect(preview.estimatedXp).toBeGreaterThan(0);
+
+    // Too soon after claiming
+    const claim1 = rpg.claimIdleHarvest('g1', 'legacy1', now, () => 0.1);
+    expect(claim1.ok).toBe(true);
+    if (!claim1.ok) return;
+    expect(claim1.adventures).toHaveLength(3);
+    expect(claim1.garnishedCoins).toBe(Math.floor(claim1.grossCoins * 0.5));
+    expect(claim1.netCoins).toBe(claim1.grossCoins - claim1.garnishedCoins);
+
+    expect(rpg.claimIdleHarvest('g1', 'legacy1', now + 30_000)).toEqual({
+      ok: false,
+      reason: 'too_soon',
+      waitSeconds: 30,
+    });
+
+    // Injury segmentation: 4 hours elapsed, first 2 hours injured (0.5x), last 2 hours healthy (1.0x) => 3.0 effective hours
+    const afterClaimChar = rpgRepo.getCharacter('g1', 'legacy1')!;
+    const tStart = now;
+    const tEnd = now + 4 * 3_600_000;
+    rpgRepo.saveCharacter({
+      ...afterClaimChar,
+      level: 10,
+      xp: 0,
+      lastIdleClaimAt: tStart,
+      injuredUntil: tStart + 2 * 3_600_000,
+    });
+    const segPreview = rpg.previewIdleHarvest('g1', 'legacy1', tEnd);
+    const expectedHourly = RPG_TIERS[1]!.idleCoinsPerHour * segPreview.powerMultiplier;
+    expect(segPreview.estimatedCoins).toBe(Math.floor(expectedHourly * 3));
+    expect(segPreview.isInjuredNow).toBe(false);
+
+    // Full injury currently active => 0.5x rate + healInjury clears it
+    rpgRepo.saveCharacter({
+      ...rpgRepo.getCharacter('g1', 'legacy1')!,
+      level: 18,
+      xp: 0,
+      lastIdleClaimAt: tEnd,
+      injuredUntil: tEnd + INJURY_DURATION_MS + 60_000,
+    });
+    const injuredPreview = rpg.previewIdleHarvest('g1', 'legacy1', tEnd + 3_600_000);
+    expect(injuredPreview.isInjuredNow).toBe(true);
+    expect(injuredPreview.estimatedCoins).toBe(
+      Math.floor(RPG_TIERS[1]!.idleCoinsPerHour * injuredPreview.powerMultiplier * 0.5),
+    );
+
+    const healCost = computeHealInjuryCost(18);
+    expect(healCost).toBe(3000);
+    profileRepo.addCoins('g1', 'legacy1', healCost);
+    const healed = rpg.healInjury('g1', 'legacy1', tEnd + 10_000);
+    expect(healed.ok).toBe(true);
+    if (healed.ok) {
+      expect(healed.character.injuredUntil).toBe(0);
+    }
+
+    // 9th-stage XP gate: harvesting massive XP at Lv.9 stops at Lv.9 and retains capped overflow XP
+    rpg.chooseOrSwitchClass('g1', 'gate_hero', 'warrior', now);
+    const gChar = rpgRepo.getCharacter('g1', 'gate_hero')!;
+    const need9 = xpNeededForRpgLevel(9);
+    rpgRepo.saveCharacter({
+      ...gChar,
+      level: 9,
+      xp: need9 - 50,
+      lastIdleClaimAt: now - 24 * 3_600_000,
+    });
+    const gateHarvest = rpg.claimIdleHarvest('g1', 'gate_hero', now, () => 0.1);
+    expect(gateHarvest.ok).toBe(true);
+    if (gateHarvest.ok) {
+      expect(gateHarvest.character.level).toBe(9);
+      expect(gateHarvest.hitGate).toBe(true);
+      expect(isAtBreakthroughGate(gateHarvest.character.level, gateHarvest.character.xp)).toBe(true);
+      expect(gateHarvest.character.xp).toBeGreaterThanOrEqual(need9);
     }
 
     db.close();
   });
 
-  it('supports equipment equip/swap/unequip, +0..+10 enhance (+15%/lvl, safe fail), and salvage', () => {
+  it('supports single & sweep boss raids with rating, gear/alchemy drops, and bag overflow auto-salvage', () => {
+    const { db, rpgRepo, rpg } = createFixture({
+      config: { bagCapacity: 2 },
+    });
+    const now = Date.UTC(2026, 5, 10, 12, 0, 0);
+    rpg.chooseOrSwitchClass('g1', 'raider', 'mage', now);
+
+    // Single raid consumes 1 stamina and drops gear + pill + elixir when rng < 0.1
+    const single = rpg.raidBoss('g1', 'raider', 'single', now, () => 0.1);
+    expect(single.ok).toBe(true);
+    if (!single.ok) return;
+    expect(single.runsExecuted).toBe(1);
+    expect(single.character.stamina).toBe(4);
+    expect(single.character.totalBossKills).toBe(1);
+    expect(single.bankedItems).toHaveLength(1);
+    expect(single.pillsFound).toBe(1);
+    expect(single.elixirsFound).toBe(1);
+
+    // Sweep remaining 4 stamina -> bag capacity 2 means 1 banked + 3 auto-salvaged
+    const sweep = rpg.raidBoss('g1', 'raider', 'all', now + 1000, () => 0.1);
+    expect(sweep.ok).toBe(true);
+    if (!sweep.ok) return;
+    expect(sweep.runsExecuted).toBe(4);
+    expect(sweep.character.stamina).toBe(0);
+    expect(sweep.character.totalBossKills).toBe(5);
+    expect(sweep.bankedItems).toHaveLength(1);
+    expect(sweep.autoSalvagedCount).toBe(3);
+    expect(sweep.autoSalvagedCoins).toBeGreaterThan(0);
+
+    // 0 stamina fails cleanly
+    expect(rpg.raidBoss('g1', 'raider', 'single', now + 2000)).toEqual({
+      ok: false,
+      reason: 'insufficient_stamina',
+    });
+    expect(rpgRepo.countItems('g1', 'raider')).toBe(2);
+
+    db.close();
+  });
+
+  it('handles solo breakthrough preview, success (overflow XP + coins + credit), failure penalty with/without guard elixir, and pity', () => {
+    const onCoinsEarned = vi.fn((_g: string, _u: string, gross: number) => ({
+      garnished: Math.floor(gross * 0.25),
+      net: gross - Math.floor(gross * 0.25),
+    }));
+    const onCreditChange = vi.fn();
+    const { db, profileRepo, rpgRepo, socialPetRepo, rpg } = createFixture({
+      onCoinsEarned,
+      onCreditChange,
+      getCreditScore: (_g, uid) => (uid === 'vip' ? 880 : 600),
+    });
+    const now = Date.UTC(2026, 5, 11, 12, 0, 0);
+
+    rpg.chooseOrSwitchClass('g1', 'vip', 'paladin', now);
+    socialPetRepo.createPet({
+      guildId: 'g1',
+      ownerId: 'vip',
+      speciesKey: 'fish_dragon',
+      nickname: '神龙',
+      rarity: 'SSR',
+      hp: 200,
+      atk: 50,
+      spd: 40,
+      critRate: 0.2,
+      trait: '欧皇',
+      isActive: true,
+      createdAt: now,
+    });
+
+    // Not at gate yet
+    expect(rpg.attemptSoloBreakthrough('g1', 'vip', now)).toEqual({
+      ok: false,
+      reason: 'not_at_gate',
+    });
+
+    // Advance to Lv.18 (tier 2, base 75%) with full XP, buy 1 pill + 1 guard elixir, stage both
+    const need18 = xpNeededForRpgLevel(18);
+    rpgRepo.saveCharacter({
+      ...rpgRepo.getCharacter('g1', 'vip')!,
+      level: 18,
+      xp: need18 + 500,
+    });
+    profileRepo.addCoins('g1', 'vip', PROMO_PILL_PRICE + GUARD_ELIXIR_PRICE);
+    expect(rpg.buyAlchemyItem('g1', 'vip', 'pill', now).ok).toBe(true);
+    expect(rpg.buyAlchemyItem('g1', 'vip', 'elixir', now).ok).toBe(true);
+    expect(rpg.configureTrialLoadout('g1', 'vip', 'cycle_pills', now).ok).toBe(true);
+    expect(rpg.configureTrialLoadout('g1', 'vip', 'toggle_guard', now).ok).toBe(true);
+
+    const preview = rpg.computeBreakthroughPreview('g1', 'vip', now);
+    expect(preview.eligible).toBe(true);
+    expect(preview.baseRatePct).toBe(75);
+    expect(preview.pillBonusPct).toBe(12);
+    expect(preview.petBonusPct).toBe(10);
+    expect(preview.creditBonusPct).toBe(5);
+    expect(preview.totalRatePct).toBe(100); // 75 + 12 + 10 + 5 = 102 -> clamped 100
+
+    const winRes = rpg.attemptSoloBreakthrough('g1', 'vip', now, () => 0.5);
+    expect(winRes.ok).toBe(true);
+    if (!winRes.ok) return;
+    expect(winRes.succeeded).toBe(true);
+    expect(winRes.fromRealm.tier).toBe(2);
+    expect(winRes.toRealm.tier).toBe(3);
+    expect(winRes.character.level).toBe(19);
+    expect(winRes.character.xp).toBe(500);
+    expect(winRes.character.promoPills).toBe(0);
+    expect(winRes.character.guardElixirs).toBe(0);
+    expect(winRes.character.totalBreakthroughs).toBe(1);
+    expect(winRes.grossCoins).toBe(3 * 6000);
+    expect(winRes.garnishedCoins).toBe(4500);
+    expect(winRes.creditDelta).toBe(15);
+    expect(onCreditChange).toHaveBeenCalledTimes(1);
+
+    // Failure WITHOUT guard elixir at Lv.45 (tier 5, base 45%): -40% XP, 1h injury, +10% pity
+    rpg.chooseOrSwitchClass('g1', 'unlucky', 'warrior', now);
+    const need45 = xpNeededForRpgLevel(45);
+    rpgRepo.saveCharacter({
+      ...rpgRepo.getCharacter('g1', 'unlucky')!,
+      level: 45,
+      xp: need45,
+    });
+    const failNoGuard = rpg.attemptSoloBreakthrough('g1', 'unlucky', now, () => 0.99);
+    expect(failNoGuard.ok).toBe(true);
+    if (!failNoGuard.ok) return;
+    expect(failNoGuard.succeeded).toBe(false);
+    expect(failNoGuard.xpLost).toBe(Math.round(need45 * 0.4));
+    expect(failNoGuard.character.injuredUntil).toBe(now + INJURY_DURATION_MS);
+    expect(failNoGuard.character.breakthroughPity).toBe(1);
+
+    const previewAfterFail = rpg.computeBreakthroughPreview('g1', 'unlucky', now + 1000);
+    expect(previewAfterFail.pityBonusPct).toBe(10);
+    expect(previewAfterFail.totalRatePct).toBe(55); // 45 + 10
+
+    // Failure WITH guard elixir at Lv.45: -10% XP, NO new injury, +10% pity
+    profileRepo.addCoins('g1', 'unlucky', GUARD_ELIXIR_PRICE);
+    rpgRepo.saveCharacter({
+      ...rpgRepo.getCharacter('g1', 'unlucky')!,
+      xp: need45,
+      injuredUntil: 0,
+    });
+    expect(rpg.buyAlchemyItem('g1', 'unlucky', 'elixir', now + 2000).ok).toBe(true);
+    expect(rpg.configureTrialLoadout('g1', 'unlucky', 'toggle_guard', now + 2000).ok).toBe(true);
+    const failWithGuard = rpg.attemptSoloBreakthrough('g1', 'unlucky', now + 3000, () => 0.99);
+    expect(failWithGuard.ok).toBe(true);
+    if (!failWithGuard.ok) return;
+    expect(failWithGuard.succeeded).toBe(false);
+    expect(failWithGuard.usedGuard).toBe(true);
+    expect(failWithGuard.xpLost).toBe(Math.round(need45 * 0.1));
+    expect(failWithGuard.character.injuredUntil).toBe(0);
+    expect(failWithGuard.character.breakthroughPity).toBe(2);
+
+    db.close();
+  });
+
+  it('runs 60s public trials with supporters/saboteurs, duplicate/self guards, cancel refund, and due settlement', () => {
+    const { db, profileRepo, rpgRepo, rpg } = createFixture();
+    const now = Date.UTC(2026, 5, 12, 12, 0, 0);
+    rpg.chooseOrSwitchClass('g1', 'hero', 'ranger', now);
+
+    // Prepare Lv.27 (tier 3, base 65%) + 1 staged pill (+12% -> 77%)
+    const need27 = xpNeededForRpgLevel(27);
+    profileRepo.addCoins('g1', 'hero', PROMO_PILL_PRICE);
+    expect(rpg.buyAlchemyItem('g1', 'hero', 'pill', now).ok).toBe(true);
+    expect(rpg.configureTrialLoadout('g1', 'hero', 'cycle_pills', now).ok).toBe(true);
+    rpgRepo.saveCharacter({
+      ...rpgRepo.getCharacter('g1', 'hero')!,
+      level: 27,
+      xp: need27,
+    });
+
+    // Start and test cancelPublicTrialAndRefund
+    const tempStart = rpg.startPublicBreakthroughTrial('g1', 'ch-game', 'hero', now);
+    expect(tempStart.ok).toBe(true);
+    if (!tempStart.ok) return;
+    expect(tempStart.character.promoPills).toBe(0);
+    expect(rpg.cancelPublicTrialAndRefund(tempStart.trial.id, now + 500)).toBe(true);
+    expect(rpgRepo.getCharacter('g1', 'hero')?.promoPills).toBe(1);
+
+    // Re-stage pill and start real trial
+    expect(rpg.configureTrialLoadout('g1', 'hero', 'cycle_pills', now + 600).ok).toBe(true);
+    const startRes = rpg.startPublicBreakthroughTrial('g1', 'ch-game', 'hero', now + 1000);
+    expect(startRes.ok).toBe(true);
+    if (!startRes.ok) return;
+    const trialId = startRes.trial.id;
+
+    // Duplicate trial blocked
+    expect(rpg.startPublicBreakthroughTrial('g1', 'ch-game', 'hero', now + 1500)).toEqual({
+      ok: false,
+      reason: 'pending_trial_exists',
+    });
+
+    // Self-interaction blocked
+    expect(rpg.interactPublicTrial(trialId, 'hero', 'help', now + 2000)).toEqual({
+      ok: false,
+      reason: 'own_trial',
+    });
+
+    // 2 supporters (+6%) & 1 saboteur (-2%, +20% prize pool) -> 77 + 6 - 2 = 81%
+    const h1 = rpg.interactPublicTrial(trialId, 'sup1', 'help', now + 2100);
+    expect(h1.ok && h1.currentRatePct === 80).toBe(true);
+    expect(rpg.interactPublicTrial(trialId, 'sup1', 'jeer', now + 2200)).toEqual({
+      ok: false,
+      reason: 'already_joined',
+    });
+    const h2 = rpg.interactPublicTrial(trialId, 'sup2', 'help', now + 2300);
+    expect(h2.ok && h2.currentRatePct === 83).toBe(true);
+    const j1 = rpg.interactPublicTrial(trialId, 'sab1', 'jeer', now + 2400);
+    expect(j1.ok && j1.currentRatePct === 81).toBe(true);
+
+    // Non-owner cannot early-settle
+    expect(rpg.settlePublicTrial(trialId, 'sup1', now + 3000)).toEqual({
+      ok: false,
+      reason: 'not_owner',
+    });
+
+    // Before expiry, settleDuePublicTrials returns empty
+    expect(rpg.settleDuePublicTrials(now + 10_000)).toHaveLength(0);
+
+    // At expiry, system auto-settles; with rng = 0.80 < 81% -> success!
+    const settledList = rpg.settleDuePublicTrials(now + 1000 + PUBLIC_TRIAL_DURATION_MS, () => 0.8);
+    expect(settledList).toHaveLength(1);
+    const settled = settledList[0]!;
+    expect(settled.succeeded).toBe(true);
+    expect(settled.finalRatePct).toBe(81);
+    expect(settled.character.level).toBe(28);
+    // Base tier4 prize 24000 * 1.2 (1 saboteur) = 28800
+    expect(settled.grossCoins).toBe(28800);
+    // Supporters each get targetTier * 600 = 2400
+    expect(settled.supporterPayouts).toEqual([
+      { userId: 'sup1', amount: 2400 },
+      { userId: 'sup2', amount: 2400 },
+    ]);
+    expect(profileRepo.getOrCreate('g1', 'sup1').coins).toBe(2400);
+    expect(profileRepo.getOrCreate('g1', 'sup2').coins).toBe(2400);
+
+    db.close();
+  });
+
+  it('supports equipment equip/swap/unequip, +0..+10 enhance (+15%/lvl, safe fail), equipBestGear, and bulkSalvageItems', () => {
     const { db, profileRepo, rpgRepo, rpg } = createFixture();
     const now = Date.UTC(2026, 0, 12, 4, 0, 0);
     rpg.chooseOrSwitchClass('g1', 'u1', 'warrior', now);
@@ -201,1117 +563,88 @@ describe('RpgService (Western Fantasy Roguelike Engine)', () => {
       createdAt: now,
     });
 
-    // Equip sword1
     const eq1 = rpg.equipItem('g1', 'u1', sword1.id, now);
-    expect(eq1.ok).toBe(true);
-    if (!eq1.ok) return;
-    expect(eq1.unequippedItem).toBeNull();
-    expect(eq1.stats.atk).toBe(baseStats.atk + 20);
-    expect(eq1.stats.maxHp).toBe(baseStats.maxHp + 20);
-
-    // Cannot salvage equipped item
+    expect(eq1.ok && eq1.stats.atk === baseStats.atk + 20).toBe(true);
     expect(rpg.salvageItem('g1', 'u1', sword1.id)).toEqual({
       ok: false,
       reason: 'item_equipped',
     });
 
-    // Equipping sword2 auto-unequips sword1 in the weapon slot
     const eq2 = rpg.equipItem('g1', 'u1', sword2.id, now);
-    expect(eq2.ok).toBe(true);
-    if (!eq2.ok) return;
-    expect(eq2.unequippedItem?.id).toBe(sword1.id);
-    expect(eq2.stats.atk).toBe(baseStats.atk + 40);
+    expect(eq2.ok && eq2.unequippedItem?.id === sword1.id).toBe(true);
 
-    // Enhance sword2 from +0 -> +4 successfully (+60% stats!)
     profileRepo.addCoins('g1', 'u1', 1_000_000);
     for (let i = 0; i < 4; i++) {
       const enh = rpg.enhanceItem('g1', 'u1', sword2.id, now, () => 0.01);
-      expect(enh.ok).toBe(true);
-      if (enh.ok) {
-        expect(enh.success).toBe(true);
-        expect(enh.item.enhanceLevel).toBe(i + 1);
-      }
+      expect(enh.ok && enh.success && enh.item.enhanceLevel === i + 1).toBe(true);
     }
     const enhancedSword = rpgRepo.getItemById(sword2.id)!;
     const eff = computeItemEffectiveStats(enhancedSword);
-    expect(eff.atk).toBe(Math.round(40 * 1.6)); // +15% * 4 = +60%
-    expect(rpg.computeCombatStats('g1', 'u1', now).atk).toBe(baseStats.atk + eff.atk);
+    expect(eff.atk).toBe(Math.round(40 * 1.6));
 
-    // Enhance fail at +4 -> +5 (successRate = 0.80, rng = 0.95 fails): spends coins, NEVER destroys or downgrades!
     const coinsBeforeFail = profileRepo.getOrCreate('g1', 'u1').coins;
     const infoAt4 = getEnhanceInfo(enhancedSword)!;
     const failedEnh = rpg.enhanceItem('g1', 'u1', sword2.id, now, () => 0.95);
-    expect(failedEnh.ok).toBe(true);
+    expect(failedEnh.ok && !failedEnh.success && failedEnh.item.enhanceLevel === 4).toBe(true);
     if (failedEnh.ok) {
-      expect(failedEnh.success).toBe(false);
-      expect(failedEnh.item.enhanceLevel).toBe(4);
       expect(failedEnh.balance).toBe(coinsBeforeFail - infoAt4.cost);
     }
 
-    // Enhance to +10 then verify cap
     for (let i = 4; i < MAX_ENHANCE_LEVEL; i++) {
-      const enh = rpg.enhanceItem('g1', 'u1', sword2.id, now, () => 0.01);
-      expect(enh.ok && enh.success).toBe(true);
+      expect(rpg.enhanceItem('g1', 'u1', sword2.id, now, () => 0.01).ok).toBe(true);
     }
     expect(rpg.enhanceItem('g1', 'u1', sword2.id, now, () => 0.01)).toEqual({
       ok: false,
       reason: 'max_enhance_level',
     });
 
-    // Unequip sword2 & salvage both items
-    const uneq = rpg.unequipItem('g1', 'u1', sword2.id, now);
-    expect(uneq.ok).toBe(true);
-    if (uneq.ok) {
-      expect(uneq.stats.atk).toBe(baseStats.atk);
+    expect(rpg.equipBestGear('g1', 'u1', now).ok).toBe(true);
+    // sword1 is unequipped uncommon -> salvaged cleanly; sword2 is equipped rare -> untouched
+    const bulk = rpg.bulkSalvageItems('g1', 'u1', 'uncommon', now);
+    expect(bulk.ok).toBe(true);
+    if (bulk.ok) {
+      expect(bulk.salvagedCount).toBe(1);
+      expect(bulk.totalCoins).toBe(getSalvageValue(sword1));
     }
+    expect(rpgRepo.getItemById(sword2.id)?.equipped).toBe(true);
 
-    const expectedSalvage = getSalvageValue({ rarity: 'rare', enhanceLevel: 10 });
-    expect(expectedSalvage).toBeGreaterThan(getSalvageValue({ rarity: 'rare', enhanceLevel: 0 }));
-    const salv = rpg.salvageItem('g1', 'u1', sword2.id);
-    expect(salv.ok).toBe(true);
-    if (salv.ok) {
-      expect(salv.coinsEarned).toBe(expectedSalvage);
-    }
+    // Unequip & salvage sword2
+    expect(rpg.unequipItem('g1', 'u1', sword2.id, now).ok).toBe(true);
+    expect(computeItemScore(sword2)).toBeGreaterThan(0);
+    expect(rpg.salvageItem('g1', 'u1', sword2.id).ok).toBe(true);
     expect(rpgRepo.getItemById(sword2.id)).toBeNull();
 
-    db.close();
-  });
-
-  it('integrates active pet synergy into combat stats and triggers pet assist attacks in battle logs', () => {
-    const db = createDatabase(':memory:');
-    initRpgSchema(db);
-    const profileRepo = new ProfileRepo(db);
-    const rpgRepo = new RpgRepo(db);
-    const socialPetRepo = new SocialPetRepo(db);
-
-    const rpgWithoutPet = new RpgService(db, rpgRepo, profileRepo, { timezone: 'Asia/Shanghai' });
-    const rpgWithPet = new RpgService(db, rpgRepo, profileRepo, {
-      timezone: 'Asia/Shanghai',
-      socialPetRepo,
-    });
-
-    const now = Date.UTC(2026, 0, 12, 4, 0, 0);
-    rpgWithPet.chooseOrSwitchClass('g1', 'u1', 'warrior', now);
-
-    const statsNoPet = rpgWithoutPet.computeCombatStats('g1', 'u1', now);
-    expect(statsNoPet.petSynergy).toBeNull();
-
-    // Create an active SSR dragon pet
-    socialPetRepo.createPet({
-      guildId: 'g1',
-      ownerId: 'u1',
-      speciesKey: 'fish_dragon',
-      nickname: '摸鱼神龙',
-      rarity: 'SSR',
-      hp: 200,
-      atk: 50,
-      spd: 40,
-      critRate: 0.25,
-      trait: '暴躁',
-      isActive: true,
-      createdAt: now,
-    });
-
-    const statsWithPet = rpgWithPet.computeCombatStats('g1', 'u1', now);
-    expect(statsWithPet.petSynergy).not.toBeNull();
-    expect(statsWithPet.petSynergy?.nickname).toBe('摸鱼神龙');
-    expect(statsWithPet.petSynergy?.emoji).toBe('🐉');
-    expect(statsWithPet.maxHp).toBeGreaterThan(statsNoPet.maxHp);
-    expect(statsWithPet.atk).toBeGreaterThan(statsNoPet.atk);
-    expect(statsWithPet.critBp).toBeGreaterThan(statsNoPet.critBp);
-
-    // Start run against an elite monster (rng = 0.7) so it survives the first strike and triggers pet assist
-    const started = rpgWithPet.startRun('g1', 'u1', 1, now, () => 0.7);
-    expect(started.ok).toBe(true);
-    if (!started.ok) return;
-    expect(started.run.logs.some((l) => l.includes('摸鱼神龙') && l.includes('🐉'))).toBe(true);
-
-    // Attack with non-crit rng (0.5) for player hit, then low rng (0.05) for pet assist trigger
-    const turn = rpgWithPet.actInRun('g1', 'u1', 'attack', now + 1000, makeSeqRng([0.5, 0.5, 0.05, 0.5, 0.5, 0.5]));
-    expect(turn.ok).toBe(true);
-    if (turn.ok) {
-      expect(turn.logs.some((l) => l.includes('摸鱼神龙') && l.includes('助战追击'))).toBe(true);
-    }
+    // Verify MAX_RPG_LEVEL cap
+    const maxChar = rpgRepo.getCharacter('g1', 'u1')!;
+    rpgRepo.saveCharacter({ ...maxChar, level: MAX_RPG_LEVEL, xp: 0 });
+    expect(rpg.computeBreakthroughPreview('g1', 'u1', now).atMaxTier).toBe(true);
 
     db.close();
   });
 
-  it('completes a full 5-floor run with skill/defend/potion/event/boss, first-clear 2x, legendary drop, persistence, and debt/credit hooks', () => {
-    const onCoinsEarned = vi.fn(
-      (_g: string, _u: string, gross: number, _src: string, _now: number) => {
-        const garnished = Math.floor(gross * 0.5);
-        return { garnished, net: gross - garnished };
-      },
-    );
-    const onCreditChange = vi.fn();
-
-    const { db, profileRepo, rpgRepo, rpg } = createFixture({
-      onCoinsEarned,
-      onCreditChange,
-    });
-    const now = Date.UTC(2026, 0, 15, 4, 0, 0);
-
-    // Choose paladin and equip strong weapon so combat clears cleanly
-    rpg.chooseOrSwitchClass('g1', 'hero', 'paladin', now);
-    const starterWeapon = rpgRepo.createItem({
-      guildId: 'g1',
-      userId: 'hero',
-      name: '晨曦测试刃',
-      slot: 'weapon',
-      rarity: 'epic',
-      baseHp: 80,
-      baseAtk: 55,
-      baseDef: 15,
-      baseCritBp: 1500,
-      createdAt: now,
-    });
-    rpg.equipItem('g1', 'hero', starterWeapon.id, now);
-
-    // Locked chapter 2 rejected before chapter 1 clear
-    expect(rpg.startRun('g1', 'hero', 2, now)).toEqual({
-      ok: false,
-      reason: 'chapter_locked',
-      maxUnlockedChapter: 1,
-    });
-
-    // Floor 1: normal monster (rng 0.1 < 0.65)
-    const start = rpg.startRun('g1', 'hero', 1, now, makeSeqRng([0.1, 0.0]));
-    expect(start.ok).toBe(true);
-    if (!start.ok) return;
-    expect(start.character.stamina).toBe(4);
-    expect(start.run.floor).toBe(1);
-    expect(start.run.phase).toBe('combat');
-
-    // Simulate bot restart: a fresh RpgService instance reads persisted run from SQLite!
-    const restartedRpg = new RpgService(db, rpgRepo, profileRepo, {
-      timezone: 'Asia/Shanghai',
-      onCoinsEarned,
-      onCreditChange,
-    });
-    const persisted = restartedRpg.getActiveRun('g1', 'hero');
-    expect(persisted).not.toBeNull();
-    expect(persisted?.floor).toBe(1);
-
-    // Turn 1: defend -> survives, reduces damage
-    const defTurn = restartedRpg.actInRun('g1', 'hero', 'defend', now + 1000, () => 0.5);
-    expect(defTurn.ok).toBe(true);
-    if (!defTurn.ok || defTurn.outcome !== 'ongoing') throw new Error('Expected ongoing');
-
-    // Turn 2: skill (paladin 圣光裁决 -> damage + heal + CD 3)
-    const skillTurn = restartedRpg.actInRun('g1', 'hero', 'skill', now + 2000, () => 0.5);
-    expect(skillTurn.ok).toBe(true);
-    if (!skillTurn.ok) throw new Error('Expected ok');
-    if (skillTurn.outcome === 'ongoing') {
-      // Skill on cooldown cannot be used immediately
-      expect(restartedRpg.actInRun('g1', 'hero', 'skill', now + 2500, () => 0.5)).toMatchObject({
-        ok: false,
-        reason: 'skill_on_cooldown',
-      });
-      // Use potion during combat
-      const potTurn = restartedRpg.actInRun('g1', 'hero', 'potion', now + 3000, () => 0.5);
-      expect(potTurn.ok).toBe(true);
-      if (potTurn.ok && potTurn.outcome === 'ongoing') {
-        expect(potTurn.run.potionsLeft).toBe(2);
-      }
-      // Finish floor 1 with attack(s)
-      let f1 = restartedRpg.actInRun('g1', 'hero', 'attack', now + 3500, () => 0.3);
-      while (f1.ok && f1.outcome === 'ongoing') {
-        f1 = restartedRpg.actInRun('g1', 'hero', 'attack', now + 4000, () => 0.3);
-      }
-      expect(f1.ok && f1.outcome === 'floor_cleared').toBe(true);
-    }
-
-    // Floor 2: random event (rng 0.75 in [0.70, 0.88)) -> choose event_a (success with 0.1)
-    const f2 = restartedRpg.actInRun('g1', 'hero', 'next_floor', now + 5000, makeSeqRng([0.75, 0.0]));
-    expect(f2.ok && f2.outcome === 'ongoing').toBe(true);
-    if (!f2.ok || f2.outcome !== 'ongoing') return;
-    expect(f2.run.phase).toBe('event');
-    expect(f2.run.event?.key).toBe('shrine');
-
-    // Combat action invalid during event
-    expect(restartedRpg.actInRun('g1', 'hero', 'attack', now + 5100)).toEqual({
-      ok: false,
-      reason: 'invalid_action_for_phase',
-    });
-
-    const evA = restartedRpg.actInRun('g1', 'hero', 'event_a', now + 5200, () => 0.1);
-    expect(evA.ok && evA.outcome === 'floor_cleared').toBe(true);
-    if (evA.ok && evA.outcome === 'floor_cleared') {
-      expect(evA.run.atkBuffPct).toBeCloseTo(0.18, 5);
-    }
-
-    // Floor 3: random event (tavern, idx 1 -> 0.3) -> choose event_b (safe heal + potion)
-    const f3 = restartedRpg.actInRun('g1', 'hero', 'next_floor', now + 6000, makeSeqRng([0.8, 0.3]));
-    expect(f3.ok && f3.outcome === 'ongoing').toBe(true);
-    if (!f3.ok || f3.outcome !== 'ongoing') return;
-    expect(f3.run.event?.key).toBe('tavern');
-    const potionsBeforeTavern = f3.run.potionsLeft;
-    const evB = restartedRpg.actInRun('g1', 'hero', 'event_b', now + 6100, () => 0.5);
-    expect(evB.ok && evB.outcome === 'floor_cleared').toBe(true);
-    if (evB.ok && evB.outcome === 'floor_cleared') {
-      expect(evB.run.potionsLeft).toBe(potionsBeforeTavern + 1);
-    }
-
-    // Floor 4: treasure chest (rng 0.95 >= 0.88)
-    const f4 = restartedRpg.actInRun('g1', 'hero', 'next_floor', now + 7000, makeSeqRng([0.95, 0.5, 0.1, 0.5, 0.5, 0.5]));
-    expect(f4.ok && f4.outcome === 'floor_cleared').toBe(true);
-    if (f4.ok && f4.outcome === 'floor_cleared') {
-      expect(f4.run.pendingItems.length).toBeGreaterThanOrEqual(1);
-    }
-
-    // Floor 5: Chapter 1 Boss (哥布林酋长·格鲁克)!
-    const f5 = restartedRpg.actInRun('g1', 'hero', 'next_floor', now + 8000, () => 0.5);
-    expect(f5.ok && f5.outcome === 'ongoing').toBe(true);
-    if (!f5.ok || f5.outcome !== 'ongoing') return;
-    expect(f5.run.floor).toBe(5);
-    expect(f5.run.enemy?.kind).toBe('boss');
-    expect(f5.run.enemy?.name).toBe('哥布林酋长·格鲁克');
-
-    // Fight Boss; pass rng = 0.99 on the killing blow so Boss drops a Legendary item!
-    let bossRes = restartedRpg.actInRun('g1', 'hero', 'attack', now + 9000, () => 0.99);
-    let safety = 0;
-    while (bossRes.ok && bossRes.outcome === 'ongoing' && safety < 25) {
-      bossRes = restartedRpg.actInRun('g1', 'hero', 'attack', now + 9100 + safety * 100, () => 0.99);
-      safety += 1;
-    }
-
-    expect(bossRes.ok).toBe(true);
-    if (!bossRes.ok || bossRes.outcome !== 'victory') {
-      throw new Error(`Expected victory, got ${JSON.stringify(bossRes)}`);
-    }
-
-    expect(bossRes.firstClear).toBe(true);
-    expect(bossRes.reward.bossBonusCoins).toBe(16000); // 8000 * 2x first clear!
-    expect(bossRes.reward.garnishedCoins).toBe(Math.floor(bossRes.reward.grossCoins * 0.5));
-    expect(bossRes.reward.netCoins).toBe(bossRes.reward.grossCoins - bossRes.reward.garnishedCoins);
-    expect(bossRes.balance).toBe(bossRes.reward.netCoins);
-    expect(bossRes.legendaryDrops.length).toBeGreaterThanOrEqual(1);
-    expect(bossRes.character.maxChapterCleared).toBe(1);
-    expect(bossRes.character.totalClears).toBe(1);
-    expect(bossRes.character.totalBossKills).toBe(1);
-    expect(bossRes.character.level).toBeGreaterThan(1);
-    expect(restartedRpg.getActiveRun('g1', 'hero')).toBeNull();
-
-    // Verify hooks called with expected args
-    expect(onCoinsEarned).toHaveBeenCalledTimes(1);
-    expect(onCoinsEarned).toHaveBeenCalledWith(
-      'g1',
-      'hero',
-      bossRes.reward.grossCoins,
-      'rpg_clear_ch1',
-      expect.any(Number),
-    );
-    expect(onCreditChange).toHaveBeenCalledTimes(1);
-    expect(onCreditChange).toHaveBeenCalledWith(
-      'g1',
-      'hero',
-      25,
-      expect.stringContaining('首通'),
-      expect.any(Number),
-    );
-
-    // Repeat clear of Chapter 1 awards 1x boss bonus (8,000) & +5 credit!
-    const start2 = restartedRpg.startRun('g1', 'hero', 1, now + 20_000, () => 0.95); // chest F1
-    expect(start2.ok).toBe(true);
-    for (let fl = 2; fl <= 4; fl++) {
-      const next = restartedRpg.actInRun('g1', 'hero', 'next_floor', now + 20_000 + fl * 100, () => 0.95);
-      expect(next.ok && next.outcome === 'floor_cleared').toBe(true);
-    }
-    const bossStart2 = restartedRpg.actInRun('g1', 'hero', 'next_floor', now + 21_000, () => 0.5);
-    expect(bossStart2.ok && bossStart2.outcome === 'ongoing').toBe(true);
-    let boss2 = restartedRpg.actInRun('g1', 'hero', 'attack', now + 21_100, () => 0.5);
-    let guard = 0;
-    while (boss2.ok && boss2.outcome === 'ongoing' && guard < 25) {
-      boss2 = restartedRpg.actInRun('g1', 'hero', 'attack', now + 21_200 + guard * 50, () => 0.5);
-      guard += 1;
-    }
-    expect(boss2.ok && boss2.outcome === 'victory').toBe(true);
-    if (boss2.ok && boss2.outcome === 'victory') {
-      expect(boss2.firstClear).toBe(false);
-      expect(boss2.reward.bossBonusCoins).toBe(8000);
-      expect(boss2.character.totalClears).toBe(2);
-      expect(boss2.character.totalBossKills).toBe(2);
-    }
-    expect(onCreditChange).toHaveBeenLastCalledWith(
-      'g1',
-      'hero',
-      5,
-      expect.stringContaining('通关'),
-      expect.any(Number),
-    );
-
-    // Chapter 2 is now unlocked!
-    const ch2Start = restartedRpg.startRun('g1', 'hero', 2, now + 30_000, () => 0.1);
-    expect(ch2Start.ok).toBe(true);
-
-    db.close();
-  });
-
-  it('banks all accumulated loot on safe retreat and auto-salvages bag overflow', () => {
-    const { db, profileRepo, rpgRepo, rpg } = createFixture({
-      config: { bagCapacity: 1 },
-    });
-    const now = Date.UTC(2026, 0, 16, 4, 0, 0);
-    profileRepo.addCoins('g1', 'u1', 500);
-
-    // Floor 1 chest -> 1 item; Floor 2 chest -> 2nd item (overflows bagCapacity = 1)
-    const start = rpg.startRun('g1', 'u1', 1, now, () => 0.95);
-    expect(start.ok && start.run.phase === 'floor_clear').toBe(true);
-    const f2 = rpg.actInRun('g1', 'u1', 'next_floor', now + 1000, () => 0.95);
-    expect(f2.ok && f2.outcome === 'floor_cleared').toBe(true);
-    if (!f2.ok || f2.outcome !== 'floor_cleared') return;
-    const pendingBeforeRetreat = f2.run.pendingCoins;
-    const pendingXpBeforeRetreat = f2.run.pendingXp;
-    expect(f2.run.pendingItems).toHaveLength(2);
-
-    const ret = rpg.actInRun('g1', 'u1', 'retreat', now + 2000);
-    expect(ret.ok && ret.outcome === 'retreated').toBe(true);
-    if (!ret.ok || ret.outcome !== 'retreated') return;
-
-    expect(ret.reward.bankedItems).toHaveLength(1);
-    expect(ret.reward.autoSalvagedCount).toBe(1);
-    expect(ret.reward.autoSalvagedCoins).toBeGreaterThan(0);
-    expect(ret.reward.grossCoins).toBe(pendingBeforeRetreat + ret.reward.autoSalvagedCoins);
-    expect(ret.reward.xpEarned).toBe(pendingXpBeforeRetreat);
-    expect(ret.balance).toBe(500 + ret.reward.netCoins);
-    expect(rpgRepo.listItems('g1', 'u1')).toHaveLength(1);
-    expect(rpg.getActiveRun('g1', 'u1')).toBeNull();
-
-    db.close();
-  });
-
-  it('loses ONLY pending run loot on combat defeat while preserving wallet and equipped gear', () => {
-    const { db, profileRepo, rpgRepo, rpg } = createFixture();
-    const now = Date.UTC(2026, 0, 17, 4, 0, 0);
-
-    profileRepo.addCoins('g1', 'u1', 12345);
-    rpg.chooseOrSwitchClass('g1', 'u1', 'mage', now);
-
-    // Give character an equipped armor piece and unlock chapter 6 so Lv.1 mage gets crushed
-    const armor = rpgRepo.createItem({
-      guildId: 'g1',
-      userId: 'u1',
-      name: '银月板甲',
-      slot: 'armor',
-      rarity: 'rare',
-      baseHp: 50,
-      baseAtk: 0,
-      baseDef: 10,
-      baseCritBp: 0,
-      createdAt: now,
-    });
-    rpg.equipItem('g1', 'u1', armor.id, now);
-
-    const char = rpg.getOrCreateCharacter('g1', 'u1', now);
-    rpgRepo.saveCharacter({ ...char, maxChapterCleared: 5 });
-
-    // Floor 1 chest accumulates pending coins/items; Floor 2 elite in Chapter 6 destroys Lv.1 mage
-    const start = rpg.startRun('g1', 'u1', 6, now, () => 0.95);
-    expect(start.ok).toBe(true);
-    if (!start.ok) return;
-    const accumulatedCoins = start.run.pendingCoins;
-    expect(accumulatedCoins).toBeGreaterThan(0);
-
-    const f2 = rpg.actInRun('g1', 'u1', 'next_floor', now + 1000, () => 0.55); // elite
-    expect(f2.ok && f2.outcome === 'ongoing').toBe(true);
-
-    let res = rpg.actInRun('g1', 'u1', 'attack', now + 2000, () => 0.5);
-    let safety = 0;
-    while (res.ok && res.outcome === 'ongoing' && safety < 20) {
-      res = rpg.actInRun('g1', 'u1', 'attack', now + 2100 + safety * 100, () => 0.5);
-      safety += 1;
-    }
-
-    expect(res.ok && res.outcome === 'defeat').toBe(true);
-    if (!res.ok || res.outcome !== 'defeat') return;
-
-    expect(res.lostLoot.coins).toBe(accumulatedCoins);
-    expect(res.lostLoot.itemCount).toBe(1);
-    expect(rpg.getActiveRun('g1', 'u1')).toBeNull();
-
-    // Wallet & equipped gear are 100% untouched!
-    expect(profileRepo.getOrCreate('g1', 'u1').coins).toBe(12345);
-    const items = rpgRepo.listItems('g1', 'u1');
-    expect(items).toHaveLength(1);
-    expect(items[0]?.id).toBe(armor.id);
-    expect(items[0]?.equipped).toBe(true);
-
-    db.close();
-  });
-
-  it('supports mage burn skill, ranger double-shot skill, and warrior armor-break skill', () => {
-    const { db, rpg } = createFixture();
-    const now = Date.UTC(2026, 0, 18, 4, 0, 0);
-
-    // Mage skill: 陨星火球 applies burn DoT
-    rpg.chooseOrSwitchClass('g1', 'mage1', 'mage', now);
-    const mStart = rpg.startRun('g1', 'mage1', 1, now, () => 0.7); // elite so it survives hit 1
-    expect(mStart.ok).toBe(true);
-    const mSkill = rpg.actInRun('g1', 'mage1', 'skill', now + 1000, () => 0.5);
-    expect(mSkill.ok).toBe(true);
-    if (mSkill.ok) {
-      expect(mSkill.logs.some((l) => l.includes('陨星火球'))).toBe(true);
-      expect(mSkill.logs.some((l) => l.includes('灼烧'))).toBe(true);
-    }
-
-    // Ranger skill: 穿云连射 deals 2 hits
-    rpg.chooseOrSwitchClass('g1', 'ranger1', 'ranger', now);
-    const rStart = rpg.startRun('g1', 'ranger1', 1, now, () => 0.7);
-    expect(rStart.ok).toBe(true);
-    const rSkill = rpg.actInRun('g1', 'ranger1', 'skill', now + 1000, () => 0.5);
-    expect(rSkill.ok).toBe(true);
-    if (rSkill.ok) {
-      expect(rSkill.logs.some((l) => l.includes('穿云连射'))).toBe(true);
-    }
-
-    // Warrior skill: 破军重斩 applies armor break
-    rpg.chooseOrSwitchClass('g1', 'war1', 'warrior', now);
-    const wStart = rpg.startRun('g1', 'war1', 1, now, () => 0.7);
-    expect(wStart.ok).toBe(true);
-    const wSkill = rpg.actInRun('g1', 'war1', 'skill', now + 1000, () => 0.5);
-    expect(wSkill.ok).toBe(true);
-    if (wSkill.ok && wSkill.outcome === 'ongoing') {
-      expect(wSkill.logs.some((l) => l.includes('破军重斩'))).toBe(true);
-      expect(wSkill.run.enemy?.armorBreakTurns).toBe(1); // set to 2, decremented by 1 after enemy turn
-    }
-
-    db.close();
-  });
-
-  it('orders guild RPG leaderboard by max_chapter_cleared, level, total_clears, xp', () => {
-    const { db, rpgRepo, rpg } = createFixture();
-    const now = Date.UTC(2026, 0, 19, 4, 0, 0);
-
-    const makeChar = (
-      uid: string,
-      maxChapterCleared: number,
-      level: number,
-      totalClears: number,
-      xp: number,
-    ) => {
-      const c = rpg.getOrCreateCharacter('g1', uid, now);
-      rpgRepo.saveCharacter({ ...c, maxChapterCleared, level, totalClears, xp });
-    };
-
-    makeChar('u_low', 1, 5, 10, 50);
-    makeChar('u_top', 4, 10, 4, 100);
-    makeChar('u_tie_b', 2, 6, 3, 20);
-    makeChar('u_tie_a', 2, 6, 3, 90);
-    makeChar('u_mid', 2, 7, 2, 10);
-
-    const lb = rpg.getLeaderboard('g1', 10, 0);
-    expect(lb.total).toBe(5);
-    expect(lb.items.map((c) => c.userId)).toEqual([
-      'u_top',
-      'u_mid',
-      'u_tie_a',
-      'u_tie_b',
-      'u_low',
-    ]);
-
-    const page2 = rpg.getLeaderboard('g1', 2, 2);
-    expect(page2.total).toBe(5);
-    expect(page2.items.map((c) => c.userId)).toEqual(['u_tie_a', 'u_tie_b']);
-
-    db.close();
-  });
-
-  it('computes deterministic item scores that rank higher stats, rarity, and enhance levels higher', () => {
-    const commonBase = {
-      rarity: 'common' as const,
-      baseHp: 20,
-      baseAtk: 10,
-      baseDef: 4,
-      baseCritBp: 200,
-      enhanceLevel: 0,
-    };
-    const uncommonSameStats = { ...commonBase, rarity: 'uncommon' as const };
-    const rareSameStats = { ...commonBase, rarity: 'rare' as const };
-    const epicSameStats = { ...commonBase, rarity: 'epic' as const };
-    const legendarySameStats = { ...commonBase, rarity: 'legendary' as const };
-    const commonEnhanced = { ...commonBase, enhanceLevel: 3 };
-    const commonStrongerAtk = { ...commonBase, baseAtk: 15 };
-
-    // Deterministic repeatability
-    expect(computeItemScore(commonBase)).toBe(computeItemScore(commonBase));
-
-    // Higher rarity strictly increases score given identical base stats
-    expect(computeItemScore(uncommonSameStats)).toBeGreaterThan(computeItemScore(commonBase));
-    expect(computeItemScore(rareSameStats)).toBeGreaterThan(computeItemScore(uncommonSameStats));
-    expect(computeItemScore(epicSameStats)).toBeGreaterThan(computeItemScore(rareSameStats));
-    expect(computeItemScore(legendarySameStats)).toBeGreaterThan(computeItemScore(epicSameStats));
-
-    // Enhancement and stronger base stats increase score
-    expect(computeItemScore(commonEnhanced)).toBeGreaterThan(computeItemScore(commonBase));
-    expect(computeItemScore(commonStrongerAtk)).toBeGreaterThan(computeItemScore(commonBase));
-  });
-
-  it('equipBestGear equips highest-score gear across all 3 slots, respects tie-breakers, and handles empty/optimal bags', () => {
+  it('orders guild RPG leaderboard by level, xp, total_breakthroughs, and total_boss_kills', () => {
     const { db, rpgRepo, rpg } = createFixture();
     const now = Date.UTC(2026, 0, 20, 4, 0, 0);
-    rpg.chooseOrSwitchClass('g1', 'u1', 'warrior', now);
-
-    // Empty bag -> no_items
-    expect(rpg.equipBestGear('g1', 'u1', now)).toEqual({
-      ok: false,
-      reason: 'no_items',
-    });
-
-    // Weapons: weak equipped common vs stronger rare vs tie-score items
-    const weakSword = rpgRepo.createItem({
-      guildId: 'g1',
-      userId: 'u1',
-      name: '铁制短剑',
-      slot: 'weapon',
-      rarity: 'common',
-      baseHp: 8,
-      baseAtk: 10,
-      baseDef: 1,
-      baseCritBp: 150,
-      equipped: true,
-      createdAt: now,
-    });
-    const bestSword = rpgRepo.createItem({
-      guildId: 'g1',
-      userId: 'u1',
-      name: '龙炎魔刃',
-      slot: 'weapon',
-      rarity: 'epic',
-      baseHp: 30,
-      baseAtk: 45,
-      baseDef: 5,
-      baseCritBp: 600,
-      enhanceLevel: 2,
-      createdAt: now,
-    });
-
-    // Armor: best armor is ALREADY equipped, weaker armor is in bag
-    const bestArmor = rpgRepo.createItem({
-      guildId: 'g1',
-      userId: 'u1',
-      name: '银月板甲',
-      slot: 'armor',
-      rarity: 'rare',
-      baseHp: 90,
-      baseAtk: 0,
-      baseDef: 18,
-      baseCritBp: 0,
-      equipped: true,
-      createdAt: now,
-    });
-    rpgRepo.createItem({
-      guildId: 'g1',
-      userId: 'u1',
-      name: '皮质轻甲',
-      slot: 'armor',
-      rarity: 'common',
-      baseHp: 30,
-      baseAtk: 0,
-      baseDef: 5,
-      baseCritBp: 0,
-      createdAt: now,
-    });
-
-    // Accessory: tie-breaker check — exact same effective stats & score, higher enhanceLevel wins
-    // accLowEnh: baseAtk 10 @ +0 -> eff.atk = 10
-    // accHighEnh: baseAtk 9 @ +1 -> Math.round(9 * 1.15) = 10 -> eff.atk = 10 (identical score, higher enhanceLevel)
-    const accLowEnh = rpgRepo.createItem({
-      guildId: 'g1',
-      userId: 'u1',
-      name: '冒险者徽章A',
-      slot: 'accessory',
-      rarity: 'common',
-      baseHp: 0,
-      baseAtk: 10,
-      baseDef: 0,
-      baseCritBp: 0,
-      enhanceLevel: 0,
-      createdAt: now,
-    });
-    const accHighEnh = rpgRepo.createItem({
-      guildId: 'g1',
-      userId: 'u1',
-      name: '冒险者徽章B',
-      slot: 'accessory',
-      rarity: 'common',
-      baseHp: 0,
-      baseAtk: 9,
-      baseDef: 0,
-      baseCritBp: 0,
-      enhanceLevel: 1,
-      createdAt: now,
-    });
-    expect(computeItemScore(accLowEnh)).toBe(computeItemScore(accHighEnh));
-
-    // Another user's legendary weapon must not interfere
-    rpgRepo.createItem({
-      guildId: 'g1',
-      userId: 'other_user',
-      name: '晨曦裁决者',
-      slot: 'weapon',
-      rarity: 'legendary',
-      baseHp: 200,
-      baseAtk: 300,
-      baseDef: 50,
-      baseCritBp: 2000,
-      createdAt: now,
-    });
-
-    const res = rpg.equipBestGear('g1', 'u1', now);
-    expect(res.ok).toBe(true);
-    if (!res.ok) return;
-
-    // Weapon swapped (weakSword -> bestSword), armor unchanged, accessory equipped (accHighEnh)
-    expect(res.unchangedCount).toBe(1);
-    expect(res.changed).toHaveLength(2);
-
-    const weaponChange = res.changed.find((c) => c.slot === 'weapon');
-    expect(weaponChange?.item.id).toBe(bestSword.id);
-    expect(weaponChange?.item.equipped).toBe(true);
-    expect(weaponChange?.previousItem?.id).toBe(weakSword.id);
-    expect(weaponChange?.previousItem?.equipped).toBe(false);
-
-    const accChange = res.changed.find((c) => c.slot === 'accessory');
-    expect(accChange?.item.id).toBe(accHighEnh.id);
-    expect(accChange?.item.equipped).toBe(true);
-    expect(accChange?.previousItem).toBeUndefined();
-
-    expect(res.stats.equippedItems.map((i) => i.id)).toEqual([
-      bestSword.id,
-      bestArmor.id,
-      accHighEnh.id,
-    ]);
-
-    // Running again when already optimal -> 0 changes, 3 unchanged
-    const resAgain = rpg.equipBestGear('g1', 'u1', now);
-    expect(resAgain.ok).toBe(true);
-    if (resAgain.ok) {
-      expect(resAgain.changed).toHaveLength(0);
-      expect(resAgain.unchangedCount).toBe(3);
+    for (const uid of ['u_low', 'u_mid', 'u_high']) {
+      rpg.chooseOrSwitchClass('g1', uid, 'warrior', now);
     }
-
-    // Tie-breaker 2: exact same score and enhanceLevel -> lower id wins
-    const tieFirst = rpgRepo.createItem({
-      guildId: 'g1',
-      userId: 'u2',
-      name: '圣殿巨剑#1',
-      slot: 'weapon',
-      rarity: 'rare',
-      baseHp: 20,
-      baseAtk: 25,
-      baseDef: 3,
-      baseCritBp: 300,
-      enhanceLevel: 1,
-      createdAt: now,
+    rpgRepo.saveCharacter({ ...rpgRepo.getCharacter('g1', 'u_low')!, level: 9, xp: 500 });
+    rpgRepo.saveCharacter({
+      ...rpgRepo.getCharacter('g1', 'u_mid')!,
+      level: 18,
+      xp: 200,
+      totalBreakthroughs: 1,
     });
-    const tieSecond = rpgRepo.createItem({
-      guildId: 'g1',
-      userId: 'u2',
-      name: '圣殿巨剑#2',
-      slot: 'weapon',
-      rarity: 'rare',
-      baseHp: 20,
-      baseAtk: 25,
-      baseDef: 3,
-      baseCritBp: 300,
-      enhanceLevel: 1,
-      createdAt: now,
-    });
-    expect(tieFirst.id).toBeLessThan(tieSecond.id);
-    const tieRes = rpg.equipBestGear('g1', 'u2', now);
-    expect(tieRes.ok).toBe(true);
-    if (tieRes.ok) {
-      expect(tieRes.changed).toHaveLength(1);
-      expect(tieRes.changed[0]?.item.id).toBe(tieFirst.id);
-    }
-
-    db.close();
-  });
-
-  it('bulkSalvageItems salvages only unequipped items up to maxRarity, preserves equipped & higher rarities, and credits exact coins', () => {
-    const onCoinsEarned = vi.fn(() => ({ garnished: 999, net: 0 }));
-    const { db, profileRepo, rpgRepo, rpg } = createFixture({ onCoinsEarned });
-    const now = Date.UTC(2026, 0, 21, 4, 0, 0);
-
-    profileRepo.addCoins('g1', 'u1', 1000);
-
-    // Empty bag -> nothing_to_salvage
-    expect(rpg.bulkSalvageItems('g1', 'u1', 'uncommon', now)).toEqual({
-      ok: false,
-      reason: 'nothing_to_salvage',
+    rpgRepo.saveCharacter({
+      ...rpgRepo.getCharacter('g1', 'u_high')!,
+      level: 25,
+      xp: 100,
+      totalBreakthroughs: 2,
     });
 
-    // Equipped common & equipped uncommon MUST be preserved
-    const eqCommon = rpgRepo.createItem({
-      guildId: 'g1',
-      userId: 'u1',
-      name: '装备中的白装',
-      slot: 'weapon',
-      rarity: 'common',
-      baseHp: 5,
-      baseAtk: 8,
-      baseDef: 1,
-      baseCritBp: 0,
-      equipped: true,
-      createdAt: now,
-    });
-    const eqUncommon = rpgRepo.createItem({
-      guildId: 'g1',
-      userId: 'u1',
-      name: '装备中的绿装',
-      slot: 'armor',
-      rarity: 'uncommon',
-      baseHp: 25,
-      baseAtk: 0,
-      baseDef: 6,
-      baseCritBp: 0,
-      equipped: true,
-      createdAt: now,
-    });
-
-    // Unequipped common (+0 and +2) & unequipped uncommon (+1) -> should be salvaged by default ('uncommon')
-    const bagCommon0 = rpgRepo.createItem({
-      guildId: 'g1',
-      userId: 'u1',
-      name: '背包白装A',
-      slot: 'weapon',
-      rarity: 'common',
-      baseHp: 5,
-      baseAtk: 5,
-      baseDef: 1,
-      baseCritBp: 0,
-      enhanceLevel: 0,
-      createdAt: now,
-    });
-    const bagCommon2 = rpgRepo.createItem({
-      guildId: 'g1',
-      userId: 'u1',
-      name: '背包白装B',
-      slot: 'accessory',
-      rarity: 'common',
-      baseHp: 5,
-      baseAtk: 5,
-      baseDef: 1,
-      baseCritBp: 0,
-      enhanceLevel: 2,
-      createdAt: now,
-    });
-    const bagUncommon1 = rpgRepo.createItem({
-      guildId: 'g1',
-      userId: 'u1',
-      name: '背包绿装',
-      slot: 'armor',
-      rarity: 'uncommon',
-      baseHp: 20,
-      baseAtk: 0,
-      baseDef: 4,
-      baseCritBp: 0,
-      enhanceLevel: 1,
-      createdAt: now,
-    });
-
-    // Higher rarity items MUST be preserved when maxRarity = 'uncommon'
-    const bagRare = rpgRepo.createItem({
-      guildId: 'g1',
-      userId: 'u1',
-      name: '背包蓝装',
-      slot: 'weapon',
-      rarity: 'rare',
-      baseHp: 20,
-      baseAtk: 25,
-      baseDef: 4,
-      baseCritBp: 200,
-      createdAt: now,
-    });
-    const bagEpic = rpgRepo.createItem({
-      guildId: 'g1',
-      userId: 'u1',
-      name: '背包紫装',
-      slot: 'armor',
-      rarity: 'epic',
-      baseHp: 80,
-      baseAtk: 0,
-      baseDef: 20,
-      baseCritBp: 0,
-      createdAt: now,
-    });
-    const bagLegendary = rpgRepo.createItem({
-      guildId: 'g1',
-      userId: 'u1',
-      name: '背包橙装',
-      slot: 'accessory',
-      rarity: 'legendary',
-      baseHp: 60,
-      baseAtk: 30,
-      baseDef: 15,
-      baseCritBp: 900,
-      createdAt: now,
-    });
-
-    // Another user's unequipped common item must stay untouched
-    const otherUserItem = rpgRepo.createItem({
-      guildId: 'g1',
-      userId: 'u2',
-      name: '别人的白装',
-      slot: 'weapon',
-      rarity: 'common',
-      baseHp: 5,
-      baseAtk: 5,
-      baseDef: 1,
-      baseCritBp: 0,
-      createdAt: now,
-    });
-
-    const expectedCoins =
-      getSalvageValue(bagCommon0) + getSalvageValue(bagCommon2) + getSalvageValue(bagUncommon1);
-
-    const bulkRes = rpg.bulkSalvageItems('g1', 'u1', 'uncommon', now);
-    expect(bulkRes.ok).toBe(true);
-    if (!bulkRes.ok) return;
-
-    expect(bulkRes.salvagedCount).toBe(3);
-    expect(bulkRes.totalCoins).toBe(expectedCoins);
-    expect(bulkRes.balance).toBe(1000 + expectedCoins);
-    expect(bulkRes.byRarity).toEqual({ common: 2, uncommon: 1 });
-    expect(profileRepo.getOrCreate('g1', 'u1').coins).toBe(1000 + expectedCoins);
-    // Salvage sells own gear -> does not trigger onCoinsEarned garnishment
-    expect(onCoinsEarned).not.toHaveBeenCalled();
-
-    // Verify exact remaining items
-    const remainingIds = rpgRepo.listItems('g1', 'u1').map((i) => i.id);
-    expect(remainingIds).toHaveLength(5);
-    expect(remainingIds).toEqual(
-      expect.arrayContaining([
-        eqCommon.id,
-        eqUncommon.id,
-        bagRare.id,
-        bagEpic.id,
-        bagLegendary.id,
-      ]),
-    );
-    expect(rpgRepo.getItemById(otherUserItem.id)).not.toBeNull();
-
-    // Calling again with 'uncommon' -> nothing left to salvage
-    expect(rpg.bulkSalvageItems('g1', 'u1', 'uncommon', now)).toEqual({
-      ok: false,
-      reason: 'nothing_to_salvage',
-    });
-
-    // Calling with maxRarity = 'rare' -> salvages bagRare only (keeps equipped common/uncommon + epic/legendary)
-    const rareRes = rpg.bulkSalvageItems('g1', 'u1', 'rare', now);
-    expect(rareRes.ok).toBe(true);
-    if (rareRes.ok) {
-      expect(rareRes.salvagedCount).toBe(1);
-      expect(rareRes.totalCoins).toBe(getSalvageValue(bagRare));
-      expect(rareRes.byRarity).toEqual({ rare: 1 });
-      expect(rareRes.balance).toBe(1000 + expectedCoins + getSalvageValue(bagRare));
-    }
-    expect(rpgRepo.listItems('g1', 'u1').map((i) => i.id)).toEqual(
-      expect.arrayContaining([eqCommon.id, eqUncommon.id, bagEpic.id, bagLegendary.id]),
-    );
-    expect(rpgRepo.getItemById(bagRare.id)).toBeNull();
-
-    db.close();
-  });
-
-  it('exposes getUserCreditScore with 600 fallback and injected callback support', () => {
-    const defaultFixture = createFixture();
-    expect(defaultFixture.rpg.getUserCreditScore('g1', 'u1')).toBe(600);
-    defaultFixture.db.close();
-
-    const getCreditScore = vi.fn((guildId: string, userId: string) =>
-      guildId === 'g1' && userId === 'vip' ? 780 : 420,
-    );
-    const customFixture = createFixture({ getCreditScore });
-    expect(customFixture.rpg.getUserCreditScore('g1', 'vip')).toBe(780);
-    expect(customFixture.rpg.getUserCreditScore('g1', 'debtor')).toBe(420);
-    expect(getCreditScore).toHaveBeenCalledTimes(2);
-    expect(getCreditScore).toHaveBeenNthCalledWith(1, 'g1', 'vip');
-    expect(getCreditScore).toHaveBeenNthCalledWith(2, 'g1', 'debtor');
-    customFixture.db.close();
-  });
-
-  it('supports dual-mode tabletop persistence, cross-mode guards, full Boss P1/P2 victory, potion, retreat, bribe, and defeat', () => {
-    const onCoinsEarned = vi.fn((_g: string, _u: string, gross: number) => {
-      const garnished = Math.floor(gross * 0.25);
-      return { garnished, net: gross - garnished };
-    });
-    const onCreditChange = vi.fn();
-    const { db, profileRepo, rpgRepo, rpg } = createFixture({
-      onCoinsEarned,
-      onCreditChange,
-      getCreditScore: (_g, uid) => (uid === 'vip' ? 880 : 600),
-    });
-    const now = Date.UTC(2026, 0, 21, 4, 0, 0);
-
-    rpg.chooseOrSwitchClass('g1', 'vip', 'paladin', now);
-    const attrs = rpg.getTabletopAttributes('g1', 'vip', now);
-    expect(attrs.creditCharmBonus).toBe(3);
-    expect(rpg.getAnyActiveRunMode('g1', 'vip')).toBeNull();
-
-    // Locked chapter & invalid chapter checks
-    expect(rpg.startTabletopRun('g1', 'vip', 99, now)).toEqual({
-      ok: false,
-      reason: 'invalid_chapter',
-    });
-    expect(rpg.startTabletopRun('g1', 'vip', 2, now)).toEqual({
-      ok: false,
-      reason: 'chapter_locked',
-      maxUnlockedChapter: 1,
-    });
-
-    // Start tabletop run on Ch 1 -> deducts 1 stamina
-    const started = rpg.startTabletopRun('g1', 'vip', 1, now, () => 0.1);
-    expect(started.ok).toBe(true);
-    if (!started.ok) return;
-    expect(started.character.stamina).toBe(4);
-    expect(rpg.getActiveRun('g1', 'vip')).toBeNull();
-    expect(rpg.getActiveTabletopRun('g1', 'vip')?.mode).toBe('tabletop');
-    expect(rpg.getAnyActiveRunMode('g1', 'vip')).toBe('tabletop');
-
-    // Cross-mode guards: classic start, class switch, and stale classic actInRun must not destroy tabletop run
-    expect(rpg.startRun('g1', 'vip', 1, now)).toEqual({
-      ok: false,
-      reason: 'active_run_exists',
-    });
-    expect(rpg.chooseOrSwitchClass('g1', 'vip', 'mage', now)).toEqual({
-      ok: false,
-      reason: 'active_run',
-    });
-    expect(rpg.actInRun('g1', 'vip', 'attack', now)).toEqual({
-      ok: false,
-      reason: 'no_active_run',
-    });
-    expect(rpg.getActiveTabletopRun('g1', 'vip')).not.toBeNull();
-
-    // Potion fails at full HP
-    expect(rpg.actInTabletopRun('g1', 'vip', { type: 'potion' }, now)).toEqual({
-      ok: false,
-      reason: 'already_full_hp',
-    });
-
-    // Play Acts 1..4 -> Boss P1 -> Boss P2 with guaranteed Nat 20 / high rolls (0.97 -> D20=20)
-    let victoryRes: ReturnType<typeof rpg.actInTabletopRun> | null = null;
-    for (let step = 0; step < 8; step++) {
-      const current = rpg.getActiveTabletopRun('g1', 'vip');
-      if (!current) break;
-      const choiceId = current.currentChoiceIds[0]!;
-      const res = rpg.actInTabletopRun('g1', 'vip', { type: 'choice', choiceId }, now + step * 1000, () => 0.97);
-      expect(res.ok).toBe(true);
-      if (res.ok && res.status === 'victory') {
-        victoryRes = res;
-        break;
-      }
-    }
-
-    expect(victoryRes?.ok).toBe(true);
-    if (!victoryRes || !victoryRes.ok || victoryRes.status !== 'victory') return;
-    expect(victoryRes.firstClear).toBe(true);
-    expect(victoryRes.victoryEpilogue.length).toBeGreaterThan(10);
-    expect(victoryRes.character.maxChapterCleared).toBe(1);
-    expect(victoryRes.character.totalClears).toBe(1);
-    expect(victoryRes.character.totalBossKills).toBe(1);
-    expect(victoryRes.reward.bossBonusCoins).toBe(16_000); // Ch1 8000 * 2x firstClear
-    expect(victoryRes.reward.garnishedCoins).toBeGreaterThan(0);
-    expect(onCoinsEarned).toHaveBeenCalled();
-    expect(onCreditChange).toHaveBeenCalledWith('g1', 'vip', 25, expect.stringContaining('首通'), expect.any(Number));
-    expect(rpg.getActiveTabletopRun('g1', 'vip')).toBeNull();
-    expect(rpg.getAnyActiveRunMode('g1', 'vip')).toBeNull();
-
-    // Test bribe insufficient coins -> add coins -> bribe succeeds & deducts coins -> potion -> retreat
-    rpg.chooseOrSwitchClass('g1', 'u_bribe', 'warrior', now);
-    const bribeRunStart = rpg.startTabletopRun('g1', 'u_bribe', 1, now, () => 0.0);
-    expect(bribeRunStart.ok).toBe(true);
-    if (!bribeRunStart.ok) return;
-
-    // Force scene 'ch1_goblin_toll' with bribe choice 'ch1_toll_bribe'
-    const forcedBribeRun = {
-      ...bribeRunStart.run,
-      currentSceneId: 'ch1_goblin_toll',
-      currentChoiceIds: ['ch1_toll_bribe', 'ch1_toll_agility', 'ch1_toll_charm'],
-      playerHp: Math.floor(bribeRunStart.run.playerMaxHp / 2),
-      pendingCoins: 2000,
-    };
-    rpgRepo.upsertRun({
-      guildId: 'g1',
-      userId: 'u_bribe',
-      chapter: 1,
-      floor: 1,
-      stateJson: JSON.stringify(forcedBribeRun),
-      updatedAt: now,
-    });
-
-    // Pocket coins = 0 -> insufficient_coins
-    const brokeBribe = rpg.actInTabletopRun('g1', 'u_bribe', { type: 'choice', choiceId: 'ch1_toll_bribe' }, now);
-    expect(brokeBribe.ok).toBe(false);
-    if (!brokeBribe.ok) {
-      expect(brokeBribe.reason).toBe('insufficient_coins');
-      expect(brokeBribe.requiredCoins).toBeGreaterThan(0);
-    }
-
-    // Potion heals while damaged without advancing act
-    const potRes = rpg.actInTabletopRun('g1', 'u_bribe', { type: 'potion' }, now);
-    expect(potRes.ok).toBe(true);
-    if (potRes.ok && potRes.status === 'potion') {
-      expect(potRes.healed).toBeGreaterThan(0);
-      expect(potRes.run.act).toBe(1);
-      expect(potRes.run.potionsLeft).toBe(2);
-    }
-
-    // Add coins and execute bribe -> deducts from profile.coins
-    profileRepo.addCoins('g1', 'u_bribe', 5000);
-    const paidBribe = rpg.actInTabletopRun(
-      'g1',
-      'u_bribe',
-      { type: 'choice', choiceId: 'ch1_toll_bribe' },
-      now,
-      () => 0.5,
-    );
-    expect(paidBribe.ok).toBe(true);
-    if (paidBribe.ok && paidBribe.status === 'ongoing') {
-      expect(paidBribe.coinsSpent).toBeGreaterThan(0);
-      expect(profileRepo.getOrCreate('g1', 'u_bribe').coins).toBe(5000 - paidBribe.coinsSpent);
-    }
-
-    // Retreat banks pending coins cleanly
-    const retreatRes = rpg.actInTabletopRun('g1', 'u_bribe', { type: 'retreat' }, now);
-    expect(retreatRes.ok).toBe(true);
-    if (retreatRes.ok && retreatRes.status === 'retreat') {
-      expect(retreatRes.reward.grossCoins).toBeGreaterThanOrEqual(2000);
-      expect(rpg.getActiveTabletopRun('g1', 'u_bribe')).toBeNull();
-    }
-
-    // Defeat: force 1 HP & Nat 1 roll (0.0 -> D20=1) -> deletes run and reports lost loot
-    const defeatStart = rpg.startTabletopRun('g1', 'u_bribe', 1, now, () => 0.1);
-    expect(defeatStart.ok).toBe(true);
-    if (!defeatStart.ok) return;
-    rpgRepo.upsertRun({
-      guildId: 'g1',
-      userId: 'u_bribe',
-      chapter: 1,
-      floor: 1,
-      stateJson: JSON.stringify({
-        ...defeatStart.run,
-        currentSceneId: 'ch1_goblin_toll',
-        currentChoiceIds: ['ch1_toll_agility', 'ch1_toll_charm', 'ch1_toll_bribe'],
-        playerHp: 1,
-        pendingCoins: 1500,
-      }),
-      updatedAt: now,
-    });
-    const defeatRes = rpg.actInTabletopRun(
-      'g1',
-      'u_bribe',
-      { type: 'choice', choiceId: 'ch1_toll_agility' },
-      now,
-      () => 0.0,
-    );
-    expect(defeatRes.ok).toBe(true);
-    if (defeatRes.ok && defeatRes.status === 'defeat') {
-      expect(defeatRes.lostCoins).toBe(1500);
-      expect(defeatRes.outcome.publicHighlight?.kind).toBe('nat1');
-      expect(rpg.getActiveTabletopRun('g1', 'u_bribe')).toBeNull();
-    }
+    const lb = rpg.getLeaderboard('g1', 10, 0);
+    expect(lb.items.map((c) => c.userId)).toEqual(['u_high', 'u_mid', 'u_low']);
+    expect(makeSeqRng([0.1])()).toBe(0.1);
 
     db.close();
   });

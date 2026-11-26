@@ -705,6 +705,7 @@ describe('background timers hardening (ready.ts)', () => {
     const threadSend = vi.fn(async () => undefined);
     const threadChannel = {
       id: 'thread-99',
+      isTextBased: () => true,
       isSendable: () => true,
       messages: { fetch: vi.fn(async () => ({ edit: threadEdit })) },
       send: threadSend,
@@ -742,12 +743,31 @@ describe('background timers hardening (ready.ts)', () => {
     });
     await expect(runRedPacketTick(fakeClient, ctx)).resolves.toBeUndefined();
 
+    // Auto-settlement of due RPG public trial edits the card and sends celebration notice
+    const trialNow = Date.now();
+    ctx.services.rpg.chooseOrSwitchClass('g1', 'trial-u', 'warrior');
+    ctx.repos.rpg.saveCharacter({
+      ...ctx.services.rpg.getOrCreateCharacter('g1', 'trial-u'),
+      level: 9,
+      xp: 3500,
+    });
+    const startedTrial = ctx.services.rpg.startPublicBreakthroughTrial('g1', 'thread-99', 'trial-u', trialNow - 120_000);
+    if (startedTrial.ok) {
+      ctx.services.rpg.bindTrialMessage(startedTrial.trial.id, 'trial-msg-1', 'thread-99');
+    }
+    const origSettleDue = ctx.services.rpg.settleDuePublicTrials.bind(ctx.services.rpg);
+    vi.spyOn(ctx.services.rpg, 'settleDuePublicTrials').mockImplementationOnce(() =>
+      origSettleDue(trialNow, () => 0.0),
+    );
+
     vi.spyOn(ctx.services.chaos, 'processTimedOutRoulettes').mockImplementation(() => {
       throw new Error('roulette boom');
     });
     const bombSpy = vi.spyOn(ctx.services.chaos, 'expireDueNumberBombs').mockReturnValue([]);
     await expect(runGamesTick(fakeClient, ctx)).resolves.toBeUndefined();
     expect(bombSpy).toHaveBeenCalledTimes(1);
+    expect(threadEdit).toHaveBeenCalledTimes(2);
+    expect(threadSend).toHaveBeenCalledTimes(2);
 
     // Monitor prune deletes logs older than MONITOR_RETENTION_MS and keeps fresh ones
     const now = Date.now();

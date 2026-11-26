@@ -13,7 +13,7 @@ import type { RelationshipType, SocialPetRepo } from '../db/repositories/socialP
 import { PROP_CATALOG } from './chaosService.js';
 import { CREDIT_SCORE_MAX, getCreditTier, type CreditLoanService } from './creditLoanService.js';
 import { getDateKey } from './economyService.js';
-import { DEFAULT_RPG_CONFIG, generateShopRpgLoot } from './rpgService.js';
+import { DEFAULT_RPG_CONFIG, generateShopRpgLoot, getRpgRealmInfo } from './rpgService.js';
 import { applyPetXp, unlockRelationshipMilestoneTitles } from './socialPetService.js';
 
 export const DEFAULT_STAT_BOOST_DAILY_LIMIT = 3;
@@ -838,8 +838,8 @@ export class ShopService {
 
         let droppedItem: RpgSupplyResult['droppedItem'];
         if (payload.lootBox) {
-          const targetChapter = Math.max(1, Math.min(6, character.maxChapterCleared + 1));
-          const pending = generateShopRpgLoot(targetChapter, payload.minRarity, rng);
+          const targetTier = getRpgRealmInfo(character.level).tier;
+          const pending = generateShopRpgLoot(targetTier, payload.minRarity, rng);
           const created = this.rpgRepo.createItem({
             guildId,
             userId,

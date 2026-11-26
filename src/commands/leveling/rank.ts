@@ -5,6 +5,7 @@ import {
   type ChatInputCommandInteraction,
 } from 'discord.js';
 import { parseCardColor } from '../../services/levelingService.js';
+import { getRpgRealmInfo } from '../../services/rpgService.js';
 import { PET_SPECIES_MAP } from '../../services/socialPetService.js';
 import {
   COLORS,
@@ -55,8 +56,8 @@ export const rankCommand: CommandDefinition = {
     const rpgChar = ctx.repos.rpg.getCharacter(guildCtx.guildId, target.id);
     const netSign = gamblingStats.netProfit >= 0 ? '+' : '';
     const rpgProgress = rpgChar
-      ? `Lv.**${rpgChar.level}**（已通第 **${rpgChar.maxChapterCleared}** 章）`
-      : '尚未踏入地下城';
+      ? `${getRpgRealmInfo(rpgChar.level).fullLabel}（Lv.**${rpgChar.level}** · 破境 ${rpgChar.totalBreakthroughs} 次）`
+      : '尚未踏入勇者殿堂';
 
     const titleBadge = data.profile.equippedTitle ? `「${data.profile.equippedTitle}」 ` : '';
     const displayCardName = data.profile.cardNickname || target.displayName;

@@ -562,6 +562,11 @@ export class WorldEventService {
       return null;
     }
 
+    // Once bound, messages outside eventChannelId neither count toward threshold nor trigger spawns.
+    if (cfg.games.eventChannelId && fallbackChannelId !== cfg.games.eventChannelId) {
+      return null;
+    }
+
     if (this.worldEventRepo.getActiveWorldEvent(guildId)) {
       return null;
     }

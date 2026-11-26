@@ -5,32 +5,44 @@ import {
   StringSelectMenuBuilder,
   StringSelectMenuOptionBuilder,
 } from 'discord.js';
-import type { RpgItem, RpgItemRarity, RpgItemSlot } from '../db/repositories/rpgRepo.js';
+import type { EconomyConfig } from '../config/defaults.js';
+import type {
+  RpgItem,
+  RpgItemRarity,
+  RpgItemSlot,
+  RpgTrial,
+} from '../db/repositories/rpgRepo.js';
 import {
-  FLOORS_PER_CHAPTER,
+  GUARD_ELIXIR_DAILY_LIMIT,
+  GUARD_ELIXIR_PRICE,
   MAX_ENHANCE_LEVEL,
+  MAX_RPG_LEVEL,
+  MAX_TRIAL_PILLS,
+  MAX_TRIAL_SABOTEURS,
+  MAX_TRIAL_SUPPORTERS,
+  PITY_BONUS_PER_FAIL_PCT,
+  PROMO_PILL_BONUS_PCT,
+  PROMO_PILL_DAILY_LIMIT,
+  PROMO_PILL_PRICE,
   RARITY_META,
   RARITY_ORDER,
-  RPG_CHAPTER_MAP,
-  RPG_CHAPTERS,
-  RPG_CLASS_MAP,
   RPG_CLASSES,
-  TABLETOP_CATALOG,
+  RPG_CLASS_MAP,
+  RPG_TIERS,
+  RPG_TIER_MAP,
+  SABOTEUR_PENALTY_PCT,
+  SABOTEUR_POOL_BONUS_PCT,
+  SUPPORTER_BONUS_PCT,
+  computeHealInjuryCost,
   computeItemEffectiveStats,
+  computeTrialEffectiveRate,
   getEnhanceInfo,
+  getRpgRealmInfo,
   getSalvageValue,
   xpNeededForRpgLevel,
   type EffectiveItemStats,
-  type TabletopRollOutcome,
+  type SupporterPayout,
 } from '../services/rpgService.js';
-import { TABLETOP_STAT_META } from '../services/rpgTabletopCatalog.js';
-import {
-  computeChoicePreview,
-  getCreditTierLabel,
-  getCurrentTabletopView,
-  type TabletopChoiceDef,
-  type TabletopChoicePreview,
-} from '../services/rpgTabletopCore.js';
 import { COLORS, renderProgressBar, type AppContext } from './embeds.js';
 import {
   buttonRow,
@@ -59,14 +71,9 @@ export const RPG_RARITY_BADGE: Readonly<Record<RpgItemRarity, { emoji: string; l
 };
 
 const GEAR_SLOTS_ORDER: readonly RpgItemSlot[] = ['weapon', 'armor', 'accessory'];
-const CHOICE_NUM_EMOJIS: readonly string[] = ['1️⃣', '2️⃣', '3️⃣'];
 
 export function formatBpPercent(bp: number): string {
   return `${(bp / 100).toFixed(1).replace(/\.0$/, '')}%`;
-}
-
-export function formatTabletopModifier(mod: number): string {
-  return mod >= 0 ? `+${mod}` : `${mod}`;
 }
 
 export function formatEffectiveStats(stats: EffectiveItemStats): string {
@@ -99,6 +106,15 @@ function formatCompactGearItem(item: RpgItem | undefined): string {
   return `${badge.emoji}${item.name}${enh}`;
 }
 
+function formatIdleDuration(ms: number): string {
+  const totalMinutes = Math.max(0, Math.floor(ms / 60_000));
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours <= 0) return `${minutes} 分钟`;
+  if (minutes <= 0) return `${hours} 小时`;
+  return `${hours} 小时 ${minutes} 分钟`;
+}
+
 function buildClassOnboardingView(
   actor: MenuActor,
   feedback: MenuFeedback | undefined,
@@ -111,7 +127,7 @@ function buildClassOnboardingView(
   );
 
   const description = [
-    '欢迎踏入艾尔登西亚西幻地下城！挑选你的初始职业，即可免费开启 **博德跑团（D20）** 与 **经典回合制** 双模式 **6 大章节** 冒险：',
+    '欢迎踏入艾尔登西亚西幻大陆！挑选你的初始职业，即可免费开启 **十阶九重境** 秘境挂机、每日体力速刷 Boss、炼金秘药与 **60秒全服围观破境** 冒险：',
     '',
     ...classLines,
   ].join('\n');
@@ -119,9 +135,9 @@ function buildClassOnboardingView(
   const embed = new EmbedBuilder()
     .setColor(resolveColor(COLORS.GOLD, feedback))
     .setAuthor({ name: `${actor.displayName} · 冒险者公会登记`, iconURL: actor.avatarUrl })
-    .setTitle('🏰 西幻地下城冒险 · 选择你的初始职业')
+    .setTitle('🏰 西幻秘境冒险 · 选择你的初始职业')
     .setDescription(withFeedback(description, feedback))
-    .setFooter({ text: '首次选择职业完全免费，之后可随时在冒险大厅消耗星币转职' })
+    .setFooter({ text: '首次选择职业完全免费，挂机最高累计 24 小时经验与星币收益' })
     .setTimestamp();
 
   const classButtons = RPG_CLASSES.map((c) =>
@@ -154,115 +170,141 @@ export function buildRpgHomeView(
   const economy = guildCfg.economy;
   const profile = ctx.repos.profile.getOrCreate(guildId, actor.id);
   const stats = ctx.services.rpg.computeCombatStats(guildId, actor.id, nowMs);
-  const attrs = ctx.services.rpg.getTabletopAttributes(guildId, actor.id, nowMs);
-  const creditScore = ctx.services.rpg.getUserCreditScore(guildId, actor.id);
-  const activeTabletopRun = ctx.services.rpg.getActiveTabletopRun(guildId, actor.id);
-  const activeClassicRun = activeTabletopRun
-    ? null
-    : ctx.services.rpg.getActiveRun(guildId, actor.id);
-  const hasActiveRun = Boolean(activeTabletopRun || activeClassicRun);
+  const preview = ctx.services.rpg.previewIdleHarvest(guildId, actor.id, nowMs);
+  const btPreview = ctx.services.rpg.computeBreakthroughPreview(guildId, actor.id, nowMs);
+  const pendingTrial = ctx.services.rpg.getPendingTrialForUser(guildId, actor.id);
   const classDef = RPG_CLASS_MAP.get(character.classKey) ?? RPG_CLASSES[0]!;
   const needXp = xpNeededForRpgLevel(character.level);
   const xpRatio = character.xp / Math.max(1, needXp);
   const potionBuysLeft = Math.max(0, rpgCfg.staminaPotionDailyLimit - character.staminaBuysToday);
+  const healCost = computeHealInjuryCost(character.level);
 
   const lines: string[] = [];
 
-  if (activeTabletopRun) {
-    const chDef = RPG_CHAPTER_MAP.get(activeTabletopRun.chapter);
-    const stageText =
-      activeTabletopRun.bossStage > 0
-        ? `👑 终幕 Boss 阶段 ${activeTabletopRun.bossStage}/2`
-        : `第 **${activeTabletopRun.act}/5** 幕`;
+  if (pendingTrial) {
+    const expSec = Math.floor(pendingTrial.expiresAt / 1000);
     lines.push(
-      `🎲 **进行中的博德跑团**：${chDef?.emoji ?? '🎲'} 第 ${activeTabletopRun.chapter} 章「**${chDef?.name ?? `章节#${activeTabletopRun.chapter}`}**」· ${stageText}`,
-      `> ❤️ HP **${activeTabletopRun.playerHp}/${activeTabletopRun.playerMaxHp}** ｜ 🎒 暂存 ${economy.currencyEmoji} **${activeTabletopRun.pendingCoins.toLocaleString('en-US')}** / 🎁 **${activeTabletopRun.pendingItems.length}** 装 ｜ 🧪 药水×**${activeTabletopRun.potionsLeft}**`,
+      `⚡ **公开破境试炼进行中**：前往 <#${pendingTrial.channelId}> 查看天劫进度（<t:${expSec}:R> 自动结算 · 助威 **${pendingTrial.supporters.length}/${MAX_TRIAL_SUPPORTERS}** · 起哄 **${pendingTrial.saboteurs.length}/${MAX_TRIAL_SABOTEURS}**）`,
       '',
     );
-  } else if (activeClassicRun) {
-    const chDef = RPG_CHAPTER_MAP.get(activeClassicRun.chapter);
+  } else if (preview.atGate && btPreview.targetTierDef) {
     lines.push(
-      `⚔️ **进行中的地下城冒险**：${chDef?.emoji ?? '⚔️'} 第 ${activeClassicRun.chapter} 章「**${chDef?.name ?? `章节#${activeClassicRun.chapter}`}**」· 第 **${activeClassicRun.floor}/${FLOORS_PER_CHAPTER}** 层`,
-      `> ❤️ HP **${activeClassicRun.playerHp}/${activeClassicRun.playerMaxHp}** ｜ 🎒 暂存 ${economy.currencyEmoji} **${activeClassicRun.pendingCoins.toLocaleString('en-US')}** / 🎁 **${activeClassicRun.pendingItems.length}** 装 ｜ 🧪 药水×**${activeClassicRun.potionsLeft}**`,
+      `🔥 **已达当前阶位九重巅峰！** 经验已达瓶颈（**${character.xp}/${needXp} XP**），前往「⚡ 秘药与破境试炼」即可冲击 **${btPreview.targetTierDef.emoji} ${btPreview.targetTierDef.name}**（预计成功率 **${btPreview.totalRatePct}%**）！`,
       '',
     );
   }
 
+  if (preview.isInjuredNow) {
+    const minsLeft = Math.max(1, Math.ceil(preview.injuredRemainingMs / 60_000));
+    lines.push(
+      `🤕 **破境反噬重伤**：挂机收益减半 **0.5x**（剩余约 **${minsLeft}** 分钟 · 立即治愈需 ${economy.currencyEmoji} **${healCost.toLocaleString('en-US')}** ${economy.currencyName}）`,
+      '',
+    );
+  }
+
+  const realmSuffix =
+    character.level >= MAX_RPG_LEVEL
+      ? ' · 👑 已登神座'
+      : preview.atGate
+        ? ' · 🔥 待破境'
+        : '';
+
   lines.push(
-    `${classDef.emoji} **${classDef.name}** · **Lv.${character.level}** \`${renderProgressBar(xpRatio, 8)}\` **${character.xp}/${needXp} XP**`,
-    `⚡ 体力 **${character.stamina}/${rpgCfg.dailyStamina}**（药水 ${economy.currencyEmoji}${rpgCfg.staminaPotionPrice}，余 ${potionBuysLeft}） ｜ 🗺️ 进度 **${character.maxChapterCleared} / ${RPG_CHAPTERS.length}** 章 ｜ 🏆 通关 **${character.totalClears}**`,
-    `${economy.currencyEmoji} 现金 **${profile.coins.toLocaleString('en-US')}** ${economy.currencyName} ｜ ❤️ ${stats.maxHp} · ⚔️ ${stats.atk} · 🛡️ ${stats.def}`,
-    '',
-    `⚔️ 武力 **${formatTabletopModifier(attrs.mightMod)}** ｜ 🔮 奥术 **${formatTabletopModifier(attrs.arcanaMod)}** ｜ 🗡️ 灵巧 **${formatTabletopModifier(attrs.agilityMod)}** ｜ 🛡️ 魅力 **${formatTabletopModifier(attrs.charmMod)}**`,
+    `${classDef.emoji} **${classDef.name}** ｜ **${preview.realm.fullLabel}**（Lv.**${character.level}**/${MAX_RPG_LEVEL}${realmSuffix}）`,
+    `✨ 经验 \`${renderProgressBar(xpRatio, 8)}\` **${character.xp.toLocaleString('en-US')}/${needXp.toLocaleString('en-US')} XP** ｜ 🌟 破境 **${character.totalBreakthroughs}** 次 ｜ 💀 击杀 Boss **${character.totalBossKills}**`,
+    `⚡ 体力 **${character.stamina}/${rpgCfg.dailyStamina}**（药水 ${economy.currencyEmoji}${rpgCfg.staminaPotionPrice.toLocaleString('en-US')}，今日余 ${potionBuysLeft}） ｜ ${economy.currencyEmoji} 余额 **${profile.coins.toLocaleString('en-US')}** ${economy.currencyName}`,
+    `⚔️ 战力：**❤️ ${stats.maxHp}** · **⚔️ ${stats.atk}** · **🛡️ ${stats.def}** · **💥 ${formatBpPercent(stats.critBp)}** ｜ 试炼秘药 **🧪×${character.promoPills}** · 护魂 **🛡️×${character.guardElixirs}**`,
   );
 
-  const bonusTags: string[] = [];
-  if (attrs.creditCharmBonus !== 0) {
-    const creditEmoji = attrs.creditCharmBonus > 0 ? '👑' : '⚠️';
-    bonusTags.push(
-      `${creditEmoji} ${getCreditTierLabel(creditScore)}${formatTabletopModifier(attrs.creditCharmBonus)}`,
-    );
-  }
   if (stats.petSynergy) {
-    bonusTags.push(
-      `🐾 ${stats.petSynergy.emoji}${stats.petSynergy.nickname}+${attrs.petCheckBonus}`,
+    lines.push(
+      `🐾 出战战宠：${stats.petSynergy.emoji} **${stats.petSynergy.nickname}**（Lv.${stats.petSynergy.level}，提供 HP+${stats.petSynergy.bonusHp} / ATK+${stats.petSynergy.bonusAtk} / 破境加成）`,
     );
-  }
-  if (bonusTags.length > 0) {
-    lines.push(`✨ 跑团加成：${bonusTags.join(' · ')}`);
   }
 
-  const weaponEq = stats.equippedItems.find((i) => i.slot === 'weapon');
-  const armorEq = stats.equippedItems.find((i) => i.slot === 'armor');
-  const accessoryEq = stats.equippedItems.find((i) => i.slot === 'accessory');
+  const eqMap = new Map<RpgItemSlot, RpgItem>(stats.equippedItems.map((it) => [it.slot, it]));
   lines.push(
-    `🎒 装备：🗡️ ${formatCompactGearItem(weaponEq)} · 🛡️ ${formatCompactGearItem(armorEq)} · 💍 ${formatCompactGearItem(accessoryEq)}`,
+    `🎒 已装备：🗡️ ${formatCompactGearItem(eqMap.get('weapon'))} ｜ 🛡️ ${formatCompactGearItem(eqMap.get('armor'))} ｜ 💍 ${formatCompactGearItem(eqMap.get('accessory'))}`,
+    '',
+    `⏳ **秘境挂机（${preview.realm.tierDef.zoneEmoji} ${preview.realm.tierDef.zoneName}）**`,
+    `> 累计：**${formatIdleDuration(preview.accruedMs)}**${preview.isCapped ? ' *(已满 24h 上限)*' : ''} ｜ 战力倍率 **${preview.powerMultiplier.toFixed(2)}x**${preview.isInjuredNow ? ' *(重伤 ×0.5)*' : ''}`,
+    `> 预计可领：✨ **~${preview.estimatedXp.toLocaleString('en-US')} XP** ｜ ${economy.currencyEmoji} **~${preview.estimatedCoins.toLocaleString('en-US')}** ${economy.currencyName}${preview.canClaim ? ' ｜ ✅ *已可领取*' : ` ｜ ⏳ *还需 ${preview.waitSeconds} 秒*`}`,
+    '',
+    `${preview.realm.tierDef.bossEmoji} **秘境速刷 Boss：${preview.realm.tierDef.bossName}**`,
+    `> 消耗 **1 体力/次** 即时判定 S/A/B 评级，掉落大量经验、${economy.currencyName}、当前阶位装备与随机秘药！`,
   );
 
   const embed = new EmbedBuilder()
     .setColor(resolveColor(COLORS.PRIMARY, feedback))
-    .setAuthor({ name: `${actor.displayName} · 西幻地下城冒险大厅`, iconURL: actor.avatarUrl })
-    .setTitle(`🏰 ${classDef.emoji} ${classDef.name} · 勇者档案`)
+    .setAuthor({ name: `${actor.displayName} · 西幻秘境冒险大厅`, iconURL: actor.avatarUrl })
+    .setTitle('⚔️ 艾尔登西亚 · 十阶秘境与破境大厅')
     .setDescription(withFeedback(lines.join('\n'), feedback))
-    .setFooter({ text: '首通章节、传说橙装与博德跑团自然20/自然1名场面将触发全服播报！' })
+    .setFooter({
+      text: `共 ${RPG_TIERS.length} 大阶 × 9 重（Lv.1~90）｜ 挂机最多累计 24 小时 ｜ 公开破境仅在 #游戏聊天 发起`,
+    })
     .setTimestamp();
 
-  const row1 = hasActiveRun
-    ? buttonRow(
-        activeTabletopRun
-          ? makeButton('rpg:nav:tabletop_run', '🎲 继续博德跑团', ButtonStyle.Success)
-          : makeButton('rpg:nav:run', '⚔️ 继续经典冒险', ButtonStyle.Success),
-        makeButton('rpg:nav:gear', '🎒 装备与强化', ButtonStyle.Primary),
-        makeButton('rpg:act:buy_stamina', '🧪 体力药水', ButtonStyle.Secondary, potionBuysLeft <= 0),
-        makeButton('rpg:nav:class', '🔄 转职', ButtonStyle.Secondary, true),
-      )
-    : buttonRow(
-        makeButton('rpg:nav:chapters:tabletop', '🎲 博德跑团（推荐）', ButtonStyle.Success),
-        makeButton('rpg:nav:chapters:classic', '⚔️ 经典战斗', ButtonStyle.Primary),
-        makeButton('rpg:nav:gear', '🎒 装备与强化', ButtonStyle.Primary),
-        makeButton('rpg:act:buy_stamina', '🧪 体力药水', ButtonStyle.Secondary, potionBuysLeft <= 0),
-        makeButton('rpg:nav:class', '🔄 转职', ButtonStyle.Secondary),
-      );
+  const row1Buttons = [
+    makeButton(
+      'rpg:act:claim_idle',
+      preview.canClaim ? '🌾 领取挂机收益' : '🌾 挂机蓄力中',
+      ButtonStyle.Success,
+      !preview.canClaim,
+    ),
+    makeButton('rpg:act:raid_one', '⚔️ 速刷Boss (1体)', ButtonStyle.Primary, character.stamina < 1),
+    makeButton(
+      'rpg:act:raid_all',
+      `🔥 扫荡全部 (${character.stamina}体)`,
+      ButtonStyle.Primary,
+      character.stamina < 1,
+    ),
+    makeButton(
+      'rpg:nav:trial',
+      preview.atGate || pendingTrial ? '⚡ 立即破境试炼' : '🧪 秘药与破境',
+      preview.atGate || pendingTrial ? ButtonStyle.Success : ButtonStyle.Secondary,
+    ),
+  ];
 
-  const row2 = buttonRow(
-    makeButton('menu:rank:rpg:1', '🏆 西幻RPG榜', ButtonStyle.Primary),
-    makeButton('rpg:nav:home', '🔄 刷新', ButtonStyle.Secondary),
-    makeButton('menu:nav:home', '🔙 返回主菜单', ButtonStyle.Secondary),
-  );
+  if (preview.isInjuredNow) {
+    row1Buttons.push(
+      makeButton(
+        'rpg:act:heal_injury',
+        `💚 治愈重伤 (${healCost})`,
+        ButtonStyle.Danger,
+      ),
+    );
+  }
 
   return {
     embeds: [embed],
-    components: [row1, row2],
+    components: [
+      buttonRow(...row1Buttons),
+      buttonRow(
+        makeButton('rpg:nav:gear', '🎒 装备管理', ButtonStyle.Secondary),
+        makeButton(
+          'rpg:act:buy_stamina',
+          `🧪 买体力药 (${rpgCfg.staminaPotionPrice})`,
+          ButtonStyle.Secondary,
+          potionBuysLeft === 0,
+        ),
+        makeButton('rpg:nav:class', '🔄 转职', ButtonStyle.Secondary),
+        makeButton('rpg:act:share_profile', '📣 晒出战绩', ButtonStyle.Secondary),
+        makeButton('menu:rank:rpg:1', '🏆 阶位榜', ButtonStyle.Secondary),
+      ),
+      buttonRow(
+        makeButton('rpg:nav:home', '🔄 刷新挂机', ButtonStyle.Secondary),
+        makeButton('menu:nav:home', '🏠 返回主菜单', ButtonStyle.Secondary),
+      ),
+    ],
   };
 }
 
-export function buildRpgChaptersView(
+export function buildRpgTrialView(
   ctx: AppContext,
   guildId: string,
   actor: MenuActor,
   feedback?: MenuFeedback,
   nowMs = Date.now(),
-  mode: 'tabletop' | 'classic' = 'tabletop',
 ): BuiltMenuMessage {
   const character = ctx.services.rpg.getOrCreateCharacter(guildId, actor.id, nowMs);
   if (!character.classSelected) {
@@ -270,433 +312,222 @@ export function buildRpgChaptersView(
   }
 
   const guildCfg = ctx.repos.guildConfig.getOrCreate(guildId);
-  const rpgCfg = ctx.services.rpg.getConfig(guildId);
-  const economy = guildCfg.economy;
-  const activeMode = ctx.services.rpg.getAnyActiveRunMode(guildId, actor.id);
-  const hasActiveRun = activeMode !== null;
-  const maxUnlocked = Math.min(RPG_CHAPTERS.length, character.maxChapterCleared + 1);
-
-  const lines: string[] = [
-    mode === 'tabletop'
-      ? '🎲 **博德跑团模式**：5 幕沉浸剧情 + D20 检定 + 信用/战宠特权 + 双阶段首领（首通 2x 赏金 & +25 信用分）'
-      : '⚔️ **经典战斗模式**：5 层回合制地下城 + 职业技能 + 战宠追击（首通 2x 赏金 & +25 信用分）',
-    `⚡ 体力 **${character.stamina}/${rpgCfg.dailyStamina}**（消耗 1 体力） ｜ 勇者 **Lv.${character.level}**`,
-  ];
-
-  if (hasActiveRun) {
-    lines.push(
-      `> ⚠️ 你已有进行中的${activeMode === 'tabletop' ? '博德跑团' : '经典冒险'}，请先继续或撤退当前进度。`,
-    );
-  }
-
-  lines.push('');
-
-  for (const ch of RPG_CHAPTERS) {
-    const cleared = ch.chapter <= character.maxChapterCleared;
-    const unlocked = ch.chapter <= maxUnlocked;
-    const statusIcon = cleared ? '✅' : unlocked ? '🔓首通2x' : '🔒';
-    const rewardCoins = cleared
-      ? ch.clearBaseCoins
-      : Math.round(ch.clearBaseCoins * ch.firstClearMultiplier);
-    lines.push(
-      `${ch.emoji} **第${ch.chapter}章 ${ch.name}** · ${statusIcon} · Lv.${ch.recommendedLevel} · ${ch.boss.emoji}${ch.boss.name} · ${economy.currencyEmoji}${rewardCoins.toLocaleString('en-US')}`,
-    );
-  }
-
-  const embed = new EmbedBuilder()
-    .setColor(resolveColor(mode === 'tabletop' ? COLORS.FUN : COLORS.GOLD, feedback))
-    .setAuthor({ name: `${actor.displayName} · 地下城世界地图`, iconURL: actor.avatarUrl })
-    .setTitle(mode === 'tabletop' ? '🎲 选择博德跑团章节' : '⚔️ 选择经典战斗章节')
-    .setDescription(withFeedback(lines.join('\n'), feedback))
-    .setFooter({ text: '两种模式共享章节进度、角色等级与装备库；通关后自动解锁下一章' })
-    .setTimestamp();
-
-  const startPrefix = mode === 'tabletop' ? 'rpg:start_tt' : 'rpg:start';
-  const makeChapterButton = (ch: (typeof RPG_CHAPTERS)[number]) => {
-    const unlocked = ch.chapter <= maxUnlocked;
-    const cleared = ch.chapter <= character.maxChapterCleared;
-    const style = !unlocked
-      ? ButtonStyle.Secondary
-      : cleared
-        ? ButtonStyle.Primary
-        : ButtonStyle.Success;
-    const prefix = unlocked ? ch.emoji : '🔒';
-    return makeButton(
-      `${startPrefix}:${ch.chapter}`,
-      `${prefix} 第${ch.chapter}章 ${ch.name}`,
-      style,
-      !unlocked || hasActiveRun,
-    );
-  };
-
-  const row1 = buttonRow(...RPG_CHAPTERS.slice(0, 3).map(makeChapterButton));
-  const row2 = buttonRow(...RPG_CHAPTERS.slice(3, 6).map(makeChapterButton));
-
-  const navButtons = [
-    ...(activeMode === 'tabletop'
-      ? [makeButton('rpg:nav:tabletop_run', '🎲 继续跑团', ButtonStyle.Success)]
-      : activeMode === 'classic'
-        ? [makeButton('rpg:nav:run', '⚔️ 继续战斗', ButtonStyle.Success)]
-        : []),
-    mode === 'tabletop'
-      ? makeButton('rpg:nav:chapters:classic', '⚔️ 切换经典战斗', ButtonStyle.Primary)
-      : makeButton('rpg:nav:chapters:tabletop', '🎲 切换博德跑团', ButtonStyle.Success),
-    makeButton('rpg:act:buy_stamina', '🧪 买体力药水', ButtonStyle.Secondary),
-    makeButton('rpg:nav:home', '🔙 返回大厅', ButtonStyle.Secondary),
-  ];
-
-  return {
-    embeds: [embed],
-    components: [row1, row2, buttonRow(...navButtons)],
-  };
-}
-
-function formatOutcomeBlockquote(
-  outcome: TabletopRollOutcome,
-  currencyEmoji: string,
-  currencyName: string,
-): string[] {
-  const modStr = formatTabletopModifier(outcome.modifier);
-  let header: string;
-  if (outcome.outcome === 'crit_success') {
-    header = `> 🌟 **自然20大成功！** D20(**20**)${modStr} vs DC ${outcome.dc ?? '-'} ·「${outcome.choiceLabel}」`;
-  } else if (outcome.outcome === 'crit_fail') {
-    header = `> 💀 **自然1大失败！** D20(**1**)${modStr} vs DC ${outcome.dc ?? '-'} ·「${outcome.choiceLabel}」`;
-  } else if (outcome.outcome === 'auto') {
-    header = outcome.stat
-      ? `> 👑 **金卡刷脸 · 免检通过**「${outcome.choiceLabel}」`
-      : `> 💰 **金币开道 · 免检通过**「${outcome.choiceLabel}」`;
-  } else if (outcome.outcome === 'success') {
-    header = `> 🎲 **D20 检定成功**（掷出 **${outcome.rolled}**${modStr} = **${outcome.total}** ≥ DC ${outcome.dc ?? '-'}）·「${outcome.choiceLabel}」`;
-  } else {
-    header = `> 🎲 **D20 检定失利**（掷出 **${outcome.rolled}**${modStr} = **${outcome.total}** < DC ${outcome.dc ?? '-'}）·「${outcome.choiceLabel}」`;
-  }
-
-  const block: string[] = [header, `> ${outcome.narrative}`];
-  if (outcome.petLine) {
-    block.push(`> ${outcome.petLine}`);
-  }
-
-  const deltas: string[] = [];
-  if (outcome.coinsDelta > 0) {
-    deltas.push(`${currencyEmoji} +${outcome.coinsDelta.toLocaleString('en-US')} ${currencyName}`);
-  } else if (outcome.coinsDelta < 0) {
-    deltas.push(`${currencyEmoji} ${outcome.coinsDelta.toLocaleString('en-US')} ${currencyName}`);
-  }
-  if (outcome.xpDelta > 0) {
-    deltas.push(`✨ +${outcome.xpDelta} XP`);
-  }
-  if (outcome.hpDelta > 0) {
-    deltas.push(`💚 +${outcome.hpDelta} HP`);
-  } else if (outcome.hpDelta < 0) {
-    deltas.push(`❤️ ${outcome.hpDelta} HP`);
-  }
-  if (outcome.itemDroppedLabel) {
-    deltas.push(`🎁 ${outcome.itemDroppedLabel}`);
-  }
-  if (deltas.length > 0) {
-    block.push(`> ${deltas.join(' · ')}`);
-  }
-
-  return block;
-}
-
-function formatChoiceLine(
-  index: number,
-  choice: TabletopChoiceDef,
-  preview: TabletopChoicePreview,
-): string {
-  const numEmoji = CHOICE_NUM_EMOJIS[index] ?? `${index + 1}.`;
-  let tag: string;
-  if (preview.creditPerkActive && preview.autoSuccess) {
-    tag = `【👑 ${preview.creditPerkTag ?? '金卡刷脸'} 100%】`;
-  } else if (preview.autoSuccess && preview.coinCost > 0) {
-    const affordNote = preview.canAfford ? '必过' : '余额不足';
-    tag = `【💰 贿赂 -${preview.coinCost.toLocaleString('en-US')} · ${affordNote}】`;
-  } else if (preview.autoSuccess) {
-    tag = '【✨ 必过 100%】';
-  } else {
-    const meta = TABLETOP_STAT_META[preview.stat ?? 'might'];
-    const extras: string[] = [];
-    if (preview.creditPerkTag) extras.push(preview.creditPerkTag);
-    if (choice.requiredClass) extras.push('职业专属');
-    if (choice.weakenBoss) extras.push('破防');
-    const suffix = extras.length > 0 ? ` · ${extras.join('/')}` : '';
-    tag = `【${meta.emoji} ${meta.label} ${preview.successChancePct}%${suffix}】`;
-  }
-
-  return `${numEmoji} ${tag} **${choice.label}** — ${choice.detail}`;
-}
-
-function buildChoiceButton(
-  index: number,
-  choice: TabletopChoiceDef,
-  preview: TabletopChoicePreview,
-) {
-  let label: string;
-  let style: ButtonStyle;
-  if (preview.creditPerkActive && preview.autoSuccess) {
-    label = `👑 ${choice.label} (100%)`;
-    style = ButtonStyle.Success;
-  } else if (preview.autoSuccess && preview.coinCost > 0) {
-    label = preview.canAfford
-      ? `💰 ${choice.label} (-${preview.coinCost.toLocaleString('en-US')})`
-      : `💰 ${choice.label} (币不足)`;
-    style = preview.canAfford ? ButtonStyle.Success : ButtonStyle.Secondary;
-  } else if (preview.autoSuccess) {
-    label = `✨ ${choice.label} (100%)`;
-    style = ButtonStyle.Success;
-  } else {
-    const meta = TABLETOP_STAT_META[preview.stat ?? 'might'];
-    label = `${meta.emoji} ${choice.label} (${preview.successChancePct}%)`;
-    style =
-      choice.requiredClass || choice.weakenBoss || index === 0
-        ? ButtonStyle.Primary
-        : ButtonStyle.Secondary;
-  }
-
-  return makeButton(`rpg:tt_choice:${choice.id}`, truncateText(label, 80), style);
-}
-
-export function buildRpgTabletopRunView(
-  ctx: AppContext,
-  guildId: string,
-  actor: MenuActor,
-  feedback?: MenuFeedback,
-  nowMs = Date.now(),
-): BuiltMenuMessage {
-  const run = ctx.services.rpg.getActiveTabletopRun(guildId, actor.id);
-  if (!run) {
-    return buildRpgHomeView(ctx, guildId, actor, feedback, nowMs);
-  }
-
-  const currentView = getCurrentTabletopView(run, TABLETOP_CATALOG);
-  if (!currentView) {
-    return buildRpgHomeView(ctx, guildId, actor, feedback, nowMs);
-  }
-
-  const guildCfg = ctx.repos.guildConfig.getOrCreate(guildId);
   const economy = guildCfg.economy;
   const profile = ctx.repos.profile.getOrCreate(guildId, actor.id);
-  const chapterDef = RPG_CHAPTER_MAP.get(run.chapter);
+  const btPreview = ctx.services.rpg.computeBreakthroughPreview(guildId, actor.id, nowMs);
+  const pendingTrial = ctx.services.rpg.getPendingTrialForUser(guildId, actor.id);
+  const pillBuysLeft = Math.max(0, PROMO_PILL_DAILY_LIMIT - character.pillBuysToday);
+  const elixirBuysLeft = Math.max(0, GUARD_ELIXIR_DAILY_LIMIT - character.elixirBuysToday);
 
-  const lines: string[] = [];
+  const lines: string[] = [
+    `🏅 当前境界：**${btPreview.fromRealm.fullLabel}**（Lv.${character.level}） → 冲击目标：${
+      btPreview.targetTierDef
+        ? `**${btPreview.targetTierDef.emoji} ${btPreview.targetTierDef.name}·一重**`
+        : '👑 **已达最高神座阶**'
+    }`,
+    `${economy.currencyEmoji} 口袋余额：**${profile.coins.toLocaleString('en-US')}** ${economy.currencyName} ｜ ✨ 突破经验：**${btPreview.currentXp.toLocaleString('en-US')} / ${btPreview.needXp.toLocaleString('en-US')} XP**（${
+      btPreview.atMaxTier
+        ? '已满阶'
+        : btPreview.eligible
+          ? '✅ 已达破境门槛'
+          : '⏳ 需当前阶九重经验满额'
+    }）`,
+  ];
 
-  if (run.lastOutcome) {
+  if (pendingTrial) {
+    const expSec = Math.floor(pendingTrial.expiresAt / 1000);
     lines.push(
-      ...formatOutcomeBlockquote(run.lastOutcome, economy.currencyEmoji, economy.currencyName),
       '',
+      `🔥 **公开试炼进行中**：已在 <#${pendingTrial.channelId}> 发起渡劫，截止 <t:${expSec}:R>（助威 ${pendingTrial.supporters.length}/${MAX_TRIAL_SUPPORTERS} ｜ 起哄 ${pendingTrial.saboteurs.length}/${MAX_TRIAL_SABOTEURS}），请在试炼卡片中等待天劫或提前引动！`,
     );
   }
 
-  const sceneHeader =
-    run.bossStage > 0
-      ? `👑 **终幕 Boss（阶段 ${run.bossStage}/2）· ${currentView.title}**${run.bossStage === 2 && run.bossWeakened ? ' *(已破防 DC-3)*' : ''}`
-      : `${currentView.emoji} **第 ${run.act}/5 幕 · ${currentView.title}**`;
-
-  lines.push(sceneHeader, '', currentView.narrative, '');
-
-  const previews = currentView.choices.map((choice) =>
-    computeChoicePreview({
-      choice,
-      attrs: run.attrs,
-      creditScore: run.creditScore,
-      pocketCoins: profile.coins,
-      chapter: run.chapter,
-      bossStage: run.bossStage,
-      bossWeakened: run.bossWeakened,
-    }),
-  );
-
-  currentView.choices.forEach((choice, idx) => {
-    lines.push(formatChoiceLine(idx, choice, previews[idx]!));
-  });
+  if (!btPreview.atMaxTier) {
+    const creditSign = btPreview.creditBonusPct >= 0 ? '+' : '';
+    lines.push(
+      '',
+      '📊 **破境成功率明细（综合上限 5%~95%）**',
+      `• 阶位基础率：**${btPreview.baseRatePct}%**`,
+      `• 晋升秘药：**+${btPreview.pillBonusPct}%**（上阵 **${btPreview.pillsUsed}/${MAX_TRIAL_PILLS}** 颗，每颗 +${PROMO_PILL_BONUS_PCT}%）`,
+      `• 战宠协同：**+${btPreview.petBonusPct}%**（${btPreview.petName ? `🐾 ${btPreview.petName}` : '未出战宠物'}）`,
+      `• 信用分影响：**${creditSign}${btPreview.creditBonusPct}%**（当前信用分 ${btPreview.creditScore}）`,
+      `• 连败保底：**+${btPreview.pityBonusPct}%**（已累计失败 ${character.breakthroughPity} 次，每次 +${PITY_BONUS_PER_FAIL_PCT}%）`,
+      `• 🎯 **预计单人成功率：${btPreview.totalRatePct}%**`,
+      `• 🛡️ 护魂圣水配置：**${btPreview.usedGuard ? '已开启' : '未开启'}**（${
+        btPreview.usedGuard
+          ? '失败仅扣 10% 经验且免疫 1 小时重伤'
+          : '未开启时失败扣 40% 经验并重伤 1 小时（挂机 0.5x）'
+      }）`,
+    );
+  }
 
   lines.push(
     '',
-    `❤️ HP **${run.playerHp}/${run.playerMaxHp}** ｜ 🎒 暂存 **${run.pendingCoins.toLocaleString('en-US')}** 币 / **${run.pendingItems.length}** 装 ｜ 🧪 药水×**${run.potionsLeft}**`,
+    '⚗️ **秘药工坊（每天刷新限购）**',
+    `• 🧪 **晋升秘药**：库存 **${character.promoPills}** 颗 ｜ 单价 ${economy.currencyEmoji} **${PROMO_PILL_PRICE.toLocaleString('en-US')}** ｜ 今日限购余 **${pillBuysLeft}/${PROMO_PILL_DAILY_LIMIT}**`,
+    `• 🛡️ **护魂圣水**：库存 **${character.guardElixirs}** 瓶 ｜ 单价 ${economy.currencyEmoji} **${GUARD_ELIXIR_PRICE.toLocaleString('en-US')}** ｜ 今日限购余 **${elixirBuysLeft}/${GUARD_ELIXIR_DAILY_LIMIT}**`,
+    '',
+    '📣 **60秒公开渡劫规则（#游戏聊天）**：',
+    `> • 助威（≤${MAX_TRIAL_SUPPORTERS}人）：每人成功率 **+${SUPPORTER_BONUS_PCT}%**，破境成功每人获赠 **${(btPreview.targetTierDef?.tier ?? 2) * 600}** 喜糖 ${economy.currencyName}！`,
+    `> • 起哄（≤${MAX_TRIAL_SABOTEURS}人）：每人成功率 **-${SABOTEUR_PENALTY_PCT}%**，但破境成功总奖池额外 **+${SABOTEUR_POOL_BONUS_PCT}%**！`,
   );
-
-  const embedColor =
-    run.bossStage > 0
-      ? COLORS.ERROR
-      : run.lastOutcome?.outcome === 'crit_success'
-        ? COLORS.GOLD
-        : run.lastOutcome?.outcome === 'crit_fail'
-          ? COLORS.ERROR
-          : COLORS.FUN;
 
   const embed = new EmbedBuilder()
-    .setColor(resolveColor(embedColor, feedback))
-    .setAuthor({
-      name: `${actor.displayName} · 博德跑团中`,
-      iconURL: actor.avatarUrl,
-    })
-    .setTitle(
-      `${chapterDef?.emoji ?? '🎲'} 第 ${run.chapter} 章「${chapterDef?.name ?? `章节#${run.chapter}`}」`,
-    )
+    .setColor(resolveColor(COLORS.GOLD, feedback))
+    .setAuthor({ name: `${actor.displayName} · 炼金工坊与破境试炼`, iconURL: actor.avatarUrl })
+    .setTitle('⚡ 炼金秘药工坊 & 十阶破境试炼')
     .setDescription(withFeedback(lines.join('\n'), feedback))
-    .setFooter({ text: '掷出 20 战利品翻倍全服高光 ｜ 掷出 1 触发社死反噬 ｜ 随时可撤退保底' })
+    .setFooter({ text: '发起破境时将消耗已上阵的晋升秘药与护魂圣水；连败每次提供 +10% 永久保底直至成功' })
     .setTimestamp();
 
-  const choiceButtons = currentView.choices.map((choice, idx) =>
-    buildChoiceButton(idx, choice, previews[idx]!),
-  );
-
-  const actionRow2 = buttonRow(
-    makeButton(
-      'rpg:tt_act:potion',
-      `🧪 喝药 (余${run.potionsLeft})`,
-      ButtonStyle.Secondary,
-      run.potionsLeft <= 0 || run.playerHp >= run.playerMaxHp,
-    ),
-    makeButton('rpg:tt_share', '📢 晒出名场面', ButtonStyle.Primary),
-    makeButton('rpg:tt_act:retreat', '🏃 撤退保底', ButtonStyle.Danger),
-    makeButton('rpg:nav:home', '🏰 暂离大厅', ButtonStyle.Secondary),
-  );
-
-  const components: MenuComponentRow[] = [];
-  if (choiceButtons.length > 0) {
-    components.push(buttonRow(...choiceButtons));
-  }
-  components.push(actionRow2);
+  const locked = Boolean(pendingTrial);
 
   return {
     embeds: [embed],
-    components,
+    components: [
+      buttonRow(
+        makeButton(
+          'rpg:alchemy:buy_pill',
+          `🧪 买秘药 (${PROMO_PILL_PRICE})`,
+          ButtonStyle.Primary,
+          pillBuysLeft === 0,
+        ),
+        makeButton(
+          'rpg:alchemy:buy_elixir',
+          `🛡️ 买护魂 (${GUARD_ELIXIR_PRICE})`,
+          ButtonStyle.Primary,
+          elixirBuysLeft === 0,
+        ),
+        makeButton(
+          'rpg:trial:cycle_pills',
+          `💊 上阵秘药 (${btPreview.pillsUsed}/${MAX_TRIAL_PILLS})`,
+          ButtonStyle.Secondary,
+          locked || (character.promoPills === 0 && btPreview.pillsUsed === 0),
+        ),
+        makeButton(
+          'rpg:trial:toggle_guard',
+          `🛡️ 护魂: ${btPreview.usedGuard ? '已开' : '关'}`,
+          btPreview.usedGuard ? ButtonStyle.Success : ButtonStyle.Secondary,
+          locked || (character.guardElixirs === 0 && !btPreview.usedGuard),
+        ),
+      ),
+      buttonRow(
+        makeButton(
+          'rpg:trial:solo',
+          '⚡ 单人立即破境',
+          ButtonStyle.Primary,
+          !btPreview.eligible || btPreview.hasPendingTrial || btPreview.atMaxTier,
+        ),
+        makeButton(
+          'rpg:trial:public',
+          '📣 发起60秒公开渡劫',
+          ButtonStyle.Success,
+          !btPreview.eligible || btPreview.hasPendingTrial || btPreview.atMaxTier,
+        ),
+      ),
+      buttonRow(
+        makeButton('rpg:nav:home', '🔙 返回冒险大厅', ButtonStyle.Secondary),
+        makeButton('rpg:nav:gear', '🎒 装备管理', ButtonStyle.Secondary),
+      ),
+    ],
   };
 }
 
-export function buildRpgRunView(
-  ctx: AppContext,
-  guildId: string,
-  actor: MenuActor,
-  feedback?: MenuFeedback,
-  nowMs = Date.now(),
+export function buildPublicTrialCard(
+  trial: RpgTrial,
+  economy: EconomyConfig,
+  supporterPayouts?: readonly SupporterPayout[],
+  _nowMs = Date.now(),
 ): BuiltMenuMessage {
-  const run = ctx.services.rpg.getActiveRun(guildId, actor.id);
-  if (!run) {
-    return buildRpgHomeView(ctx, guildId, actor, feedback, nowMs);
-  }
+  const fromRealm = getRpgRealmInfo(trial.fromLevel);
+  const toTier = RPG_TIER_MAP.get(trial.targetTier);
+  const targetLabel = toTier ? `${toTier.emoji} ${toTier.name}·一重` : `第 ${trial.targetTier} 阶`;
+  const effectiveRate = computeTrialEffectiveRate(
+    trial.baseChanceBp,
+    trial.supporters.length,
+    trial.saboteurs.length,
+  );
+  const basePct = Math.round(trial.baseChanceBp / 100);
+  const candyPool = trial.targetTier * 600;
+  const expSec = Math.floor(trial.expiresAt / 1000);
 
-  const guildCfg = ctx.repos.guildConfig.getOrCreate(guildId);
-  const economy = guildCfg.economy;
-  const chapterDef = RPG_CHAPTER_MAP.get(run.chapter);
-  const classDef = RPG_CLASS_MAP.get(run.classKey) ?? RPG_CLASSES[0]!;
-  const hpRatio = run.playerHp / Math.max(1, run.playerMaxHp);
+  const supporterList =
+    trial.supporters.length > 0 ? trial.supporters.map((u) => `<@${u}>`).join('、') : '暂无（快来助威！）';
+  const saboteurList =
+    trial.saboteurs.length > 0 ? trial.saboteurs.map((u) => `<@${u}>`).join('、') : '暂无';
+
+  const statusHeading =
+    trial.status === 'pending'
+      ? '🌩️ 天劫正在凝聚中！全服围观助威或起哄加奖'
+      : trial.status === 'succeeded'
+        ? '🎉 破境成功 · 金榜题名！'
+        : trial.status === 'failed'
+          ? '💥 渡劫失败 · 灵力反噬'
+          : '⚪ 试炼已取消';
+
+  const color =
+    trial.status === 'succeeded'
+      ? COLORS.SUCCESS
+      : trial.status === 'failed'
+        ? COLORS.ERROR
+        : trial.status === 'cancelled'
+          ? COLORS.PRIMARY
+          : COLORS.GOLD;
 
   const lines: string[] = [
-    `❤️ **勇者 HP**：\`${renderProgressBar(hpRatio, 10)}\` **${run.playerHp}/${run.playerMaxHp}**`,
-    `${classDef.emoji} ${classDef.name} ｜ ✨ ${classDef.skillName}：${run.skillCooldown > 0 ? `CD ${run.skillCooldown}` : '✅就绪'} ｜ 🧪 药水×${run.potionsLeft}${run.petSynergy ? ` ｜ ${run.petSynergy.emoji}${run.petSynergy.nickname}` : ''}`,
-    `🎒 暂存：${economy.currencyEmoji} **${run.pendingCoins.toLocaleString('en-US')}** ｜ ✨ **${run.pendingXp}** XP ｜ 🎁 **${run.pendingItems.length}** 装`,
-    '',
+    `⚔️ 渡劫勇者：<@${trial.userId}>`,
+    `🏅 冲击境界：**${fromRealm.fullLabel}** → **${targetLabel}**`,
+    `🎯 当前成功率：**${effectiveRate}%**（个人底率 ${basePct}% ｜ 助威 +${trial.supporters.length * SUPPORTER_BONUS_PCT}% ｜ 起哄 -${trial.saboteurs.length * SABOTEUR_PENALTY_PCT}%）`,
+    `⚗️ 已投入：🧪 晋升秘药 **${trial.pillsUsed}** 颗 ｜ 🛡️ 护魂圣水：**${trial.usedGuard ? '✅ 已防护' : '未开启'}**`,
+    `🙏 助威团（${trial.supporters.length}/${MAX_TRIAL_SUPPORTERS} · 成功每人获赠 ${economy.currencyEmoji} **${candyPool.toLocaleString('en-US')}** 喜糖）：${supporterList}`,
+    `😈 起哄团（${trial.saboteurs.length}/${MAX_TRIAL_SABOTEURS} · 每人 +${SABOTEUR_POOL_BONUS_PCT}% 成功赏金池）：${saboteurList}`,
   ];
 
-  const components: MenuComponentRow[] = [];
-
-  if (run.phase === 'combat' && run.enemy) {
-    const enemy = run.enemy;
-    const enemyRatio = enemy.hp / Math.max(1, enemy.maxHp);
-    const kindLabel =
-      enemy.kind === 'boss'
-        ? '👑 首领'
-        : enemy.kind === 'elite'
-          ? '💀 精英'
-          : '👹 魔物';
-    const debuffs: string[] = [];
-    if (enemy.armorBreakTurns > 0) debuffs.push(`破甲(${enemy.armorBreakTurns})`);
-    if (enemy.burnTurns > 0) debuffs.push(`灼烧(${enemy.burnTurns})`);
-
-    lines.push(
-      `🩸 **${kindLabel} ${enemy.emoji} ${enemy.name}**：\`${renderProgressBar(enemyRatio, 10)}\` **${enemy.hp}/${enemy.maxHp}**${debuffs.length > 0 ? ` · ${debuffs.join(' ')}` : ''}`,
-    );
-
-    const skillLabel =
-      run.skillCooldown > 0
-        ? `✨ ${classDef.skillName}(CD${run.skillCooldown})`
-        : '✨ 职业技能';
-
-    components.push(
-      buttonRow(
-        makeButton('rpg:act:attack', '⚔️ 普攻', ButtonStyle.Primary),
-        makeButton('rpg:act:skill', skillLabel, ButtonStyle.Success, run.skillCooldown > 0),
-        makeButton('rpg:act:defend', '🛡️ 防御', ButtonStyle.Secondary),
-        makeButton(
-          'rpg:act:potion',
-          `🧪 喝药 (余${run.potionsLeft})`,
-          ButtonStyle.Secondary,
-          run.potionsLeft <= 0,
-        ),
-        makeButton('rpg:act:retreat', '🏃 撤退保底', ButtonStyle.Danger),
-      ),
-    );
-  } else if (run.phase === 'event' && run.event) {
-    const ev = run.event;
-    lines.push(
-      `**✨ 地下城奇遇：${ev.title}**`,
-      ev.description,
-      `• 🅰️ ${ev.optionALabel}`,
-      `• 🅱️ ${ev.optionBLabel}`,
-    );
-
-    components.push(
-      buttonRow(
-        makeButton('rpg:act:event_a', '🅰️ 选项A', ButtonStyle.Primary),
-        makeButton('rpg:act:event_b', '🅱️ 选项B', ButtonStyle.Success),
-        makeButton('rpg:act:retreat', '🏃 撤退保底', ButtonStyle.Danger),
-      ),
-    );
-  } else {
-    lines.push(
-      `**✅ 第 ${run.floor} 层已清空！**`,
-      `可深入第 **${Math.min(FLOORS_PER_CHAPTER, run.floor + 1)}** 层或见好就收带走暂存战利品。`,
-    );
-
-    components.push(
-      buttonRow(
-        makeButton('rpg:act:next_floor', '➡️ 前往下一层', ButtonStyle.Success),
-        makeButton(
-          'rpg:act:potion',
-          `🧪 喝药 (余${run.potionsLeft})`,
-          ButtonStyle.Secondary,
-          run.potionsLeft <= 0 || run.playerHp >= run.playerMaxHp,
-        ),
-        makeButton('rpg:act:retreat', '🏃 撤退保底', ButtonStyle.Danger),
-      ),
-    );
+  if (trial.status === 'pending') {
+    lines.push(`⏱️ 倒计时：将在 <t:${expSec}:R> 自动结算（本人可点击下方按钮立刻引动天劫）`);
+  } else if (trial.resultSummary) {
+    lines.push('', `📜 **试炼结果**：${trial.resultSummary}`);
   }
 
-  components.push(
-    buttonRow(makeButton('rpg:nav:home', '🏰 暂离大厅（保留进度）', ButtonStyle.Secondary)),
-  );
-
-  const recentLogs = run.logs.slice(-4);
-  if (recentLogs.length > 0) {
-    lines.push('', '**📜 战报**', ...recentLogs.map((l) => `• ${l}`));
+  if (supporterPayouts && supporterPayouts.length > 0) {
+    const payoutTags = supporterPayouts.map((p) => `<@${p.userId}> +${p.amount}`).join('、');
+    lines.push(`🍬 **助威喜糖发放**：${payoutTags}`);
   }
-
-  const embedColor =
-    run.phase === 'combat' && run.enemy?.kind === 'boss'
-      ? COLORS.ERROR
-      : run.phase === 'event'
-        ? COLORS.FUN
-        : run.phase === 'floor_clear'
-          ? COLORS.SUCCESS
-          : COLORS.PRIMARY;
 
   const embed = new EmbedBuilder()
-    .setColor(resolveColor(embedColor, feedback))
-    .setAuthor({ name: `${actor.displayName} · 经典地下城探险中`, iconURL: actor.avatarUrl })
-    .setTitle(
-      `${chapterDef?.emoji ?? '⚔️'} 第 ${run.chapter} 章「${chapterDef?.name ?? `章节#${run.chapter}`}」 · 第 ${run.floor}/${FLOORS_PER_CHAPTER} 层`,
-    )
-    .setDescription(withFeedback(lines.join('\n'), feedback))
-    .setFooter({ text: '⚠️ 战败将遗失本局暂存战利品；随时可点击撤退安全带出！' })
-    .setTimestamp();
+    .setColor(color)
+    .setTitle(`⚡ 全服破境试炼 #${trial.id} — ${statusHeading}`)
+    .setDescription(lines.join('\n'))
+    .setFooter({ text: `试炼仅在 #游戏聊天 举办 · 每名围观玩家仅可选择助威或起哄一次` })
+    .setTimestamp(trial.resolvedAt ?? trial.createdAt);
+
+  if (trial.status !== 'pending') {
+    return { embeds: [embed], components: [] };
+  }
 
   return {
     embeds: [embed],
-    components,
+    components: [
+      buttonRow(
+        makeButton(
+          `rpg:trial_help:${trial.id}`,
+          `🙏 助威加运 (${trial.supporters.length}/${MAX_TRIAL_SUPPORTERS})`,
+          ButtonStyle.Success,
+          trial.supporters.length >= MAX_TRIAL_SUPPORTERS,
+        ),
+        makeButton(
+          `rpg:trial_jeer:${trial.id}`,
+          `😈 起哄加奖 (${trial.saboteurs.length}/${MAX_TRIAL_SABOTEURS})`,
+          ButtonStyle.Danger,
+          trial.saboteurs.length >= MAX_TRIAL_SABOTEURS,
+        ),
+        makeButton(
+          `rpg:trial_settle:${trial.id}`,
+          '⚡ 立刻引动天劫',
+          ButtonStyle.Primary,
+        ),
+      ),
+    ],
   };
 }
 
@@ -835,10 +666,10 @@ export function buildRpgGearView(
       ),
     );
   } else {
-    lines.push('', '📭 你的装备背包还是空的！快去开启博德跑团或经典战斗收集装备吧！');
+    lines.push('', '📭 你的装备背包还是空的！快去领取挂机或速刷秘境 Boss 收集装备吧！');
     components.push(
       buttonRow(
-        makeButton('rpg:nav:chapters:tabletop', '🎲 开启博德跑团', ButtonStyle.Success),
+        makeButton('rpg:act:raid_one', '⚔️ 速刷Boss (1体)', ButtonStyle.Success),
         makeButton('rpg:nav:home', '🔙 返回冒险大厅', ButtonStyle.Secondary),
       ),
     );
@@ -870,7 +701,7 @@ export function buildRpgClassSwitchView(
   const rpgCfg = ctx.services.rpg.getConfig(guildId);
   const economy = guildCfg.economy;
   const profile = ctx.repos.profile.getOrCreate(guildId, actor.id);
-  const hasActiveRun = ctx.services.rpg.getAnyActiveRunMode(guildId, actor.id) !== null;
+  const hasPendingTrial = ctx.services.rpg.getPendingTrialForUser(guildId, actor.id) !== null;
   const currentClass = RPG_CLASS_MAP.get(character.classKey) ?? RPG_CLASSES[0]!;
   const switchCost = character.classSelected ? rpgCfg.classSwitchCost : 0;
 
@@ -884,13 +715,13 @@ export function buildRpgClassSwitchView(
 
   const lines: string[] = [
     character.classSelected
-      ? `👤 当前职业：**${currentClass.emoji} ${currentClass.name}**（Lv.${character.level}）`
+      ? `👤 当前职业：**${currentClass.emoji} ${currentClass.name}**（${getRpgRealmInfo(character.level).fullLabel}）`
       : '👤 当前职业：尚未选职（首次选职免费）',
     `💰 转职费用：${economy.currencyEmoji} **${switchCost}** ${economy.currencyName} ｜ 口袋余额：**${profile.coins}** ${economy.currencyName}`,
   ];
 
-  if (hasActiveRun) {
-    lines.push('> ⚠️ 当前正处于冒险中，需完成或撤退本局后才可转职。');
+  if (hasPendingTrial) {
+    lines.push('> ⚠️ 当前有进行中的公开破境试炼，需结算后才可转职。');
   }
 
   lines.push('', ...classCards);
@@ -900,7 +731,7 @@ export function buildRpgClassSwitchView(
     .setAuthor({ name: `${actor.displayName} · 职业圣殿`, iconURL: actor.avatarUrl })
     .setTitle('🔄 西幻职业转职大厅')
     .setDescription(withFeedback(lines.join('\n'), feedback))
-    .setFooter({ text: '转职后保留勇者等级、经验、章节进度与全部装备' })
+    .setFooter({ text: '转职后保留勇者阶位、经验、秘药库存与全部装备' })
     .setTimestamp();
 
   const classButtons = RPG_CLASSES.map((c) => {
@@ -909,7 +740,7 @@ export function buildRpgClassSwitchView(
       `rpg:pick_class:${c.key}`,
       isCurrent ? `${c.emoji} ${c.name} (当前)` : `${c.emoji} 转职 ${c.name}`,
       isCurrent ? ButtonStyle.Success : ButtonStyle.Primary,
-      isCurrent || hasActiveRun,
+      isCurrent || hasPendingTrial,
     );
   });
 

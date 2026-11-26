@@ -10,6 +10,7 @@ import {
 } from 'discord.js';
 import type { ModuleKey } from '../../config/defaults.js';
 import type { LeaderboardType } from '../../services/levelingService.js';
+import { getRpgRealmInfo } from '../../services/rpgService.js';
 import { COLORS, type AppContext, type CommandDefinition } from '../../ui/embeds.js';
 import { applyZh } from '../../ui/localization.js';
 import { requireGuildMember, requireModuleEnabled } from '../guards.js';
@@ -73,7 +74,7 @@ export function buildLeaderboardMessage(
     hustle: '🍑 服务器卖屁股营收榜',
     gambling_profit: '🎰 服务器赌神盈利榜',
     gambling_loss: '🪦 服务器冤大头亏损榜',
-    rpg: '⚔️ 服务器西幻RPG地牢榜',
+    rpg: '⚔️ 服务器西幻 RPG 勇者阶位榜',
   };
 
   const lines = res.items.map((item, idx) => {
@@ -105,7 +106,8 @@ export function buildLeaderboardMessage(
       return `${medal} <@${item.userId}> — 🎰 净盈亏 **${sign}${item.primaryValue.toLocaleString()}** ${cfg.economy.currencyName}（总赢 +${won} / 总亏 -${lost} · ${item.secondaryValue} 局）`;
     }
     if (type === 'rpg') {
-      return `${medal} <@${item.userId}> — ⚔️ 已通第 **${item.primaryValue}** 章（Lv.${item.secondaryValue}）`;
+      const realm = getRpgRealmInfo(item.primaryValue);
+      return `${medal} <@${item.userId}> — ${realm.fullLabel}（Lv.${item.primaryValue} · 破境 ${item.secondaryValue} 次）`;
     }
     return `${medal} <@${item.userId}> — 成功邀请 **${item.primaryValue}** 人`;
   });

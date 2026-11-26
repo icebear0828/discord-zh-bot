@@ -1228,7 +1228,7 @@ export async function tryHandleConfigMenuChannelSelect(
         type: 'success',
         text: channelId
           ? `已将世界事件指定频道设为 <#${channelId}>。`
-          : '已清空世界事件指定频道，将在当前活跃频道自动刷出。',
+          : '已清空世界事件指定频道，将自动锁定 #游戏聊天（未找到则暂停刷出）。',
       },
     ),
   );

@@ -527,31 +527,14 @@ describe('economy, credit, deadbeat, garnish, gambling & RPG integration', () =>
       }
     }
 
-    // 4. RPG retreat loot auto-garnish via wired onCoinsEarned
+    // 4. RPG boss raid / idle harvest auto-garnish via wired onCoinsEarned
     rpg.chooseOrSwitchClass('g1', 'debtor', 'warrior', overdueNow);
-    const start = rpg.startRun('g1', 'debtor', 1, overdueNow, () => 0.1);
-    expect(start.ok).toBe(true);
-    // Clear floor 1 combat to earn pendingCoins, then retreat to trigger banking + garnish
-    let steps = 0;
-    let floorCleared = false;
-    while (steps < 20 && !floorCleared) {
-      const act = rpg.actInRun('g1', 'debtor', 'attack', overdueNow + steps * 1000, () => 0.1);
-      expect(act.ok).toBe(true);
-      if (act.ok && act.outcome === 'floor_cleared') {
-        floorCleared = true;
-      }
-      steps += 1;
-    }
-    expect(floorCleared).toBe(true);
-
-    const retreat = rpg.actInRun('g1', 'debtor', 'retreat', overdueNow + 60_000, () => 0.1);
-    expect(retreat.ok).toBe(true);
-    if (retreat.ok && retreat.outcome === 'retreated') {
-      expect(retreat.reward.grossCoins).toBeGreaterThan(0);
-      expect(retreat.reward.garnishedCoins).toBeGreaterThan(0);
-      expect(retreat.reward.netCoins).toBe(
-        retreat.reward.grossCoins - retreat.reward.garnishedCoins,
-      );
+    const raid = rpg.raidBoss('g1', 'debtor', 'single', overdueNow, () => 0.1);
+    expect(raid.ok).toBe(true);
+    if (raid.ok) {
+      expect(raid.grossCoins).toBeGreaterThan(0);
+      expect(raid.garnishedCoins).toBeGreaterThan(0);
+      expect(raid.netCoins).toBe(raid.grossCoins - raid.garnishedCoins);
     }
 
     db.close();

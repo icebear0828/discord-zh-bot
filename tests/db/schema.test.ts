@@ -11,6 +11,7 @@ import { GiveawayRepo } from '../../src/db/repositories/giveawayRepo.js';
 import { ImageRepo } from '../../src/db/repositories/imageRepo.js';
 import { ProfileRepo } from '../../src/db/repositories/profileRepo.js';
 import { RolePanelRepo } from '../../src/db/repositories/rolePanelRepo.js';
+import { initRpgSchema, RpgRepo } from '../../src/db/repositories/rpgRepo.js';
 
 describe('env & database schema', () => {
   it('parses valid environment variables and rejects missing required fields', () => {
@@ -168,6 +169,7 @@ describe('env & database schema', () => {
           'rpg_characters',
           'rpg_items',
           'rpg_runs',
+          'rpg_trials',
         ]),
       );
 
@@ -782,8 +784,84 @@ describe('env & database schema', () => {
         'idx_nickname_locks_expires',
         'idx_nickname_locks_winner',
         'idx_interaction_logs_created_at',
+        'idx_rpg_characters_realm_lb',
+        'idx_rpg_trials_status_expires',
+        'idx_rpg_trials_guild_user_status',
       ]),
     );
+
+    db.close();
+  });
+
+  it('idempotently migrates legacy rpg_characters without losing characters or items and supports rpg_trials CRUD', () => {
+    const db = new Database(':memory:');
+    db.exec(`
+      CREATE TABLE rpg_characters (
+        guild_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        class_key TEXT NOT NULL CHECK (class_key IN ('warrior', 'mage', 'ranger', 'paladin')),
+        class_selected INTEGER NOT NULL DEFAULT 0,
+        level INTEGER NOT NULL DEFAULT 1,
+        xp INTEGER NOT NULL DEFAULT 0,
+        stamina INTEGER NOT NULL DEFAULT 5,
+        last_stamina_date TEXT,
+        stamina_buys_today INTEGER NOT NULL DEFAULT 0,
+        max_chapter_cleared INTEGER NOT NULL DEFAULT 0,
+        total_clears INTEGER NOT NULL DEFAULT 0,
+        total_boss_kills INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (guild_id, user_id)
+      );
+      INSERT INTO rpg_characters (
+        guild_id, user_id, class_key, class_selected, level, xp, stamina,
+        last_stamina_date, stamina_buys_today, max_chapter_cleared, total_clears, total_boss_kills, updated_at
+      ) VALUES ('g1', 'legacy-hero', 'mage', 1, 15, 420, 8, '2026-11-25', 1, 6, 12, 12, 50000);
+    `);
+
+    initRpgSchema(db);
+    initRpgSchema(db);
+
+    const rpgRepo = new RpgRepo(db);
+    const char = rpgRepo.getCharacter('g1', 'legacy-hero');
+    expect(char).toMatchObject({
+      guildId: 'g1',
+      userId: 'legacy-hero',
+      classKey: 'mage',
+      classSelected: true,
+      level: 15,
+      xp: 420,
+      stamina: 8,
+      maxChapterCleared: 6,
+      lastIdleClaimAt: 0,
+      injuredUntil: 0,
+      breakthroughPity: 0,
+      totalBreakthroughs: 0,
+      promoPills: 0,
+      guardElixirs: 0,
+      pillBuysToday: 0,
+      elixirBuysToday: 0,
+      trialPillsStaged: 0,
+      trialUseGuard: false,
+      updatedAt: 50000,
+    });
+
+    const trial = rpgRepo.createTrial({
+      guildId: 'g1',
+      channelId: 'ch-game',
+      userId: 'legacy-hero',
+      fromLevel: 18,
+      targetTier: 3,
+      pillsUsed: 2,
+      usedGuard: true,
+      baseChanceBp: 7500,
+      createdAt: 100_000,
+      expiresAt: 160_000,
+    });
+    expect(trial.status).toBe('pending');
+    expect(trial.usedGuard).toBe(true);
+    rpgRepo.bindTrialMessage(trial.id, 'msg-t-1');
+    expect(rpgRepo.getPendingTrialForUser('g1', 'legacy-hero')?.messageId).toBe('msg-t-1');
+    expect(rpgRepo.listDuePendingTrials(160_000)).toHaveLength(1);
 
     db.close();
   });

@@ -501,8 +501,8 @@ export class LevelingService {
         totalItems: res.total,
         items: res.items.map((row) => ({
           userId: row.userId,
-          primaryValue: row.maxChapterCleared,
-          secondaryValue: row.level,
+          primaryValue: row.level,
+          secondaryValue: row.totalBreakthroughs,
           equippedTitle: null,
         })),
       };

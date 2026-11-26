@@ -671,6 +671,59 @@ describe('Wave 2 multiplayer, chaos, worldEvent, and socialPet handlers & builde
     ]);
     expect(ctx.services.worldEvent.listActiveWorldEvents('g1')).toHaveLength(1);
 
+    // Admin spawn fails cleanly if no eventChannelId and no #游戏聊天 channel exists (does NOT fall back to current channel)
+    const spawnNoChannel = makeButtonMock({
+      customId: 'menu:world:spawn_boss',
+      userId: 'admin1',
+      channelId: 'ch-draw',
+      isAdmin: true,
+    });
+    // Temporarily clear active events? Instead test on guild 'g-no-ev' via tryHandleGamesMenuButton or expire active boss first
+    ctx.services.worldEvent.expireWorldEventIfDue(boss.id, Date.now() + 60 * 60_000);
+    await tryHandleGamesMenuButton(
+      spawnNoChannel.interaction,
+      ctx,
+      'g1',
+      makeActor('admin1', true),
+      ['menu', 'world', 'spawn_boss'],
+    );
+    expect(ctx.services.worldEvent.listActiveWorldEvents('g1')).toHaveLength(0);
+    expect(spawnNoChannel.update.mock.calls[0]![0].embeds?.[0]?.toJSON().description).toContain(
+      '游戏聊天',
+    );
+
+    // Once eventChannelId is bound, spawning from #生图区 posts into #游戏聊天!
+    ctx.repos.guildConfig.updateGames('g1', {
+      ...ctx.repos.guildConfig.getOrCreate('g1').games,
+      eventChannelId: 'ch-game-chat',
+    });
+    const gameChatSend = vi.fn(async () => ({ id: 'game-boss-msg-1' }));
+    const spawnFromDraw = makeButtonMock({
+      customId: 'menu:world:spawn_boss',
+      userId: 'admin1',
+      channelId: 'ch-draw',
+      isAdmin: true,
+    });
+    (
+      spawnFromDraw.interaction.client.channels as unknown as {
+        fetch: ReturnType<typeof vi.fn>;
+      }
+    ).fetch = vi.fn(async (id: string) =>
+      id === 'ch-game-chat'
+        ? { id: 'ch-game-chat', isSendable: () => true, isTextBased: () => true, send: gameChatSend }
+        : null,
+    );
+    await tryHandleGamesMenuButton(
+      spawnFromDraw.interaction,
+      ctx,
+      'g1',
+      makeActor('admin1', true),
+      ['menu', 'world', 'spawn_boss'],
+    );
+    expect(gameChatSend).toHaveBeenCalledTimes(1);
+    expect(spawnFromDraw.channelSend).not.toHaveBeenCalled();
+    expect(ctx.services.worldEvent.listActiveWorldEvents('g1')[0]?.channelId).toBe('ch-game-chat');
+
     // Boss kill via ev:boss:hit does NOT double broadcast & redrawing from DB uses rewardsJson
     ctx.repos.guildConfig.updateGames('g1', { ...cfg.games, bossBaseHp: 100 });
     const smallBoss = ctx.services.worldEvent.spawnBoss('g1', 'c1');

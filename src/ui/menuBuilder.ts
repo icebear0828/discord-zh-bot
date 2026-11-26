@@ -32,6 +32,7 @@ import { getDateKey, type DiceChoice } from '../services/economyService.js';
 import type { InteractionAction } from '../services/funService.js';
 import { parseCardColor, type LeaderboardType } from '../services/levelingService.js';
 import type { AcceptDuelResult, DuelChallenge } from '../services/multiplayerService.js';
+import { getRpgRealmInfo } from '../services/rpgService.js';
 import { PET_SPECIES_MAP } from '../services/socialPetService.js';
 import { buildDuelLobbyView } from './duelArenaBuilder.js';
 import {
@@ -57,11 +58,7 @@ import {
   buildHustleView,
   buildLoanView,
 } from './creditLoanMenuBuilder.js';
-import {
-  buildRpgHomeView,
-  buildRpgRunView,
-  buildRpgTabletopRunView,
-} from './rpgMenuBuilder.js';
+import { buildRpgHomeView } from './rpgMenuBuilder.js';
 import {
   COLORS,
   formatDurationZh,
@@ -1109,8 +1106,8 @@ function createRankEmbed(
   const rpgChar = ctx.repos.rpg.getCharacter(guildId, actor.id);
   const netSign = gamblingStats.netProfit >= 0 ? '+' : '';
   const rpgPart = rpgChar
-    ? `Lv.**${rpgChar.level}**（已通第 **${rpgChar.maxChapterCleared}** 章）`
-    : '尚未踏入地下城';
+    ? `${getRpgRealmInfo(rpgChar.level).fullLabel}（Lv.**${rpgChar.level}** · 破境 **${rpgChar.totalBreakthroughs}** 次）`
+    : '尚未踏入冒险';
 
   const parsedColor = parseCardColor(data.profile.cardColor);
   const customColor = parsedColor.ok ? parsedColor.colorInt : null;
@@ -1233,7 +1230,7 @@ function createLeaderboardEmbedAndMeta(
     hustle: '🍑 服务器卖屁股营收榜',
     gambling_profit: '🎰 服务器赌神盈利榜',
     gambling_loss: '🪦 服务器冤大头亏损榜',
-    rpg: '⚔️ 服务器西幻RPG地牢榜',
+    rpg: '⚔️ 服务器西幻 RPG 勇者阶位榜',
   };
 
   const lines = res.items.map((item, idx) => {
@@ -1266,7 +1263,8 @@ function createLeaderboardEmbedAndMeta(
       return `${medal} <@${item.userId}> — 🎰 净盈亏 **${sign}${item.primaryValue.toLocaleString()}** ${cfg.currencyName}（总赢 +${won} / 总亏 -${lost} · ${item.secondaryValue} 局）`;
     }
     if (lbType === 'rpg') {
-      return `${medal} <@${item.userId}> — ⚔️ 已通第 **${item.primaryValue}** 章（Lv.${item.secondaryValue}）`;
+      const realm = getRpgRealmInfo(item.primaryValue);
+      return `${medal} <@${item.userId}> — ${realm.fullLabel}（Lv.${item.primaryValue} · 破境 ${item.secondaryValue} 次）`;
     }
     return `${medal} <@${item.userId}> — 成功邀请 **${item.primaryValue}** 人`;
   });
@@ -1849,7 +1847,7 @@ function buildAdminGamesView(
     '',
     `🧰 **黑市道具定价**：捕兽夹 **${g.propTrapPrice}** ｜ 撬锁 **${g.propLockpickPrice}** ｜ 护盾 **${g.propShieldPrice}** ｜ 衰神符 **${g.propCursePrice}** ｜ 改昵称 **${g.propNicknamePrice}** ${unit}`,
     `🎯 **悬赏参数**：最低悬赏 **${g.bountyMinAmount}** ${unit} ｜ 自清倍率 **${g.bountyClearMultiplier}x**`,
-    `⚡ **世界事件 / Boss / 宝箱**：自动触发 ${g.eventAutoEnabled ? '✅ 开启' : '⛔ 关闭'} ｜ 指定频道 ${g.eventChannelId ? `<#${g.eventChannelId}>` : '随当前活跃频道'}`,
+    `⚡ **世界事件 / Boss / 宝箱**：自动触发 ${g.eventAutoEnabled ? '✅ 开启' : '⛔ 关闭'} ｜ 指定频道 ${g.eventChannelId ? `<#${g.eventChannelId}>` : '自动锁定 #游戏聊天（未找到则暂停刷出）'}`,
     `   触发阈值 **${g.eventMsgThreshold}** 条消息 / 冷却 **${g.eventCooldownSec}s** ｜ Boss HP **${g.bossBaseHp}** / 奖池 **${g.bossRewardPool}** ｜ 宝箱 **${g.chestRewardMin}~${g.chestRewardMax}** (${g.chestShares}份)`,
     `💞 **宠物与 CP**：抽宠盲盒 **${g.petGachaPrice}** ｜ 每日喂食 **${g.petFeedPrice}** ｜ 上限 **${g.petMaxOwned}** 只 ｜ 求婚/结拜费 **${g.cpProposeCost}** ｜ 结拜上限 **${g.cpMaxSworn}** 人`,
   ].join('\n');
@@ -1864,7 +1862,7 @@ function buildAdminGamesView(
 
   const eventChanSelect = new ChannelSelectMenuBuilder()
     .setCustomId('menu:chan:admin_games_event')
-    .setPlaceholder('⚡ 选择世界事件指定频道（清空则随当前活跃频道）...')
+    .setPlaceholder('⚡ 选择世界事件指定频道（默认自动锁定 #游戏聊天）...')
     .setChannelTypes(
       ChannelType.GuildText,
       ChannelType.PublicThread,
@@ -1936,16 +1934,8 @@ export function buildMenuMessage(
       return buildLoanView(ctx, guildId, actor, feedback, nowMs);
     case 'hustle':
       return buildHustleView(ctx, guildId, actor, feedback, nowMs);
-    case 'rpg': {
-      const activeMode = ctx.services.rpg.getAnyActiveRunMode(guildId, actor.id);
-      if (activeMode === 'tabletop') {
-        return buildRpgTabletopRunView(ctx, guildId, actor, feedback, nowMs);
-      }
-      if (activeMode === 'classic') {
-        return buildRpgRunView(ctx, guildId, actor, feedback, nowMs);
-      }
+    case 'rpg':
       return buildRpgHomeView(ctx, guildId, actor, feedback, nowMs);
-    }
     case 'image':
       return buildUserImageMenuView(ctx, guildId, actor, view.ratio, feedback);
     case 'multi':

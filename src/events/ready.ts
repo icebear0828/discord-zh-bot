@@ -23,6 +23,7 @@ import {
 } from '../ui/embeds.js';
 import { buildDuelMessage, buildRedPacketMessage } from '../ui/menuBuilder.js';
 import { truncateText } from '../ui/menuShared.js';
+import { buildPublicTrialCard } from '../ui/rpgMenuBuilder.js';
 import { buildPetBattleCard, buildProposalCard } from '../ui/socialPetMenuBuilder.js';
 import {
   buildPredictionCard,
@@ -340,6 +341,48 @@ export async function runGamesTick(readyClient: Client, ctx: AppContext): Promis
       }
     } catch (subErr) {
       console.error('[timer:games:worldEvent]', subErr);
+    }
+
+    try {
+      const settledTrials = ctx.services.rpg?.settleDuePublicTrials?.() ?? [];
+      for (const item of settledTrials) {
+        if (!item.ok) continue;
+        try {
+          const economy = ctx.repos.guildConfig.getOrCreate(item.trial.guildId).economy;
+          const guild = readyClient.guilds.cache.get(item.trial.guildId);
+          await editChannelMessage(
+            readyClient,
+            item.trial.channelId,
+            item.trial.messageId,
+            buildPublicTrialCard(item.trial, economy, item.supporterPayouts),
+            guild,
+          );
+          if (item.succeeded) {
+            const candyNote =
+              item.supporterPayouts.length > 0
+                ? `\n🍬 助威喜糖已发放：${item.supporterPayouts.map((p) => `<@${p.userId}> +${p.amount}`).join('、')}`
+                : '';
+            await sendToChannel(
+              readyClient,
+              item.trial.channelId,
+              {
+                allowedMentions: { parse: ['users'] },
+                embeds: [
+                  createSuccessEmbed(
+                    '⚡ 公开破境试炼捷报！',
+                    `恭喜 <@${item.trial.userId}> 成功从 **${item.fromRealm.fullLabel}** 晋升为 **${item.toRealm.fullLabel}**（赏金 **+${item.netCoins.toLocaleString('en-US')}** ${economy.currencyName}）！${candyNote}`,
+                  ),
+                ],
+              },
+              guild,
+            );
+          }
+        } catch (itemErr) {
+          console.error(`[timer:games:rpgTrial:${item.trial.id}]`, itemErr);
+        }
+      }
+    } catch (subErr) {
+      console.error('[timer:games:rpgTrial]', subErr);
     }
 
     try {

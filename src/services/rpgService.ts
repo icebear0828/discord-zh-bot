@@ -8,29 +8,11 @@ import type {
   RpgItemRarity,
   RpgItemSlot,
   RpgRepo,
+  RpgTrial,
 } from '../db/repositories/rpgRepo.js';
 import type { PetRarity, SocialPetRepo, UserPet } from '../db/repositories/socialPetRepo.js';
 import { getDateKey } from './economyService.js';
 import { PET_SPECIES_MAP } from './socialPetService.js';
-import { TABLETOP_BOSS_ACTS, TABLETOP_SCENES } from './rpgTabletopCatalog.js';
-import {
-  createInitialTabletopRun,
-  deriveTabletopAttributes,
-  drinkTabletopPotion,
-  isTabletopRunState,
-  resolveTabletopChoice,
-  type TabletopAttributes,
-  type TabletopCatalog,
-  type TabletopRollOutcome,
-  type TabletopRunState,
-} from './rpgTabletopCore.js';
-
-export type { TabletopAttributes, TabletopCatalog, TabletopRollOutcome, TabletopRunState };
-
-export const TABLETOP_CATALOG: TabletopCatalog = {
-  scenes: TABLETOP_SCENES,
-  bossActs: TABLETOP_BOSS_ACTS,
-};
 
 export interface RpgConfig {
   dailyStamina: number;
@@ -48,6 +30,42 @@ export const DEFAULT_RPG_CONFIG: RpgConfig = {
   bagCapacity: 30,
 };
 
+export const MAX_RPG_LEVEL = 90;
+export const STAGES_PER_TIER = 9;
+export const MAX_ENHANCE_LEVEL = 10;
+export const MIN_IDLE_CLAIM_MS = 60_000;
+export const MAX_IDLE_ACCRUE_MS = 24 * 3_600_000;
+export const INJURY_DURATION_MS = 3_600_000;
+export const PUBLIC_TRIAL_DURATION_MS = 60_000;
+
+export const PROMO_PILL_PRICE = 5000;
+export const PROMO_PILL_DAILY_LIMIT = 5;
+export const PROMO_PILL_BONUS_PCT = 12;
+export const MAX_TRIAL_PILLS = 3;
+
+export const GUARD_ELIXIR_PRICE = 8000;
+export const GUARD_ELIXIR_DAILY_LIMIT = 2;
+
+export const MAX_TRIAL_SUPPORTERS = 5;
+export const SUPPORTER_BONUS_PCT = 3;
+export const MAX_TRIAL_SABOTEURS = 3;
+export const SABOTEUR_PENALTY_PCT = 2;
+export const SABOTEUR_POOL_BONUS_PCT = 20;
+export const PITY_BONUS_PER_FAIL_PCT = 10;
+export const DEFAULT_CREDIT_SCORE = 600;
+
+const STAGE_ZH_LABELS: readonly string[] = [
+  '一重',
+  '二重',
+  '三重',
+  '四重',
+  '五重',
+  '六重',
+  '七重',
+  '八重',
+  '九重',
+];
+
 export interface RpgClassDef {
   key: RpgClassKey;
   name: string;
@@ -64,7 +82,6 @@ export interface RpgClassDef {
   critBpPerLevel: number;
   skillName: string;
   skillDescription: string;
-  skillCooldown: number;
 }
 
 export const RPG_CLASSES: readonly RpgClassDef[] = [
@@ -72,7 +89,7 @@ export const RPG_CLASSES: readonly RpgClassDef[] = [
     key: 'warrior',
     name: '圣殿战士',
     emoji: '⚔️',
-    description: '高血量高防御，重甲冲锋破甲压制',
+    description: '高血量高防御，重甲破军稳健压制',
     baseHp: 170,
     baseAtk: 24,
     baseDef: 14,
@@ -83,14 +100,13 @@ export const RPG_CLASSES: readonly RpgClassDef[] = [
     defPerLevel: 2.8,
     critBpPerLevel: 25,
     skillName: '破军重斩',
-    skillDescription: '1.85倍攻击并破甲2回合（敌防-30%）',
-    skillCooldown: 2,
+    skillDescription: '重甲冲锋破防，讨伐首领稳健增伤',
   },
   {
     key: 'mage',
     name: '奥术法师',
     emoji: '🔮',
-    description: '极致法伤高暴击，陨星火球必中灼烧',
+    description: '极致法伤高暴击，陨星奥术焚灭强敌',
     baseHp: 115,
     baseAtk: 34,
     baseDef: 7,
@@ -101,8 +117,7 @@ export const RPG_CLASSES: readonly RpgClassDef[] = [
     defPerLevel: 1.5,
     critBpPerLevel: 45,
     skillName: '陨星火球',
-    skillDescription: '2.2倍必中攻击并附加2回合灼烧',
-    skillCooldown: 3,
+    skillDescription: '高额奥术暴击爆发，快速收割高阶猎场',
   },
   {
     key: 'ranger',
@@ -119,8 +134,7 @@ export const RPG_CLASSES: readonly RpgClassDef[] = [
     defPerLevel: 1.8,
     critBpPerLevel: 55,
     skillName: '穿云连射',
-    skillDescription: '两段1.05倍攻击，每段额外+25%暴击率',
-    skillCooldown: 2,
+    skillDescription: '双段狙击暴击率拉满，讨伐评分稳定拔高',
   },
   {
     key: 'paladin',
@@ -137,8 +151,7 @@ export const RPG_CLASSES: readonly RpgClassDef[] = [
     defPerLevel: 2.4,
     critBpPerLevel: 30,
     skillName: '圣光裁决',
-    skillDescription: '1.55倍攻击并回复22%最大生命',
-    skillCooldown: 3,
+    skillDescription: '圣光加护攻防均衡，全阶位适应力极强',
   },
 ];
 
@@ -146,201 +159,218 @@ export const RPG_CLASS_MAP: ReadonlyMap<RpgClassKey, RpgClassDef> = new Map(
   RPG_CLASSES.map((c) => [c.key, c]),
 );
 
-export interface RpgEnemyTemplate {
+export interface RpgTierDef {
+  tier: number;
   name: string;
   emoji: string;
-  hp: number;
-  atk: number;
-  def: number;
-  skillName?: string;
+  zoneName: string;
+  zoneEmoji: string;
+  bossName: string;
+  bossEmoji: string;
+  idleXpPerHour: number;
+  idleCoinsPerHour: number;
+  breakthroughBasePct: number;
 }
 
-export interface RpgChapterDef {
-  chapter: number;
-  name: string;
-  emoji: string;
-  recommendedLevel: number;
-  floors: number;
-  clearBaseCoins: number;
-  clearBaseXp: number;
-  firstClearMultiplier: number;
-  boss: RpgEnemyTemplate;
-  monsters: readonly RpgEnemyTemplate[];
-  elites: readonly RpgEnemyTemplate[];
-}
-
-export const FLOORS_PER_CHAPTER = 5;
-export const MAX_ENHANCE_LEVEL = 10;
-export const RUN_INITIAL_POTIONS = 3;
-
-export const RPG_CHAPTERS: readonly RpgChapterDef[] = [
+export const RPG_TIERS: readonly RpgTierDef[] = [
   {
-    chapter: 1,
-    name: '哥布林密林',
-    emoji: '🌲',
-    recommendedLevel: 1,
-    floors: FLOORS_PER_CHAPTER,
-    clearBaseCoins: 8000,
-    clearBaseXp: 120,
-    firstClearMultiplier: 2,
-    boss: {
-      name: '哥布林酋长·格鲁克',
-      emoji: '👑',
-      hp: 195,
-      atk: 26,
-      def: 8,
-      skillName: '部落咆哮重击',
-    },
-    monsters: [
-      { name: '哥布林斥候', emoji: '👺', hp: 78, atk: 17, def: 4 },
-      { name: '毒牙森林狼', emoji: '🐺', hp: 85, atk: 19, def: 4 },
-      { name: '哥布林投矛手', emoji: '🏹', hp: 72, atk: 20, def: 3 },
-    ],
-    elites: [
-      { name: '狂暴哥布林萨满', emoji: '🪄', hp: 122, atk: 23, def: 6 },
-      { name: '巨型苔原熊', emoji: '🐻', hp: 138, atk: 21, def: 8 },
-    ],
+    tier: 1,
+    name: '见习阶',
+    emoji: '🌱',
+    zoneName: '迷雾哨林',
+    zoneEmoji: '🌲',
+    bossName: '哥布林督军·格鲁克',
+    bossEmoji: '👺',
+    idleXpPerHour: 120,
+    idleCoinsPerHour: 600,
+    breakthroughBasePct: 85,
   },
   {
-    chapter: 2,
-    name: '亡灵墓穴',
-    emoji: '💀',
-    recommendedLevel: 3,
-    floors: FLOORS_PER_CHAPTER,
-    clearBaseCoins: 15000,
-    clearBaseXp: 240,
-    firstClearMultiplier: 2,
-    boss: {
-      name: '骸骨领主·莫德雷德',
-      emoji: '💀',
-      hp: 360,
-      atk: 45,
-      def: 16,
-      skillName: '冥界斩魂',
-    },
-    monsters: [
-      { name: '游荡骷髅兵', emoji: '🦴', hp: 150, atk: 30, def: 10 },
-      { name: '腐朽食尸鬼', emoji: '🧟', hp: 165, atk: 32, def: 9 },
-      { name: '幽冥怨灵', emoji: '👻', hp: 140, atk: 34, def: 8 },
-    ],
-    elites: [
-      { name: '死亡骑士侍从', emoji: '⚔️', hp: 225, atk: 39, def: 14 },
-      { name: '白骨死灵法师', emoji: '🔮', hp: 205, atk: 42, def: 11 },
-    ],
+    tier: 2,
+    name: '黑铁阶',
+    emoji: '🪨',
+    zoneName: '腐朽亡灵墓穴',
+    zoneEmoji: '🦴',
+    bossName: '骸骨领主·莫德雷德',
+    bossEmoji: '💀',
+    idleXpPerHour: 260,
+    idleCoinsPerHour: 1200,
+    breakthroughBasePct: 75,
   },
   {
-    chapter: 3,
-    name: '猩红血堡',
-    emoji: '🏰',
-    recommendedLevel: 6,
-    floors: FLOORS_PER_CHAPTER,
-    clearBaseCoins: 26000,
-    clearBaseXp: 420,
-    firstClearMultiplier: 2,
-    boss: {
-      name: '血族伯爵·弗拉德',
-      emoji: '🧛',
-      hp: 600,
-      atk: 72,
-      def: 26,
-      skillName: '猩红盛宴',
-    },
-    monsters: [
-      { name: '嗜血蝙蝠群', emoji: '🦇', hp: 255, atk: 50, def: 16 },
-      { name: '血裔侍卫', emoji: '🗡️', hp: 280, atk: 52, def: 20 },
-      { name: '猩红魔偶', emoji: '🗿', hp: 300, atk: 48, def: 22 },
-    ],
-    elites: [
-      { name: '血月刺客', emoji: '🩸', hp: 370, atk: 64, def: 22 },
-      { name: '猩红大祭司', emoji: '🕯️', hp: 395, atk: 60, def: 25 },
-    ],
+    tier: 3,
+    name: '青铜阶',
+    emoji: '🥉',
+    zoneName: '猩红血族古堡',
+    zoneEmoji: '🏰',
+    bossName: '血族伯爵·弗拉德',
+    bossEmoji: '🧛',
+    idleXpPerHour: 520,
+    idleCoinsPerHour: 2200,
+    breakthroughBasePct: 65,
   },
   {
-    chapter: 4,
-    name: '矮人熔炉',
-    emoji: '🌋',
-    recommendedLevel: 10,
-    floors: FLOORS_PER_CHAPTER,
-    clearBaseCoins: 42000,
-    clearBaseXp: 700,
-    firstClearMultiplier: 2,
-    boss: {
-      name: '熔岩魔像·卡兹丹',
-      emoji: '🔥',
-      hp: 950,
-      atk: 108,
-      def: 42,
-      skillName: '地裂熔岩冲击',
-    },
-    monsters: [
-      { name: '黑铁机械傀儡', emoji: '🤖', hp: 440, atk: 75, def: 30 },
-      { name: '熔火火元素', emoji: '🔥', hp: 410, atk: 82, def: 24 },
-      { name: '狂化锻造者', emoji: '⚒️', hp: 465, atk: 78, def: 28 },
-    ],
-    elites: [
-      { name: '符文铁卫', emoji: '🛡️', hp: 620, atk: 90, def: 38 },
-      { name: '地心炎魔', emoji: '👹', hp: 590, atk: 98, def: 34 },
-    ],
+    tier: 4,
+    name: '白银阶',
+    emoji: '🥈',
+    zoneName: '矮人地心熔炉',
+    zoneEmoji: '🌋',
+    bossName: '熔岩魔像·卡兹丹',
+    bossEmoji: '🔥',
+    idleXpPerHour: 980,
+    idleCoinsPerHour: 3800,
+    breakthroughBasePct: 55,
   },
   {
-    chapter: 5,
-    name: '霜火龙巢',
-    emoji: '🐉',
-    recommendedLevel: 15,
-    floors: FLOORS_PER_CHAPTER,
-    clearBaseCoins: 65000,
-    clearBaseXp: 1150,
-    firstClearMultiplier: 2,
-    boss: {
-      name: '双头古龙·提亚马特',
-      emoji: '🐉',
-      hp: 1500,
-      atk: 158,
-      def: 62,
-      skillName: '冰火双息吐息',
-    },
-    monsters: [
-      { name: '寒冰龙裔战士', emoji: '❄️', hp: 700, atk: 112, def: 46 },
-      { name: '炽炎飞龙', emoji: '🐲', hp: 675, atk: 120, def: 42 },
-      { name: '龙血守卫', emoji: '⚔️', hp: 730, atk: 115, def: 48 },
-    ],
-    elites: [
-      { name: '霜火亚龙', emoji: '🦖', hp: 960, atk: 138, def: 56 },
-      { name: '古龙祭司', emoji: '🔮', hp: 920, atk: 142, def: 52 },
-    ],
+    tier: 5,
+    name: '黄金阶',
+    emoji: '🥇',
+    zoneName: '极北霜火龙巢',
+    zoneEmoji: '🐉',
+    bossName: '双头古龙·提亚马特',
+    bossEmoji: '🐲',
+    idleXpPerHour: 1750,
+    idleCoinsPerHour: 6200,
+    breakthroughBasePct: 45,
   },
   {
-    chapter: 6,
-    name: '深渊王座',
-    emoji: '🌌',
-    recommendedLevel: 20,
-    floors: FLOORS_PER_CHAPTER,
-    clearBaseCoins: 100000,
-    clearBaseXp: 1800,
-    firstClearMultiplier: 2,
-    boss: {
-      name: '堕落魔神·阿撒托斯',
-      emoji: '👁️',
-      hp: 2250,
-      atk: 220,
-      def: 88,
-      skillName: '终焉深渊裁决',
-    },
-    monsters: [
-      { name: '虚空掠夺者', emoji: '👾', hp: 1040, atk: 162, def: 64 },
-      { name: '深渊恐惧魔', emoji: '👿', hp: 1080, atk: 168, def: 66 },
-      { name: '堕落圣堂武士', emoji: '🖤', hp: 1120, atk: 158, def: 72 },
-    ],
-    elites: [
-      { name: '混沌魔将', emoji: '🔱', hp: 1440, atk: 192, def: 80 },
-      { name: '虚空观测者', emoji: '🌀', hp: 1380, atk: 200, def: 74 },
-    ],
+    tier: 6,
+    name: '秘银阶',
+    emoji: '💠',
+    zoneName: '星界奥术高塔',
+    zoneEmoji: '🔮',
+    bossName: '虚空大魔导·梅林',
+    bossEmoji: '👁️',
+    idleXpPerHour: 3000,
+    idleCoinsPerHour: 9800,
+    breakthroughBasePct: 38,
+  },
+  {
+    tier: 7,
+    name: '史诗阶',
+    emoji: '🔮',
+    zoneName: '沉没泰坦神殿',
+    zoneEmoji: '🏛️',
+    bossName: '雷霆泰坦·克洛诺斯',
+    bossEmoji: '⚡',
+    idleXpPerHour: 5000,
+    idleCoinsPerHour: 15000,
+    breakthroughBasePct: 30,
+  },
+  {
+    tier: 8,
+    name: '传说阶',
+    emoji: '👑',
+    zoneName: '无尽深渊王座',
+    zoneEmoji: '🌌',
+    bossName: '堕落魔神·阿撒托斯',
+    bossEmoji: '🔱',
+    idleXpPerHour: 8200,
+    idleCoinsPerHour: 23000,
+    breakthroughBasePct: 24,
+  },
+  {
+    tier: 9,
+    name: '半神阶',
+    emoji: '🔥',
+    zoneName: '诸神黄昏裂隙',
+    zoneEmoji: '☄️',
+    bossName: '噬界魔狼·芬里尔',
+    bossEmoji: '🐍',
+    idleXpPerHour: 13000,
+    idleCoinsPerHour: 35000,
+    breakthroughBasePct: 18,
+  },
+  {
+    tier: 10,
+    name: '神座阶',
+    emoji: '☀️',
+    zoneName: '永恒创世星域',
+    zoneEmoji: '✨',
+    bossName: '混沌原初之影',
+    bossEmoji: '👑',
+    idleXpPerHour: 20000,
+    idleCoinsPerHour: 52000,
+    breakthroughBasePct: 0,
   },
 ];
 
-export const RPG_CHAPTER_MAP: ReadonlyMap<number, RpgChapterDef> = new Map(
-  RPG_CHAPTERS.map((c) => [c.chapter, c]),
+export const RPG_TIER_MAP: ReadonlyMap<number, RpgTierDef> = new Map(
+  RPG_TIERS.map((t) => [t.tier, t]),
 );
+
+export interface RpgRealmInfo {
+  level: number;
+  tier: number;
+  stage: number;
+  stageZh: string;
+  tierDef: RpgTierDef;
+  nextTierDef: RpgTierDef | null;
+  fullLabel: string;
+}
+
+export function getRpgRealmInfo(level: number): RpgRealmInfo {
+  const safeLevel = Math.max(1, Math.min(MAX_RPG_LEVEL, Math.floor(level)));
+  const tier = Math.min(RPG_TIERS.length, Math.floor((safeLevel - 1) / STAGES_PER_TIER) + 1);
+  const stage = ((safeLevel - 1) % STAGES_PER_TIER) + 1;
+  const stageZh = STAGE_ZH_LABELS[stage - 1] ?? `${stage}重`;
+  const tierDef = RPG_TIER_MAP.get(tier) ?? RPG_TIERS[0]!;
+  const nextTierDef = RPG_TIER_MAP.get(tier + 1) ?? null;
+  return {
+    level: safeLevel,
+    tier,
+    stage,
+    stageZh,
+    tierDef,
+    nextTierDef,
+    fullLabel: `${tierDef.emoji} ${tierDef.name}·${stageZh}`,
+  };
+}
+
+export function xpNeededForRpgLevel(level: number): number {
+  const safeLevel = Math.max(1, Math.floor(level));
+  return Math.floor(100 * safeLevel + 35 * safeLevel * (safeLevel - 1));
+}
+
+export function isAtBreakthroughGate(level: number, xp: number): boolean {
+  if (level >= MAX_RPG_LEVEL) return false;
+  if (level % STAGES_PER_TIER !== 0) return false;
+  return xp >= xpNeededForRpgLevel(level);
+}
+
+export function applyCharacterXp(
+  character: RpgCharacter,
+  gainXp: number,
+): { updated: RpgCharacter; levelsGained: number; hitGate: boolean } {
+  let level = Math.max(1, Math.min(MAX_RPG_LEVEL, Math.floor(character.level)));
+  let xp = Math.max(0, Math.floor(character.xp)) + Math.max(0, Math.floor(gainXp));
+  let levelsGained = 0;
+
+  while (level < MAX_RPG_LEVEL) {
+    const need = xpNeededForRpgLevel(level);
+    if (level % STAGES_PER_TIER === 0) {
+      xp = Math.min(xp, need * 3);
+      break;
+    }
+    if (xp < need) {
+      break;
+    }
+    xp -= need;
+    level += 1;
+    levelsGained += 1;
+  }
+
+  if (level >= MAX_RPG_LEVEL) {
+    level = MAX_RPG_LEVEL;
+    xp = Math.min(xp, xpNeededForRpgLevel(MAX_RPG_LEVEL));
+  }
+
+  return {
+    updated: { ...character, level, xp },
+    levelsGained,
+    hitGate: isAtBreakthroughGate(level, xp),
+  };
+}
 
 export const RARITY_ORDER: Record<RpgItemRarity, number> = {
   common: 1,
@@ -402,6 +432,13 @@ const PET_RARITY_SYNERGY_MULT: Record<PetRarity, number> = {
   SSR: 1.6,
 };
 
+const PET_BREAKTHROUGH_BONUS_PCT: Record<PetRarity, number> = {
+  N: 2,
+  R: 4,
+  SR: 7,
+  SSR: 10,
+};
+
 const ITEM_NAMES: Record<RpgItemSlot, Record<RpgItemRarity, readonly string[]>> = {
   weapon: {
     common: ['铁制短剑', '橡木法杖', '猎人木弓'],
@@ -453,8 +490,6 @@ const RARITY_SCORE_BONUS: Record<RpgItemRarity, number> = {
   legendary: 50,
 };
 
-export const DEFAULT_CREDIT_SCORE = 600;
-
 export function computeItemScore(
   item: Pick<RpgItem, 'rarity' | 'baseHp' | 'baseAtk' | 'baseDef' | 'baseCritBp' | 'enhanceLevel'>,
 ): number {
@@ -486,31 +521,6 @@ export function getSalvageValue(item: Pick<RpgItem, 'rarity' | 'enhanceLevel'>):
   return base + Math.max(0, item.enhanceLevel) * Math.round(base * 0.25);
 }
 
-export function xpNeededForRpgLevel(level: number): number {
-  const safeLevel = Math.max(1, Math.floor(level));
-  return Math.floor(100 * safeLevel + 35 * safeLevel * (safeLevel - 1));
-}
-
-export function applyCharacterXp(
-  character: RpgCharacter,
-  gainXp: number,
-): { updated: RpgCharacter; levelsGained: number } {
-  let level = character.level;
-  let xp = character.xp + Math.max(0, Math.floor(gainXp));
-  let levelsGained = 0;
-
-  while (level < 99 && xp >= xpNeededForRpgLevel(level)) {
-    xp -= xpNeededForRpgLevel(level);
-    level += 1;
-    levelsGained += 1;
-  }
-
-  return {
-    updated: { ...character, level, xp },
-    levelsGained,
-  };
-}
-
 export interface PetSynergyInfo {
   petId: number;
   nickname: string;
@@ -538,18 +548,6 @@ export interface CombatStats {
 
 export type RpgCombatStats = CombatStats;
 
-export type RpgRunAction =
-  | 'attack'
-  | 'skill'
-  | 'defend'
-  | 'potion'
-  | 'retreat'
-  | 'event_a'
-  | 'event_b'
-  | 'next_floor';
-
-export type RpgRunPhase = 'combat' | 'event' | 'floor_clear';
-
 export interface PendingRpgItem {
   name: string;
   slot: RpgItemSlot;
@@ -560,52 +558,6 @@ export interface PendingRpgItem {
   baseCritBp: number;
 }
 
-export interface RunEnemyState {
-  name: string;
-  emoji: string;
-  kind: 'monster' | 'elite' | 'boss';
-  hp: number;
-  maxHp: number;
-  atk: number;
-  def: number;
-  armorBreakTurns: number;
-  burnTurns: number;
-  burnDamage: number;
-  bossSkillName?: string;
-}
-
-export interface RunEventState {
-  key: 'shrine' | 'tavern' | 'merchant' | 'altar';
-  title: string;
-  description: string;
-  optionALabel: string;
-  optionBLabel: string;
-}
-
-export interface RpgRunState {
-  chapter: number;
-  floor: number;
-  phase: RpgRunPhase;
-  turn: number;
-  classKey: RpgClassKey;
-  playerHp: number;
-  playerMaxHp: number;
-  playerAtk: number;
-  playerDef: number;
-  playerCritBp: number;
-  playerDodgeBp: number;
-  skillCooldown: number;
-  potionsLeft: number;
-  atkBuffPct: number;
-  petSynergy: PetSynergyInfo | null;
-  enemy: RunEnemyState | null;
-  event: RunEventState | null;
-  pendingCoins: number;
-  pendingXp: number;
-  pendingItems: PendingRpgItem[];
-  logs: string[];
-}
-
 export type ChooseClassResult =
   | {
       ok: true;
@@ -614,7 +566,7 @@ export type ChooseClassResult =
       balance: number;
       isFirstSelection: boolean;
     }
-  | { ok: false; reason: 'same_class' | 'insufficient_funds' | 'active_run'; cost?: number };
+  | { ok: false; reason: 'same_class' | 'insufficient_funds' | 'pending_trial'; cost?: number };
 
 export type BuyStaminaPotionResult =
   | {
@@ -629,6 +581,45 @@ export type BuyStaminaPotionResult =
       reason: 'daily_limit_reached' | 'insufficient_funds';
       cost?: number;
       dailyLimit?: number;
+    };
+
+export type BuyAlchemyItemResult =
+  | {
+      ok: true;
+      kind: 'pill' | 'elixir';
+      character: RpgCharacter;
+      cost: number;
+      balance: number;
+      buysRemaining: number;
+    }
+  | {
+      ok: false;
+      reason: 'daily_limit_reached' | 'insufficient_funds';
+      cost?: number;
+      dailyLimit?: number;
+    };
+
+export type HealInjuryResult =
+  | {
+      ok: true;
+      character: RpgCharacter;
+      cost: number;
+      balance: number;
+    }
+  | {
+      ok: false;
+      reason: 'not_injured' | 'insufficient_funds';
+      cost?: number;
+    };
+
+export type ConfigureTrialLoadoutResult =
+  | {
+      ok: true;
+      character: RpgCharacter;
+    }
+  | {
+      ok: false;
+      reason: 'no_guard_elixir';
     };
 
 export type EquipItemResult =
@@ -683,149 +674,173 @@ export type BulkSalvageItemsResult =
     }
   | { ok: false; reason: 'nothing_to_salvage' };
 
-export type StartRunResult =
-  | { ok: true; run: RpgRunState; character: RpgCharacter }
-  | {
-      ok: false;
-      reason: 'invalid_chapter' | 'chapter_locked' | 'insufficient_stamina' | 'active_run_exists';
-      maxUnlockedChapter?: number;
-    };
-
-export interface RunBankedReward {
-  grossCoins: number;
-  garnishedCoins: number;
-  netCoins: number;
-  xpEarned: number;
-  levelsGained: number;
-  bankedItems: RpgItem[];
-  autoSalvagedCount: number;
-  autoSalvagedCoins: number;
-  bossBonusCoins: number;
-  creditDelta: number;
+export interface IdleHarvestPreview {
+  accruedMs: number;
+  isCapped: boolean;
+  canClaim: boolean;
+  waitSeconds: number;
+  isInjuredNow: boolean;
+  injuredRemainingMs: number;
+  powerMultiplier: number;
+  estimatedXp: number;
+  estimatedCoins: number;
+  realm: RpgRealmInfo;
+  atGate: boolean;
 }
 
-export type ActInRunResult =
+export type ClaimIdleHarvestResult =
   | {
       ok: true;
-      outcome: 'ongoing' | 'floor_cleared';
-      run: RpgRunState;
-      logs: string[];
-      floorLoot?: { coins: number; xp: number; item: PendingRpgItem | null };
-    }
-  | {
-      ok: true;
-      outcome: 'retreated';
-      run: null;
-      chapter: number;
-      floor: number;
-      logs: string[];
-      reward: RunBankedReward;
+      accruedMs: number;
+      powerMultiplier: number;
+      xpEarned: number;
+      levelsGained: number;
+      hitGate: boolean;
+      grossCoins: number;
+      garnishedCoins: number;
+      netCoins: number;
+      pillsFound: number;
+      elixirsFound: number;
+      bankedItems: RpgItem[];
       legendaryDrops: RpgItem[];
+      autoSalvagedCount: number;
+      autoSalvagedCoins: number;
+      adventures: string[];
       character: RpgCharacter;
       balance: number;
     }
   | {
+      ok: false;
+      reason: 'no_class_selected' | 'too_soon';
+      waitSeconds?: number;
+    };
+
+export type RaidBossResult =
+  | {
       ok: true;
-      outcome: 'victory';
-      run: null;
-      chapter: number;
-      floor: number;
-      logs: string[];
-      reward: RunBankedReward;
-      firstClear: boolean;
+      runsExecuted: number;
+      rating: 'S' | 'A' | 'B';
+      tierDef: RpgTierDef;
+      xpEarned: number;
+      levelsGained: number;
+      hitGate: boolean;
+      grossCoins: number;
+      garnishedCoins: number;
+      netCoins: number;
+      pillsFound: number;
+      elixirsFound: number;
+      bankedItems: RpgItem[];
       legendaryDrops: RpgItem[];
+      autoSalvagedCount: number;
+      autoSalvagedCoins: number;
       character: RpgCharacter;
       balance: number;
     }
   | {
+      ok: false;
+      reason: 'no_class_selected' | 'insufficient_stamina';
+    };
+
+export interface BreakthroughPreview {
+  eligible: boolean;
+  atMaxTier: boolean;
+  fromRealm: RpgRealmInfo;
+  targetTierDef: RpgTierDef | null;
+  needXp: number;
+  currentXp: number;
+  pillsUsed: number;
+  usedGuard: boolean;
+  baseRatePct: number;
+  pillBonusPct: number;
+  petBonusPct: number;
+  petName: string | null;
+  creditBonusPct: number;
+  creditScore: number;
+  pityBonusPct: number;
+  rawBasePct: number;
+  totalRatePct: number;
+  hasPendingTrial: boolean;
+}
+
+export type SoloBreakthroughResult =
+  | {
       ok: true;
-      outcome: 'defeat';
-      run: null;
-      chapter: number;
-      floor: number;
-      logs: string[];
-      lostLoot: { coins: number; xp: number; itemCount: number };
+      succeeded: boolean;
+      fromRealm: RpgRealmInfo;
+      toRealm: RpgRealmInfo;
+      finalRatePct: number;
+      pillsUsed: number;
+      usedGuard: boolean;
+      grossCoins: number;
+      garnishedCoins: number;
+      netCoins: number;
+      creditDelta: number;
+      xpLost: number;
+      injuredUntil: number;
+      character: RpgCharacter;
+      balance: number;
+    }
+  | {
+      ok: false;
+      reason: 'no_class_selected' | 'at_max_tier' | 'not_at_gate' | 'pending_trial_exists';
+    };
+
+export type StartPublicTrialResult =
+  | {
+      ok: true;
+      trial: RpgTrial;
+      character: RpgCharacter;
+      preview: BreakthroughPreview;
+    }
+  | {
+      ok: false;
+      reason: 'no_class_selected' | 'at_max_tier' | 'not_at_gate' | 'pending_trial_exists';
+    };
+
+export type InteractPublicTrialResult =
+  | {
+      ok: true;
+      trial: RpgTrial;
+      currentRatePct: number;
+      mode: 'help' | 'jeer';
     }
   | {
       ok: false;
       reason:
-        | 'no_active_run'
-        | 'invalid_action_for_phase'
-        | 'skill_on_cooldown'
-        | 'no_potions_left';
-      cooldownLeft?: number;
+        | 'not_found'
+        | 'already_resolved'
+        | 'own_trial'
+        | 'already_joined'
+        | 'supporters_full'
+        | 'saboteurs_full';
     };
 
-export type StartTabletopRunResult =
-  | { ok: true; run: TabletopRunState; character: RpgCharacter }
-  | {
-      ok: false;
-      reason: 'invalid_chapter' | 'chapter_locked' | 'insufficient_stamina' | 'active_run_exists';
-      maxUnlockedChapter?: number;
-    };
+export interface SupporterPayout {
+  userId: string;
+  amount: number;
+}
 
-export type TabletopRunAction =
-  | { type: 'choice'; choiceId: string }
-  | { type: 'potion' }
-  | { type: 'retreat' };
-
-export type ActInTabletopRunResult =
+export type SettlePublicTrialResult =
   | {
       ok: true;
-      status: 'ongoing';
-      run: TabletopRunState;
-      outcome: TabletopRollOutcome;
-      coinsSpent: number;
-    }
-  | {
-      ok: true;
-      status: 'potion';
-      run: TabletopRunState;
-      healed: number;
-    }
-  | {
-      ok: true;
-      status: 'victory';
-      chapter: number;
-      outcome: TabletopRollOutcome;
-      victoryEpilogue: string;
-      coinsSpent: number;
-      reward: RunBankedReward;
-      firstClear: boolean;
-      legendaryDrops: RpgItem[];
-      character: RpgCharacter;
-      balance: number;
-    }
-  | {
-      ok: true;
-      status: 'defeat';
-      chapter: number;
-      act: number;
-      outcome: TabletopRollOutcome;
-      coinsSpent: number;
-      lostCoins: number;
-      lostXp: number;
-      lostItemsCount: number;
-    }
-  | {
-      ok: true;
-      status: 'retreat';
-      chapter: number;
-      act: number;
-      reward: RunBankedReward;
-      legendaryDrops: RpgItem[];
+      trial: RpgTrial;
+      succeeded: boolean;
+      fromRealm: RpgRealmInfo;
+      toRealm: RpgRealmInfo;
+      finalRatePct: number;
+      grossCoins: number;
+      garnishedCoins: number;
+      netCoins: number;
+      creditDelta: number;
+      xpLost: number;
+      injuredUntil: number;
+      supporterPayouts: SupporterPayout[];
       character: RpgCharacter;
       balance: number;
     }
   | {
       ok: false;
-      reason:
-        | 'no_active_run'
-        | 'invalid_choice'
-        | 'insufficient_coins'
-        | 'no_potions_left'
-        | 'already_full_hp';
-      requiredCoins?: number;
+      reason: 'not_found' | 'already_resolved' | 'not_owner';
     };
 
 export interface RpgServiceOptions {
@@ -850,36 +865,15 @@ export interface RpgServiceOptions {
   getCreditScore?: (guildId: string, userId: string) => number;
 }
 
-const RANDOM_EVENTS: readonly RunEventState[] = [
-  {
-    key: 'shrine',
-    title: '⛪ 古老圣坛',
-    description: '一座散发着微光的战神雕像矗立在雾中，石碑刻着试炼与祈祷的铭文。',
-    optionALabel: '祈求战神赐福（高风险：60% +18%攻击与宝藏 / 40% 受反噬失血20%）',
-    optionBLabel: '虔诚休憩（稳健：回复 35% 最大生命）',
-  },
-  {
-    key: 'tavern',
-    title: '🍺 迷雾旅店',
-    description: '地下城深处竟然有一间灯光摇曳的酒馆，几名独眼雇佣兵正朝你招手。',
-    optionALabel: '参与豪赌（高风险：55% 赢取丰厚金币与装备 / 45% 遭伏击失血18%）',
-    optionBLabel: '痛饮麦酒（稳健：回复 30% 最大生命并补充 1 瓶药水）',
-  },
-  {
-    key: 'merchant',
-    title: '🧳 流浪地精商人',
-    description: '背着巨大麻袋的地精商人嘿嘿一笑：“勇士，要赌一把神秘暗箱，还是买点稳妥的补给？”',
-    optionALabel: '开启神秘暗箱（高风险：65% 获得稀有以上装备 / 35% 中毒失血15%）',
-    optionBLabel: '交换补给（稳健：获得金币并提升本局 12% 攻击力）',
-  },
-  {
-    key: 'altar',
-    title: '🕯️ 血月祭坛',
-    description: '暗红色的符文在石台上旋转，低语诱惑着过往的冒险者献祭生命换取力量。',
-    optionALabel: '以血换力（高风险：牺牲 20% 最大生命，换取本局 +22% 攻击与高额金币）',
-    optionBLabel: '净化祭坛（稳健：回复 25% 最大生命并获得少量经验与金币）',
-  },
-];
+function clampUnit(value: number): number {
+  if (!Number.isFinite(value)) return 0.5;
+  return Math.min(0.999999, Math.max(0, value));
+}
+
+function pickFrom<T>(list: readonly T[], rng: () => number): T {
+  const idx = Math.min(list.length - 1, Math.floor(clampUnit(rng()) * list.length));
+  return list[idx]!;
+}
 
 function computePetSynergy(pet: UserPet): PetSynergyInfo {
   const mult = PET_RARITY_SYNERGY_MULT[pet.rarity];
@@ -898,67 +892,47 @@ function computePetSynergy(pet: UserPet): PetSynergyInfo {
   };
 }
 
-function clampUnit(value: number): number {
-  if (!Number.isFinite(value)) return 0.5;
-  return Math.min(0.999999, Math.max(0, value));
-}
-
-function pickFrom<T>(list: readonly T[], rng: () => number): T {
-  const idx = Math.min(list.length - 1, Math.floor(clampUnit(rng()) * list.length));
-  return list[idx]!;
-}
-
 function rollItemRarity(
-  chapter: number,
-  source: 'monster' | 'elite' | 'chest' | 'event' | 'boss',
+  tier: number,
+  source: 'idle' | 'boss' | 'shop',
   rng: () => number,
 ): RpgItemRarity {
   const r = clampUnit(rng());
-  const chOffset = Math.max(0, chapter - 1);
+  const offset = Math.max(0, tier - 1);
 
   if (source === 'boss') {
-    if (r >= Math.max(0.75, 0.96 - chOffset * 0.04)) return 'legendary';
-    if (r >= Math.max(0.45, 0.78 - chOffset * 0.06)) return 'epic';
-    if (r >= Math.max(0.18, 0.45 - chOffset * 0.05)) return 'rare';
+    if (r >= Math.max(0.75, 0.96 - offset * 0.025)) return 'legendary';
+    if (r >= Math.max(0.45, 0.78 - offset * 0.04)) return 'epic';
+    if (r >= Math.max(0.18, 0.45 - offset * 0.035)) return 'rare';
     return 'uncommon';
   }
 
-  if (source === 'elite' || source === 'chest' || source === 'event') {
-    if (r >= Math.max(0.88, 0.985 - chOffset * 0.02)) return 'legendary';
-    if (r >= Math.max(0.62, 0.86 - chOffset * 0.045)) return 'epic';
-    if (r >= Math.max(0.32, 0.58 - chOffset * 0.05)) return 'rare';
-    if (r >= 0.12) return 'uncommon';
-    return 'common';
-  }
-
-  // Normal monster
-  if (chapter >= 3 && r >= Math.max(0.95, 0.995 - (chapter - 3) * 0.01)) return 'legendary';
-  if (r >= Math.max(0.82, 0.95 - chOffset * 0.025)) return 'epic';
-  if (r >= Math.max(0.55, 0.78 - chOffset * 0.04)) return 'rare';
-  if (r >= 0.35) return 'uncommon';
+  if (r >= Math.max(0.88, 0.985 - offset * 0.012)) return 'legendary';
+  if (r >= Math.max(0.62, 0.86 - offset * 0.028)) return 'epic';
+  if (r >= Math.max(0.32, 0.58 - offset * 0.03)) return 'rare';
+  if (r >= 0.12) return 'uncommon';
   return 'common';
 }
 
-function generatePendingItem(
-  chapter: number,
-  source: 'monster' | 'elite' | 'chest' | 'event' | 'boss',
+export function generateTierItem(
+  tier: number,
+  source: 'idle' | 'boss' | 'shop',
   rng: () => number,
   minRarity?: RpgItemRarity,
 ): PendingRpgItem {
+  const safeTier = Math.max(1, Math.min(RPG_TIERS.length, Math.floor(tier)));
   const slots: readonly RpgItemSlot[] = ['weapon', 'armor', 'accessory'];
   const slot = pickFrom(slots, rng);
-  let rarity = rollItemRarity(chapter, source, rng);
+  let rarity = rollItemRarity(safeTier, source, rng);
   if (minRarity && RARITY_ORDER[rarity] < RARITY_ORDER[minRarity]) {
     rarity = minRarity;
   }
 
-  const namePool = ITEM_NAMES[slot][rarity];
-  const name = pickFrom(namePool, rng);
-
-  const chapterScale = 1 + (chapter - 1) * 0.65;
+  const name = pickFrom(ITEM_NAMES[slot][rarity], rng);
+  const tierScale = 1 + (safeTier - 1) * 0.52;
   const rarityScale = RARITY_STAT_MULT[rarity];
   const variance = 0.9 + clampUnit(rng()) * 0.2;
-  const power = chapterScale * rarityScale * variance;
+  const power = tierScale * rarityScale * variance;
 
   if (slot === 'weapon') {
     return {
@@ -968,7 +942,7 @@ function generatePendingItem(
       baseHp: Math.round(8 * power),
       baseAtk: Math.max(4, Math.round(10 * power)),
       baseDef: Math.round(1 * power),
-      baseCritBp: Math.min(2500, Math.round(180 * rarityScale + chapter * 35)),
+      baseCritBp: Math.min(2500, Math.round(180 * rarityScale + safeTier * 30)),
     };
   }
   if (slot === 'armor') {
@@ -989,47 +963,62 @@ function generatePendingItem(
     baseHp: Math.max(12, Math.round(22 * power)),
     baseAtk: Math.max(2, Math.round(5 * power)),
     baseDef: Math.max(1, Math.round(3 * power)),
-    baseCritBp: Math.min(3000, Math.round(260 * rarityScale + chapter * 45)),
+    baseCritBp: Math.min(3000, Math.round(260 * rarityScale + safeTier * 38)),
   };
 }
 
 export function generateShopRpgLoot(
-  chapter: number,
+  tier: number,
   minRarity: RpgItemRarity,
   rng: () => number = Math.random,
 ): PendingRpgItem {
-  const safeChapter = Math.max(1, Math.min(6, Math.floor(chapter)));
-  return generatePendingItem(safeChapter, 'chest', rng, minRarity);
+  const safeTier = Math.max(1, Math.min(RPG_TIERS.length, Math.floor(tier)));
+  return generateTierItem(safeTier, 'shop', rng, minRarity);
 }
 
-function parseRunState(raw: string): RpgRunState | null {
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object') return null;
-    if (isTabletopRunState(parsed)) return null;
-    const obj = parsed as Partial<RpgRunState>;
-    if (
-      typeof obj.chapter !== 'number' ||
-      typeof obj.floor !== 'number' ||
-      typeof obj.phase !== 'string' ||
-      typeof obj.playerHp !== 'number' ||
-      typeof obj.playerMaxHp !== 'number'
-    ) {
-      return null;
-    }
-    return parsed as RpgRunState;
-  } catch {
-    return null;
+export function computeIdlePowerMultiplier(stats: CombatStats, tier: number): number {
+  let gearScore = 0;
+  for (const eq of stats.equippedItems) {
+    gearScore += computeItemScore(eq);
   }
+  const gearBonus = Math.min(0.65, Math.sqrt(Math.max(0, gearScore)) * 0.022);
+  const petBonus = stats.petSynergy
+    ? stats.petSynergy.rarity === 'SSR'
+      ? 0.16
+      : stats.petSynergy.rarity === 'SR'
+        ? 0.11
+        : stats.petSynergy.rarity === 'R'
+          ? 0.06
+          : 0.03
+    : 0;
+  const tierBonus = Math.min(0.14, Math.max(0, tier - 1) * 0.015);
+  return Number(Math.min(1.85, Math.max(1.0, 1 + gearBonus + petBonus + tierBonus)).toFixed(2));
 }
 
-function parseTabletopRunState(raw: string): TabletopRunState | null {
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    return isTabletopRunState(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
+export function computeTrialEffectiveRate(
+  baseChanceBp: number,
+  supporterCount: number,
+  saboteurCount: number,
+): number {
+  const basePct = Math.round(baseChanceBp / 100);
+  const raw =
+    basePct +
+    Math.max(0, supporterCount) * SUPPORTER_BONUS_PCT -
+    Math.max(0, saboteurCount) * SABOTEUR_PENALTY_PCT;
+  return Math.max(5, Math.min(100, raw));
+}
+
+export function computeHealInjuryCost(level: number): number {
+  const { tier } = getRpgRealmInfo(level);
+  return 1500 * tier;
+}
+
+function getCreditBreakthroughBonus(creditScore: number): number {
+  if (creditScore >= 850) return 5;
+  if (creditScore >= 700) return 3;
+  if (creditScore >= 500) return 0;
+  if (creditScore >= 300) return -2;
+  return -5;
 }
 
 export class RpgService {
@@ -1084,6 +1073,18 @@ export class RpgService {
     })();
   }
 
+  getPendingTrialForUser(guildId: string, userId: string): RpgTrial | null {
+    return this.rpgRepo.getPendingTrialForUser(guildId, userId);
+  }
+
+  getTrialById(trialId: number): RpgTrial | null {
+    return this.rpgRepo.getTrialById(trialId);
+  }
+
+  bindTrialMessage(trialId: number, messageId: string, channelId?: string): void {
+    this.rpgRepo.bindTrialMessage(trialId, messageId, channelId);
+  }
+
   chooseOrSwitchClass(
     guildId: string,
     userId: string,
@@ -1091,15 +1092,8 @@ export class RpgService {
     nowMs = Date.now(),
   ): ChooseClassResult {
     return this.db.transaction((): ChooseClassResult => {
-      const existingRun = this.rpgRepo.getRun(guildId, userId);
-      if (
-        existingRun &&
-        (parseRunState(existingRun.stateJson) || parseTabletopRunState(existingRun.stateJson))
-      ) {
-        return { ok: false, reason: 'active_run' };
-      }
-      if (existingRun) {
-        this.rpgRepo.deleteRun(guildId, userId);
+      if (this.rpgRepo.getPendingTrialForUser(guildId, userId)) {
+        return { ok: false, reason: 'pending_trial' };
       }
 
       const cfg = this.getConfig(guildId);
@@ -1114,6 +1108,7 @@ export class RpgService {
           classSelected: true,
           stamina: cfg.dailyStamina,
           lastStaminaDate: today,
+          lastIdleClaimAt: nowMs,
           updatedAt: nowMs,
         });
         const profile = this.profileRepo.getOrCreate(guildId, userId);
@@ -1126,13 +1121,14 @@ export class RpgService {
         };
       }
 
-      const refreshed = this.refreshDailyStaminaInTx(existing, today, nowMs);
+      const refreshed = this.refreshCharacterInTx(existing, today, nowMs);
 
       if (!refreshed.classSelected) {
         const updated: RpgCharacter = {
           ...refreshed,
           classKey,
           classSelected: true,
+          lastIdleClaimAt: nowMs,
           updatedAt: nowMs,
         };
         this.rpgRepo.saveCharacter(updated);
@@ -1218,6 +1214,121 @@ export class RpgService {
         balance,
         buysRemaining: Math.max(0, dailyLimit - updated.staminaBuysToday),
       };
+    })();
+  }
+
+  buyAlchemyItem(
+    guildId: string,
+    userId: string,
+    kind: 'pill' | 'elixir',
+    nowMs = Date.now(),
+  ): BuyAlchemyItemResult {
+    return this.db.transaction((): BuyAlchemyItemResult => {
+      const character = this.getOrCreateCharacterInTx(guildId, userId, nowMs);
+      const dailyLimit = kind === 'pill' ? PROMO_PILL_DAILY_LIMIT : GUARD_ELIXIR_DAILY_LIMIT;
+      const boughtToday = kind === 'pill' ? character.pillBuysToday : character.elixirBuysToday;
+      if (boughtToday >= dailyLimit) {
+        return { ok: false, reason: 'daily_limit_reached', dailyLimit };
+      }
+
+      const cost = kind === 'pill' ? PROMO_PILL_PRICE : GUARD_ELIXIR_PRICE;
+      const profile = this.profileRepo.getOrCreate(guildId, userId);
+      if (profile.coins < cost) {
+        return { ok: false, reason: 'insufficient_funds', cost };
+      }
+
+      const balance = profile.coins - cost;
+      this.profileRepo.save({ ...profile, coins: balance });
+
+      const updated: RpgCharacter =
+        kind === 'pill'
+          ? {
+              ...character,
+              promoPills: character.promoPills + 1,
+              pillBuysToday: character.pillBuysToday + 1,
+              updatedAt: nowMs,
+            }
+          : {
+              ...character,
+              guardElixirs: character.guardElixirs + 1,
+              elixirBuysToday: character.elixirBuysToday + 1,
+              updatedAt: nowMs,
+            };
+      this.rpgRepo.saveCharacter(updated);
+
+      return {
+        ok: true,
+        kind,
+        character: updated,
+        cost,
+        balance,
+        buysRemaining: Math.max(
+          0,
+          dailyLimit - (kind === 'pill' ? updated.pillBuysToday : updated.elixirBuysToday),
+        ),
+      };
+    })();
+  }
+
+  healInjury(guildId: string, userId: string, nowMs = Date.now()): HealInjuryResult {
+    return this.db.transaction((): HealInjuryResult => {
+      const character = this.getOrCreateCharacterInTx(guildId, userId, nowMs);
+      if (character.injuredUntil <= nowMs) {
+        return { ok: false, reason: 'not_injured' };
+      }
+
+      const cost = computeHealInjuryCost(character.level);
+      const profile = this.profileRepo.getOrCreate(guildId, userId);
+      if (profile.coins < cost) {
+        return { ok: false, reason: 'insufficient_funds', cost };
+      }
+
+      const balance = profile.coins - cost;
+      this.profileRepo.save({ ...profile, coins: balance });
+
+      const updated: RpgCharacter = {
+        ...character,
+        injuredUntil: 0,
+        updatedAt: nowMs,
+      };
+      this.rpgRepo.saveCharacter(updated);
+
+      return { ok: true, character: updated, cost, balance };
+    })();
+  }
+
+  configureTrialLoadout(
+    guildId: string,
+    userId: string,
+    action: 'cycle_pills' | 'toggle_guard',
+    nowMs = Date.now(),
+  ): ConfigureTrialLoadoutResult {
+    return this.db.transaction((): ConfigureTrialLoadoutResult => {
+      const character = this.getOrCreateCharacterInTx(guildId, userId, nowMs);
+      if (action === 'cycle_pills') {
+        const maxUsable = Math.min(MAX_TRIAL_PILLS, character.promoPills);
+        const nextPills =
+          maxUsable <= 0 ? 0 : (Math.min(character.trialPillsStaged, maxUsable) + 1) % (maxUsable + 1);
+        const updated: RpgCharacter = {
+          ...character,
+          trialPillsStaged: nextPills,
+          updatedAt: nowMs,
+        };
+        this.rpgRepo.saveCharacter(updated);
+        return { ok: true, character: updated };
+      }
+
+      const nextGuard = !character.trialUseGuard;
+      if (nextGuard && character.guardElixirs <= 0) {
+        return { ok: false, reason: 'no_guard_elixir' };
+      }
+      const updated: RpgCharacter = {
+        ...character,
+        trialUseGuard: nextGuard,
+        updatedAt: nowMs,
+      };
+      this.rpgRepo.saveCharacter(updated);
+      return { ok: true, character: updated };
     })();
   }
 
@@ -1445,289 +1556,504 @@ export class RpgService {
     })();
   }
 
-  getActiveRun(guildId: string, userId: string): RpgRunState | null {
-    const rec = this.rpgRepo.getRun(guildId, userId);
-    if (!rec) return null;
-    return parseRunState(rec.stateJson);
+  previewIdleHarvest(guildId: string, userId: string, nowMs = Date.now()): IdleHarvestPreview {
+    const character = this.getOrCreateCharacter(guildId, userId, nowMs);
+    return this.computeIdlePreviewForCharacter(character, nowMs);
   }
 
-  getActiveTabletopRun(guildId: string, userId: string): TabletopRunState | null {
-    const rec = this.rpgRepo.getRun(guildId, userId);
-    if (!rec) return null;
-    return parseTabletopRunState(rec.stateJson);
-  }
-
-  getAnyActiveRunMode(guildId: string, userId: string): 'tabletop' | 'classic' | null {
-    const rec = this.rpgRepo.getRun(guildId, userId);
-    if (!rec) return null;
-    if (parseTabletopRunState(rec.stateJson)) return 'tabletop';
-    if (parseRunState(rec.stateJson)) return 'classic';
-    return null;
-  }
-
-  getTabletopAttributes(
+  claimIdleHarvest(
     guildId: string,
     userId: string,
-    nowMs = Date.now(),
-  ): TabletopAttributes {
-    const stats = this.computeCombatStats(guildId, userId, nowMs);
-    const creditScore = this.getUserCreditScore(guildId, userId);
-    return deriveTabletopAttributes({
-      classKey: stats.classKey,
-      level: stats.level,
-      maxHp: stats.maxHp,
-      atk: stats.atk,
-      def: stats.def,
-      critBp: stats.critBp,
-      dodgeBp: stats.dodgeBp,
-      creditScore,
-      petSynergy: stats.petSynergy,
-    });
-  }
-
-  startTabletopRun(
-    guildId: string,
-    userId: string,
-    chapter: number,
     nowMs = Date.now(),
     rng: () => number = Math.random,
-  ): StartTabletopRunResult {
-    const chapterDef = RPG_CHAPTER_MAP.get(chapter);
-    if (!chapterDef) {
-      return { ok: false, reason: 'invalid_chapter' };
-    }
-
-    return this.db.transaction((): StartTabletopRunResult => {
-      const existingRun = this.rpgRepo.getRun(guildId, userId);
-      if (
-        existingRun &&
-        (parseRunState(existingRun.stateJson) || parseTabletopRunState(existingRun.stateJson))
-      ) {
-        return { ok: false, reason: 'active_run_exists' };
-      }
-      if (existingRun) {
-        this.rpgRepo.deleteRun(guildId, userId);
-      }
-
+  ): ClaimIdleHarvestResult {
+    return this.db.transaction((): ClaimIdleHarvestResult => {
       const character = this.getOrCreateCharacterInTx(guildId, userId, nowMs);
-      const maxUnlockedChapter = Math.min(RPG_CHAPTERS.length, character.maxChapterCleared + 1);
-      if (chapter > maxUnlockedChapter) {
-        return { ok: false, reason: 'chapter_locked', maxUnlockedChapter };
+      if (!character.classSelected) {
+        return { ok: false, reason: 'no_class_selected' };
       }
 
-      if (character.stamina < 1) {
-        return { ok: false, reason: 'insufficient_stamina' };
+      const preview = this.computeIdlePreviewForCharacter(character, nowMs);
+      if (!preview.canClaim) {
+        return { ok: false, reason: 'too_soon', waitSeconds: preview.waitSeconds };
       }
 
-      const updatedChar: RpgCharacter = {
-        ...character,
-        stamina: character.stamina - 1,
-        updatedAt: nowMs,
-      };
-      this.rpgRepo.saveCharacter(updatedChar);
+      let extraXp = 0;
+      let extraCoins = 0;
+      let pillsFound = 0;
+      let elixirsFound = 0;
+      const pendingItems: PendingRpgItem[] = [];
+      const adventures: string[] = [];
 
-      const stats = this.computeCombatStatsForCharacter(updatedChar);
-      const creditScore = this.getUserCreditScore(guildId, userId);
-      const profile = this.profileRepo.getOrCreate(guildId, userId);
+      const eventSlots =
+        preview.accruedMs >= 8 * 3_600_000
+          ? 3
+          : preview.accruedMs >= 2 * 3_600_000
+            ? 2
+            : preview.accruedMs >= 15 * 60_000
+              ? 1
+              : 0;
 
-      const run = createInitialTabletopRun({
-        chapter,
-        classKey: updatedChar.classKey,
-        level: updatedChar.level,
-        maxHp: stats.maxHp,
-        atk: stats.atk,
-        def: stats.def,
-        critBp: stats.critBp,
-        dodgeBp: stats.dodgeBp,
-        creditScore,
-        petSynergy: stats.petSynergy,
-        pocketCoins: profile.coins,
-        catalog: TABLETOP_CATALOG,
-        rng,
-      });
-
-      this.saveTabletopRunInTx(guildId, userId, run, nowMs);
-      return { ok: true, run, character: updatedChar };
-    })();
-  }
-
-  actInTabletopRun(
-    guildId: string,
-    userId: string,
-    action: TabletopRunAction,
-    nowMs = Date.now(),
-    rng: () => number = Math.random,
-  ): ActInTabletopRunResult {
-    return this.db.transaction((): ActInTabletopRunResult => {
-      const record = this.rpgRepo.getRun(guildId, userId);
-      if (!record) {
-        return { ok: false, reason: 'no_active_run' };
-      }
-      const run = parseTabletopRunState(record.stateJson);
-      if (!run) {
-        if (!parseRunState(record.stateJson)) {
-          this.rpgRepo.deleteRun(guildId, userId);
+      for (let i = 0; i < eventSlots; i++) {
+        const r = clampUnit(rng());
+        if (r < 0.25) {
+          const bonus = Math.max(10, Math.round(preview.estimatedXp * 0.25));
+          extraXp += bonus;
+          adventures.push(`✨ **灵泉顿悟**：挂机期间寻得古树灵泉，额外领悟 **+${bonus} XP**`);
+        } else if (r < 0.5) {
+          const bonus = Math.max(50, Math.round(preview.estimatedCoins * 0.25));
+          extraCoins += bonus;
+          adventures.push(`🪙 **无主秘窖**：踢开半掩的石箱，顺手拾获 **+${bonus.toLocaleString()}** 赏金`);
+        } else if (r < 0.72) {
+          pillsFound += 1;
+          adventures.push('🧪 **炼金遗物**：顺手炼化妖兽内丹，收获 **晋升秘药 ×1**');
+        } else if (r < 0.92) {
+          const dropped = generateTierItem(preview.realm.tier, 'idle', rng);
+          pendingItems.push(dropped);
+          const meta = RARITY_META[dropped.rarity];
+          adventures.push(`🎁 **战利品拾遗**：巡猎精英残骸捡到 ${meta.emoji} **${dropped.name}**`);
+        } else {
+          elixirsFound += 1;
+          adventures.push('🛡️ **圣泉恩赐**：在古老神龛发现 **护魂圣水 ×1**');
         }
-        return { ok: false, reason: 'no_active_run' };
       }
 
-      const chapterDef = RPG_CHAPTER_MAP.get(run.chapter);
-      if (!chapterDef) {
-        this.rpgRepo.deleteRun(guildId, userId);
-        return { ok: false, reason: 'no_active_run' };
-      }
+      const totalXp = preview.estimatedXp + extraXp;
+      const totalCoins = preview.estimatedCoins + extraCoins;
 
-      if (action.type === 'potion') {
-        const potionRes = drinkTabletopPotion(run);
-        if (!potionRes.ok) {
-          return { ok: false, reason: potionRes.reason };
-        }
-        this.saveTabletopRunInTx(guildId, userId, potionRes.state, nowMs);
-        return {
-          ok: true,
-          status: 'potion',
-          run: potionRes.state,
-          healed: potionRes.healed,
-        };
-      }
-
-      if (action.type === 'retreat') {
-        const character = this.getOrCreateCharacterInTx(guildId, userId, nowMs);
-        const { reward, legendaryDrops, updatedCharacter, balance } = this.bankLootInTx({
-          guildId,
-          userId,
-          character,
-          pendingCoins: run.pendingCoins,
-          pendingXp: run.pendingXp,
-          pendingItems: run.pendingItems,
-          bossBonusCoins: 0,
-          creditDelta: 0,
-          source: `rpg_tabletop_retreat_ch${run.chapter}`,
-          nowMs,
-        });
-        this.rpgRepo.saveCharacter(updatedCharacter);
-        this.rpgRepo.deleteRun(guildId, userId);
-        return {
-          ok: true,
-          status: 'retreat',
-          chapter: run.chapter,
-          act: run.act,
-          reward,
-          legendaryDrops,
-          character: updatedCharacter,
-          balance,
-        };
-      }
-
-      // action.type === 'choice'
-      const profile = this.profileRepo.getOrCreate(guildId, userId);
-      const resolved = resolveTabletopChoice({
-        state: run,
-        choiceId: action.choiceId,
-        pocketCoins: profile.coins,
-        catalog: TABLETOP_CATALOG,
-        rng,
-        generateItem: generatePendingItem,
-      });
-
-      if (!resolved.ok) {
-        return resolved;
-      }
-
-      if (resolved.coinsSpent > 0) {
-        this.profileRepo.save({
-          ...profile,
-          coins: Math.max(0, profile.coins - resolved.coinsSpent),
-        });
-      }
-
-      if (resolved.status === 'ongoing') {
-        this.saveTabletopRunInTx(guildId, userId, resolved.state, nowMs);
-        return {
-          ok: true,
-          status: 'ongoing',
-          run: resolved.state,
-          outcome: resolved.outcome,
-          coinsSpent: resolved.coinsSpent,
-        };
-      }
-
-      if (resolved.status === 'defeat') {
-        this.rpgRepo.deleteRun(guildId, userId);
-        return {
-          ok: true,
-          status: 'defeat',
-          chapter: run.chapter,
-          act: run.act,
-          outcome: resolved.outcome,
-          coinsSpent: resolved.coinsSpent,
-          lostCoins: resolved.lostLoot.coins,
-          lostXp: resolved.lostLoot.xp,
-          lostItemsCount: resolved.lostLoot.itemCount,
-        };
-      }
-
-      // victory
-      const character = this.getOrCreateCharacterInTx(guildId, userId, nowMs);
-      const firstClear = character.maxChapterCleared < chapterDef.chapter;
-      const bossBonusCoins = firstClear
-        ? Math.round(chapterDef.clearBaseCoins * chapterDef.firstClearMultiplier)
-        : chapterDef.clearBaseCoins;
-      const bossBonusXp = firstClear
-        ? Math.round(chapterDef.clearBaseXp * 1.5)
-        : chapterDef.clearBaseXp;
-
-      const creditDelta = firstClear ? 25 : 5;
-      const creditReason = firstClear
-        ? `RPG首通第${chapterDef.chapter}章「${chapterDef.name}」`
-        : `RPG通关第${chapterDef.chapter}章「${chapterDef.name}」`;
-
-      const {
-        reward,
-        legendaryDrops,
-        updatedCharacter: leveledChar,
-        balance,
-      } = this.bankLootInTx({
+      const banked = this.bankLootInTx({
         guildId,
         userId,
         character,
-        pendingCoins: resolved.state.pendingCoins,
-        pendingXp: resolved.state.pendingXp + bossBonusXp,
-        pendingItems: resolved.state.pendingItems,
-        bossBonusCoins,
-        creditDelta,
-        source: `rpg_tabletop_clear_ch${chapterDef.chapter}`,
+        xpGain: totalXp,
+        coinGain: totalCoins,
+        pendingItems,
+        source: `rpg_idle_tier${preview.realm.tier}`,
         nowMs,
       });
 
       const finalCharacter: RpgCharacter = {
-        ...leveledChar,
-        maxChapterCleared: Math.max(leveledChar.maxChapterCleared, chapterDef.chapter),
-        totalClears: leveledChar.totalClears + 1,
-        totalBossKills: leveledChar.totalBossKills + 1,
+        ...banked.updatedCharacter,
+        lastIdleClaimAt: nowMs,
+        promoPills: banked.updatedCharacter.promoPills + pillsFound,
+        guardElixirs: banked.updatedCharacter.guardElixirs + elixirsFound,
         updatedAt: nowMs,
       };
       this.rpgRepo.saveCharacter(finalCharacter);
-      this.rpgRepo.deleteRun(guildId, userId);
-
-      if (this.onCreditChange) {
-        this.onCreditChange(guildId, userId, creditDelta, creditReason, nowMs);
-      }
 
       return {
         ok: true,
-        status: 'victory',
-        chapter: chapterDef.chapter,
-        outcome: resolved.outcome,
-        victoryEpilogue: resolved.victoryEpilogue,
-        coinsSpent: resolved.coinsSpent,
-        reward,
-        firstClear,
-        legendaryDrops,
+        accruedMs: preview.accruedMs,
+        powerMultiplier: preview.powerMultiplier,
+        xpEarned: totalXp,
+        levelsGained: banked.levelsGained,
+        hitGate: banked.hitGate,
+        grossCoins: banked.grossCoins,
+        garnishedCoins: banked.garnishedCoins,
+        netCoins: banked.netCoins,
+        pillsFound,
+        elixirsFound,
+        bankedItems: banked.bankedItems,
+        legendaryDrops: banked.legendaryDrops,
+        autoSalvagedCount: banked.autoSalvagedCount,
+        autoSalvagedCoins: banked.autoSalvagedCoins,
+        adventures,
         character: finalCharacter,
-        balance,
+        balance: banked.balance,
       };
     })();
+  }
+
+  raidBoss(
+    guildId: string,
+    userId: string,
+    mode: 'single' | 'all',
+    nowMs = Date.now(),
+    rng: () => number = Math.random,
+  ): RaidBossResult {
+    return this.db.transaction((): RaidBossResult => {
+      const character = this.getOrCreateCharacterInTx(guildId, userId, nowMs);
+      if (!character.classSelected) {
+        return { ok: false, reason: 'no_class_selected' };
+      }
+      if (character.stamina < 1) {
+        return { ok: false, reason: 'insufficient_stamina' };
+      }
+
+      const runsExecuted = mode === 'all' ? character.stamina : 1;
+      const realm = getRpgRealmInfo(character.level);
+      const tierDef = realm.tierDef;
+      const stats = this.computeCombatStatsForCharacter(character);
+
+      const powerScore = stats.atk * 2.5 + stats.maxHp * 0.2 + stats.def * 2;
+      const expectedScore = tierDef.tier * 130;
+      const rating: 'S' | 'A' | 'B' =
+        powerScore >= expectedScore * 1.35 ? 'S' : powerScore >= expectedScore * 0.9 ? 'A' : 'B';
+      const ratingMult = rating === 'S' ? 1.25 : rating === 'A' ? 1.1 : 1.0;
+      const dropChance = rating === 'S' ? 0.85 : 0.75;
+
+      let totalXp = 0;
+      let totalCoins = 0;
+      let pillsFound = 0;
+      let elixirsFound = 0;
+      const pendingItems: PendingRpgItem[] = [];
+
+      for (let i = 0; i < runsExecuted; i++) {
+        const xpVar = 0.9 + clampUnit(rng()) * 0.2;
+        const coinVar = 0.9 + clampUnit(rng()) * 0.2;
+        totalXp += Math.max(10, Math.round(tierDef.idleXpPerHour * 0.75 * ratingMult * xpVar));
+        totalCoins += Math.max(50, Math.round(tierDef.idleCoinsPerHour * 0.95 * ratingMult * coinVar));
+
+        if (clampUnit(rng()) < dropChance) {
+          pendingItems.push(generateTierItem(tierDef.tier, 'boss', rng));
+        }
+        if (clampUnit(rng()) < 0.35) {
+          pillsFound += 1;
+        }
+        if (clampUnit(rng()) < 0.15) {
+          elixirsFound += 1;
+        }
+      }
+
+      const banked = this.bankLootInTx({
+        guildId,
+        userId,
+        character: {
+          ...character,
+          stamina: character.stamina - runsExecuted,
+        },
+        xpGain: totalXp,
+        coinGain: totalCoins,
+        pendingItems,
+        source: `rpg_raid_tier${tierDef.tier}`,
+        nowMs,
+      });
+
+      const finalCharacter: RpgCharacter = {
+        ...banked.updatedCharacter,
+        totalClears: banked.updatedCharacter.totalClears + runsExecuted,
+        totalBossKills: banked.updatedCharacter.totalBossKills + runsExecuted,
+        promoPills: banked.updatedCharacter.promoPills + pillsFound,
+        guardElixirs: banked.updatedCharacter.guardElixirs + elixirsFound,
+        updatedAt: nowMs,
+      };
+      this.rpgRepo.saveCharacter(finalCharacter);
+
+      return {
+        ok: true,
+        runsExecuted,
+        rating,
+        tierDef,
+        xpEarned: totalXp,
+        levelsGained: banked.levelsGained,
+        hitGate: banked.hitGate,
+        grossCoins: banked.grossCoins,
+        garnishedCoins: banked.garnishedCoins,
+        netCoins: banked.netCoins,
+        pillsFound,
+        elixirsFound,
+        bankedItems: banked.bankedItems,
+        legendaryDrops: banked.legendaryDrops,
+        autoSalvagedCount: banked.autoSalvagedCount,
+        autoSalvagedCoins: banked.autoSalvagedCoins,
+        character: finalCharacter,
+        balance: banked.balance,
+      };
+    })();
+  }
+
+  computeBreakthroughPreview(
+    guildId: string,
+    userId: string,
+    nowMs = Date.now(),
+  ): BreakthroughPreview {
+    const character = this.getOrCreateCharacter(guildId, userId, nowMs);
+    const pending = this.rpgRepo.getPendingTrialForUser(guildId, userId);
+    return this.computeBreakthroughPreviewForCharacter(character, Boolean(pending));
+  }
+
+  attemptSoloBreakthrough(
+    guildId: string,
+    userId: string,
+    nowMs = Date.now(),
+    rng: () => number = Math.random,
+  ): SoloBreakthroughResult {
+    return this.db.transaction((): SoloBreakthroughResult => {
+      const character = this.getOrCreateCharacterInTx(guildId, userId, nowMs);
+      if (!character.classSelected) {
+        return { ok: false, reason: 'no_class_selected' };
+      }
+      const fromRealm = getRpgRealmInfo(character.level);
+      if (!fromRealm.nextTierDef || character.level >= MAX_RPG_LEVEL) {
+        return { ok: false, reason: 'at_max_tier' };
+      }
+      if (!isAtBreakthroughGate(character.level, character.xp)) {
+        return { ok: false, reason: 'not_at_gate' };
+      }
+      if (this.rpgRepo.getPendingTrialForUser(guildId, userId)) {
+        return { ok: false, reason: 'pending_trial_exists' };
+      }
+
+      const preview = this.computeBreakthroughPreviewForCharacter(character, false);
+      const consumedChar: RpgCharacter = {
+        ...character,
+        promoPills: Math.max(0, character.promoPills - preview.pillsUsed),
+        guardElixirs: Math.max(0, character.guardElixirs - (preview.usedGuard ? 1 : 0)),
+        trialPillsStaged: 0,
+        trialUseGuard: false,
+      };
+
+      const succeeded = clampUnit(rng()) * 100 < preview.totalRatePct;
+      const outcome = this.resolveBreakthroughOutcomeInTx({
+        guildId,
+        userId,
+        character: consumedChar,
+        targetTier: fromRealm.nextTierDef.tier,
+        usedGuard: preview.usedGuard,
+        succeeded,
+        saboteurCount: 0,
+        nowMs,
+      });
+
+      return {
+        ok: true,
+        succeeded,
+        fromRealm,
+        toRealm: outcome.toRealm,
+        finalRatePct: preview.totalRatePct,
+        pillsUsed: preview.pillsUsed,
+        usedGuard: preview.usedGuard,
+        grossCoins: outcome.grossCoins,
+        garnishedCoins: outcome.garnishedCoins,
+        netCoins: outcome.netCoins,
+        creditDelta: outcome.creditDelta,
+        xpLost: outcome.xpLost,
+        injuredUntil: outcome.injuredUntil,
+        character: outcome.character,
+        balance: outcome.balance,
+      };
+    })();
+  }
+
+  startPublicBreakthroughTrial(
+    guildId: string,
+    channelId: string,
+    userId: string,
+    nowMs = Date.now(),
+  ): StartPublicTrialResult {
+    return this.db.transaction((): StartPublicTrialResult => {
+      const character = this.getOrCreateCharacterInTx(guildId, userId, nowMs);
+      if (!character.classSelected) {
+        return { ok: false, reason: 'no_class_selected' };
+      }
+      const fromRealm = getRpgRealmInfo(character.level);
+      if (!fromRealm.nextTierDef || character.level >= MAX_RPG_LEVEL) {
+        return { ok: false, reason: 'at_max_tier' };
+      }
+      if (!isAtBreakthroughGate(character.level, character.xp)) {
+        return { ok: false, reason: 'not_at_gate' };
+      }
+      if (this.rpgRepo.getPendingTrialForUser(guildId, userId)) {
+        return { ok: false, reason: 'pending_trial_exists' };
+      }
+
+      const preview = this.computeBreakthroughPreviewForCharacter(character, false);
+      const updatedChar: RpgCharacter = {
+        ...character,
+        promoPills: Math.max(0, character.promoPills - preview.pillsUsed),
+        guardElixirs: Math.max(0, character.guardElixirs - (preview.usedGuard ? 1 : 0)),
+        trialPillsStaged: 0,
+        trialUseGuard: false,
+        updatedAt: nowMs,
+      };
+      this.rpgRepo.saveCharacter(updatedChar);
+
+      const trial = this.rpgRepo.createTrial({
+        guildId,
+        channelId,
+        userId,
+        fromLevel: updatedChar.level,
+        targetTier: fromRealm.nextTierDef.tier,
+        pillsUsed: preview.pillsUsed,
+        usedGuard: preview.usedGuard,
+        baseChanceBp: Math.round(preview.rawBasePct * 100),
+        createdAt: nowMs,
+        expiresAt: nowMs + PUBLIC_TRIAL_DURATION_MS,
+      });
+
+      return { ok: true, trial, character: updatedChar, preview };
+    })();
+  }
+
+  cancelPublicTrialAndRefund(trialId: number, nowMs = Date.now()): boolean {
+    return this.db.transaction((): boolean => {
+      const trial = this.rpgRepo.getTrialById(trialId);
+      if (!trial || trial.status !== 'pending') {
+        return false;
+      }
+      const character = this.rpgRepo.getCharacter(trial.guildId, trial.userId);
+      if (character) {
+        this.rpgRepo.saveCharacter({
+          ...character,
+          promoPills: character.promoPills + trial.pillsUsed,
+          guardElixirs: character.guardElixirs + (trial.usedGuard ? 1 : 0),
+          updatedAt: nowMs,
+        });
+      }
+      this.rpgRepo.saveTrial({
+        ...trial,
+        status: 'cancelled',
+        resultSummary: '公屏试炼发送失败，已全额退还投入秘药。',
+        resolvedAt: nowMs,
+      });
+      return true;
+    })();
+  }
+
+  interactPublicTrial(
+    trialId: number,
+    actorId: string,
+    mode: 'help' | 'jeer',
+    nowMs = Date.now(),
+  ): InteractPublicTrialResult {
+    return this.db.transaction((): InteractPublicTrialResult => {
+      const trial = this.rpgRepo.getTrialById(trialId);
+      if (!trial) {
+        return { ok: false, reason: 'not_found' };
+      }
+      if (trial.status !== 'pending' || trial.expiresAt <= nowMs) {
+        return { ok: false, reason: 'already_resolved' };
+      }
+      if (actorId === trial.userId) {
+        return { ok: false, reason: 'own_trial' };
+      }
+      if (trial.supporters.includes(actorId) || trial.saboteurs.includes(actorId)) {
+        return { ok: false, reason: 'already_joined' };
+      }
+
+      const nextSupporters = [...trial.supporters];
+      const nextSaboteurs = [...trial.saboteurs];
+      if (mode === 'help') {
+        if (nextSupporters.length >= MAX_TRIAL_SUPPORTERS) {
+          return { ok: false, reason: 'supporters_full' };
+        }
+        nextSupporters.push(actorId);
+      } else {
+        if (nextSaboteurs.length >= MAX_TRIAL_SABOTEURS) {
+          return { ok: false, reason: 'saboteurs_full' };
+        }
+        nextSaboteurs.push(actorId);
+      }
+
+      const updated: RpgTrial = {
+        ...trial,
+        supporters: nextSupporters,
+        saboteurs: nextSaboteurs,
+      };
+      this.rpgRepo.saveTrial(updated);
+
+      const currentRatePct = computeTrialEffectiveRate(
+        updated.baseChanceBp,
+        updated.supporters.length,
+        updated.saboteurs.length,
+      );
+      return { ok: true, trial: updated, currentRatePct, mode };
+    })();
+  }
+
+  settlePublicTrial(
+    trialId: number,
+    actorIdOrSystem: string | null,
+    nowMs = Date.now(),
+    rng: () => number = Math.random,
+  ): SettlePublicTrialResult {
+    return this.db.transaction((): SettlePublicTrialResult => {
+      const trial = this.rpgRepo.getTrialById(trialId);
+      if (!trial) {
+        return { ok: false, reason: 'not_found' };
+      }
+      if (trial.status !== 'pending') {
+        return { ok: false, reason: 'already_resolved' };
+      }
+      if (actorIdOrSystem !== null && actorIdOrSystem !== trial.userId) {
+        return { ok: false, reason: 'not_owner' };
+      }
+
+      const character = this.getOrCreateCharacterInTx(trial.guildId, trial.userId, nowMs);
+      const fromRealm = getRpgRealmInfo(character.level);
+      const finalRatePct = computeTrialEffectiveRate(
+        trial.baseChanceBp,
+        trial.supporters.length,
+        trial.saboteurs.length,
+      );
+      const succeeded = clampUnit(rng()) * 100 < finalRatePct;
+
+      const outcome = this.resolveBreakthroughOutcomeInTx({
+        guildId: trial.guildId,
+        userId: trial.userId,
+        character,
+        targetTier: trial.targetTier,
+        usedGuard: trial.usedGuard,
+        succeeded,
+        saboteurCount: trial.saboteurs.length,
+        nowMs,
+      });
+
+      const supporterPayouts: SupporterPayout[] = [];
+      if (succeeded && trial.supporters.length > 0) {
+        const candyAmount = trial.targetTier * 600;
+        for (const supId of trial.supporters) {
+          this.profileRepo.addCoins(trial.guildId, supId, candyAmount);
+          supporterPayouts.push({ userId: supId, amount: candyAmount });
+        }
+      }
+
+      const targetTierDef = RPG_TIER_MAP.get(trial.targetTier);
+      const summary = succeeded
+        ? `🎉 晋升成功！跨入 ${targetTierDef?.emoji ?? '🌟'} **${targetTierDef?.name ?? `第${trial.targetTier}阶`}·一重**（成功率 ${finalRatePct}%），获赏金 +${outcome.grossCoins.toLocaleString()}！`
+        : `💥 晋升失败（成功率 ${finalRatePct}%），${trial.usedGuard ? '护魂圣水生效免于重伤' : '陷入 1 小时重伤'}，下轮保底 +${PITY_BONUS_PER_FAIL_PCT}%！`;
+
+      const settledTrial: RpgTrial = {
+        ...trial,
+        status: succeeded ? 'succeeded' : 'failed',
+        resultSummary: summary,
+        resolvedAt: nowMs,
+      };
+      this.rpgRepo.saveTrial(settledTrial);
+
+      return {
+        ok: true,
+        trial: settledTrial,
+        succeeded,
+        fromRealm,
+        toRealm: outcome.toRealm,
+        finalRatePct,
+        grossCoins: outcome.grossCoins,
+        garnishedCoins: outcome.garnishedCoins,
+        netCoins: outcome.netCoins,
+        creditDelta: outcome.creditDelta,
+        xpLost: outcome.xpLost,
+        injuredUntil: outcome.injuredUntil,
+        supporterPayouts,
+        character: outcome.character,
+        balance: outcome.balance,
+      };
+    })();
+  }
+
+  settleDuePublicTrials(
+    nowMs = Date.now(),
+    rng: () => number = Math.random,
+  ): Array<Extract<SettlePublicTrialResult, { ok: true }>> {
+    const due = this.rpgRepo.listDuePendingTrials(nowMs);
+    const settled: Array<Extract<SettlePublicTrialResult, { ok: true }>> = [];
+    for (const trial of due) {
+      const res = this.settlePublicTrial(trial.id, null, nowMs, rng);
+      if (res.ok) {
+        settled.push(res);
+      }
+    }
+    return settled;
   }
 
   getLeaderboard(
@@ -1736,157 +2062,6 @@ export class RpgService {
     offset = 0,
   ): { items: RpgCharacter[]; total: number } {
     return this.rpgRepo.getLeaderboard(guildId, limit, offset);
-  }
-
-  startRun(
-    guildId: string,
-    userId: string,
-    chapter: number,
-    nowMs = Date.now(),
-    rng: () => number = Math.random,
-  ): StartRunResult {
-    const chapterDef = RPG_CHAPTER_MAP.get(chapter);
-    if (!chapterDef) {
-      return { ok: false, reason: 'invalid_chapter' };
-    }
-
-    return this.db.transaction((): StartRunResult => {
-      const existingRun = this.rpgRepo.getRun(guildId, userId);
-      if (
-        existingRun &&
-        (parseRunState(existingRun.stateJson) || parseTabletopRunState(existingRun.stateJson))
-      ) {
-        return { ok: false, reason: 'active_run_exists' };
-      }
-      if (existingRun) {
-        this.rpgRepo.deleteRun(guildId, userId);
-      }
-
-      const character = this.getOrCreateCharacterInTx(guildId, userId, nowMs);
-      const maxUnlockedChapter = Math.min(RPG_CHAPTERS.length, character.maxChapterCleared + 1);
-      if (chapter > maxUnlockedChapter) {
-        return { ok: false, reason: 'chapter_locked', maxUnlockedChapter };
-      }
-
-      if (character.stamina < 1) {
-        return { ok: false, reason: 'insufficient_stamina' };
-      }
-
-      const updatedChar: RpgCharacter = {
-        ...character,
-        stamina: character.stamina - 1,
-        updatedAt: nowMs,
-      };
-      this.rpgRepo.saveCharacter(updatedChar);
-
-      const stats = this.computeCombatStatsForCharacter(updatedChar);
-      const run: RpgRunState = {
-        chapter,
-        floor: 1,
-        phase: 'combat',
-        turn: 1,
-        classKey: updatedChar.classKey,
-        playerHp: stats.maxHp,
-        playerMaxHp: stats.maxHp,
-        playerAtk: stats.atk,
-        playerDef: stats.def,
-        playerCritBp: stats.critBp,
-        playerDodgeBp: stats.dodgeBp,
-        skillCooldown: 0,
-        potionsLeft: RUN_INITIAL_POTIONS,
-        atkBuffPct: 0,
-        petSynergy: stats.petSynergy,
-        enemy: null,
-        event: null,
-        pendingCoins: 0,
-        pendingXp: 0,
-        pendingItems: [],
-        logs: [`${chapterDef.emoji} 踏入第 ${chapter} 章「**${chapterDef.name}**」！`],
-      };
-
-      if (stats.petSynergy) {
-        run.logs.push(
-          `${stats.petSynergy.emoji} 战宠「**${stats.petSynergy.nickname}**」随行出战（+${stats.petSynergy.bonusHp} HP / +${stats.petSynergy.bonusAtk} ATK）。`,
-        );
-      }
-
-      this.populateFloorEncounter(run, chapterDef, rng);
-      this.saveRunInTx(guildId, userId, run, nowMs);
-
-      return { ok: true, run, character: updatedChar };
-    })();
-  }
-
-  actInRun(
-    guildId: string,
-    userId: string,
-    action: RpgRunAction,
-    nowMs = Date.now(),
-    rng: () => number = Math.random,
-  ): ActInRunResult {
-    return this.db.transaction((): ActInRunResult => {
-      const record = this.rpgRepo.getRun(guildId, userId);
-      if (!record) {
-        return { ok: false, reason: 'no_active_run' };
-      }
-      const run = parseRunState(record.stateJson);
-      if (!run) {
-        if (!parseTabletopRunState(record.stateJson)) {
-          this.rpgRepo.deleteRun(guildId, userId);
-        }
-        return { ok: false, reason: 'no_active_run' };
-      }
-
-      const chapterDef = RPG_CHAPTER_MAP.get(run.chapter);
-      if (!chapterDef) {
-        this.rpgRepo.deleteRun(guildId, userId);
-        return { ok: false, reason: 'no_active_run' };
-      }
-
-      // Retreat safely banks accumulated pending loot at any point
-      if (action === 'retreat') {
-        return this.handleRetreatInTx(guildId, userId, run, chapterDef, nowMs);
-      }
-
-      if (run.phase === 'event') {
-        if (action !== 'event_a' && action !== 'event_b') {
-          return { ok: false, reason: 'invalid_action_for_phase' };
-        }
-        return this.handleEventActionInTx(guildId, userId, run, chapterDef, action, nowMs, rng);
-      }
-
-      if (run.phase === 'floor_clear') {
-        if (action === 'potion') {
-          return this.handleOutOfCombatPotionInTx(guildId, userId, run, nowMs);
-        }
-        if (action !== 'next_floor') {
-          return { ok: false, reason: 'invalid_action_for_phase' };
-        }
-        run.floor += 1;
-        run.turn = 1;
-        run.logs = [];
-        this.populateFloorEncounter(run, chapterDef, rng);
-        this.saveRunInTx(guildId, userId, run, nowMs);
-        return {
-          ok: true,
-          outcome: run.phase === 'floor_clear' ? 'floor_cleared' : 'ongoing',
-          run,
-          logs: [...run.logs],
-        };
-      }
-
-      // Combat phase
-      if (
-        action !== 'attack' &&
-        action !== 'skill' &&
-        action !== 'defend' &&
-        action !== 'potion'
-      ) {
-        return { ok: false, reason: 'invalid_action_for_phase' };
-      }
-
-      return this.handleCombatActionInTx(guildId, userId, run, chapterDef, action, nowMs, rng);
-    })();
   }
 
   private getOrCreateCharacterInTx(
@@ -1905,30 +2080,53 @@ export class RpgService {
         classSelected: false,
         stamina: cfg.dailyStamina,
         lastStaminaDate: today,
+        lastIdleClaimAt: nowMs,
         updatedAt: nowMs,
       });
     }
-    return this.refreshDailyStaminaInTx(existing, today, nowMs);
+    return this.refreshCharacterInTx(existing, today, nowMs);
   }
 
-  private refreshDailyStaminaInTx(
+  private refreshCharacterInTx(
     character: RpgCharacter,
     today: string,
     nowMs: number,
   ): RpgCharacter {
-    if (character.lastStaminaDate === today) {
-      return character;
+    let next = character;
+    let dirty = false;
+
+    // Backfill legacy characters BEFORE daily stamina reset overwrites updatedAt
+    if (next.classSelected && next.lastIdleClaimAt <= 0) {
+      const minAnchor = Math.max(0, nowMs - MAX_IDLE_ACCRUE_MS);
+      const seedClaimAt =
+        character.updatedAt > 0
+          ? Math.max(minAnchor, Math.min(nowMs, character.updatedAt))
+          : minAnchor;
+      next = {
+        ...next,
+        lastIdleClaimAt: seedClaimAt,
+      };
+      dirty = true;
     }
-    const cfg = this.getConfig(character.guildId);
-    const updated: RpgCharacter = {
-      ...character,
-      stamina: Math.max(character.stamina, cfg.dailyStamina),
-      lastStaminaDate: today,
-      staminaBuysToday: 0,
-      updatedAt: nowMs,
-    };
-    this.rpgRepo.saveCharacter(updated);
-    return updated;
+
+    if (next.lastStaminaDate !== today) {
+      const cfg = this.getConfig(next.guildId);
+      next = {
+        ...next,
+        stamina: Math.max(next.stamina, cfg.dailyStamina),
+        lastStaminaDate: today,
+        staminaBuysToday: 0,
+        pillBuysToday: 0,
+        elixirBuysToday: 0,
+        updatedAt: nowMs,
+      };
+      dirty = true;
+    }
+
+    if (dirty) {
+      this.rpgRepo.saveCharacter(next);
+    }
+    return next;
   }
 
   private computeCombatStatsForCharacter(character: RpgCharacter): CombatStats {
@@ -1974,628 +2172,95 @@ export class RpgService {
     };
   }
 
-  private saveRunInTx(
-    guildId: string,
-    userId: string,
-    run: RpgRunState,
+  private computeIdlePreviewForCharacter(
+    character: RpgCharacter,
     nowMs: number,
-  ): void {
-    run.logs = run.logs.slice(-12);
-    this.rpgRepo.upsertRun({
-      guildId,
-      userId,
-      chapter: run.chapter,
-      floor: run.floor,
-      stateJson: JSON.stringify(run),
-      updatedAt: nowMs,
-    });
-  }
+  ): IdleHarvestPreview {
+    const realm = getRpgRealmInfo(character.level);
+    const stats = this.computeCombatStatsForCharacter(character);
+    const powerMultiplier = computeIdlePowerMultiplier(stats, realm.tier);
 
-  private saveTabletopRunInTx(
-    guildId: string,
-    userId: string,
-    run: TabletopRunState,
-    nowMs: number,
-  ): void {
-    this.rpgRepo.upsertRun({
-      guildId,
-      userId,
-      chapter: run.chapter,
-      floor: run.act,
-      stateJson: JSON.stringify(run),
-      updatedAt: nowMs,
-    });
-  }
+    const anchorMs = character.lastIdleClaimAt > 0 ? character.lastIdleClaimAt : nowMs;
+    const rawElapsedMs = Math.max(0, nowMs - anchorMs);
+    const accruedMs = Math.min(MAX_IDLE_ACCRUE_MS, rawElapsedMs);
+    const windowStartMs = nowMs - accruedMs;
 
-  private populateFloorEncounter(
-    run: RpgRunState,
-    chapterDef: RpgChapterDef,
-    rng: () => number,
-  ): void {
-    if (run.floor >= chapterDef.floors) {
-      const boss = chapterDef.boss;
-      run.phase = 'combat';
-      run.event = null;
-      run.enemy = {
-        name: boss.name,
-        emoji: boss.emoji,
-        kind: 'boss',
-        hp: boss.hp,
-        maxHp: boss.hp,
-        atk: boss.atk,
-        def: boss.def,
-        armorBreakTurns: 0,
-        burnTurns: 0,
-        burnDamage: 0,
-        ...(boss.skillName ? { bossSkillName: boss.skillName } : {}),
-      };
-      run.logs.push(`🔥 第 ${run.floor} 层 · 章节首领 ${boss.emoji} **${boss.name}** 降临！`);
-      return;
-    }
+    const injuredOverlapMs =
+      character.injuredUntil > windowStartMs
+        ? Math.max(0, Math.min(nowMs, character.injuredUntil) - windowStartMs)
+        : 0;
+    const healthyMs = Math.max(0, accruedMs - injuredOverlapMs);
+    const effectiveHours = (healthyMs + injuredOverlapMs * 0.5) / 3_600_000;
 
-    const roll = clampUnit(rng());
-    const monsterThreshold = run.floor === 1 ? 0.65 : 0.48;
-    const eliteThreshold = run.floor === 1 ? 0.8 : 0.7;
-    const eventThreshold = run.floor === 1 ? 0.92 : 0.88;
-
-    if (roll < monsterThreshold) {
-      const tpl = pickFrom(chapterDef.monsters, rng);
-      const floorScale = 1 + (run.floor - 1) * 0.08;
-      const hp = Math.round(tpl.hp * floorScale);
-      run.phase = 'combat';
-      run.event = null;
-      run.enemy = {
-        name: tpl.name,
-        emoji: tpl.emoji,
-        kind: 'monster',
-        hp,
-        maxHp: hp,
-        atk: Math.round(tpl.atk * floorScale),
-        def: Math.round(tpl.def * floorScale),
-        armorBreakTurns: 0,
-        burnTurns: 0,
-        burnDamage: 0,
-      };
-      run.logs.push(`⚔️ 第 ${run.floor} 层遭遇 ${tpl.emoji} **${tpl.name}**！`);
-      return;
-    }
-
-    if (roll < eliteThreshold) {
-      const tpl = pickFrom(chapterDef.elites, rng);
-      const floorScale = 1 + (run.floor - 1) * 0.08;
-      const hp = Math.round(tpl.hp * floorScale);
-      run.phase = 'combat';
-      run.event = null;
-      run.enemy = {
-        name: tpl.name,
-        emoji: tpl.emoji,
-        kind: 'elite',
-        hp,
-        maxHp: hp,
-        atk: Math.round(tpl.atk * floorScale),
-        def: Math.round(tpl.def * floorScale),
-        armorBreakTurns: 0,
-        burnTurns: 0,
-        burnDamage: 0,
-      };
-      run.logs.push(`💀 第 ${run.floor} 层遭遇精英怪 ${tpl.emoji} **${tpl.name}**！`);
-      return;
-    }
-
-    if (roll < eventThreshold) {
-      const ev = pickFrom(RANDOM_EVENTS, rng);
-      run.phase = 'event';
-      run.enemy = null;
-      run.event = { ...ev };
-      run.logs.push(`✨ 第 ${run.floor} 层奇遇：**${ev.title}**`);
-      return;
-    }
-
-    // Treasure chest room!
-    const chestCoins = Math.round(chapterDef.clearBaseCoins * (0.14 + clampUnit(rng()) * 0.08));
-    const chestXp = Math.round(chapterDef.clearBaseXp * 0.15);
-    const chestItem = generatePendingItem(chapterDef.chapter, 'chest', rng);
-    run.phase = 'floor_clear';
-    run.enemy = null;
-    run.event = null;
-    run.pendingCoins += chestCoins;
-    run.pendingXp += chestXp;
-    run.pendingItems.push(chestItem);
-    const meta = RARITY_META[chestItem.rarity];
-    run.logs.push(
-      `🎁 第 ${run.floor} 层发现古老宝箱！暂存 **${chestCoins}** 金币、**${chestXp}** 经验与 ${meta.emoji} **${chestItem.name}**！`,
+    const estimatedXp = Math.floor(realm.tierDef.idleXpPerHour * effectiveHours * powerMultiplier);
+    const estimatedCoins = Math.floor(
+      realm.tierDef.idleCoinsPerHour * effectiveHours * powerMultiplier,
     );
-  }
-
-  private handleOutOfCombatPotionInTx(
-    guildId: string,
-    userId: string,
-    run: RpgRunState,
-    nowMs: number,
-  ): ActInRunResult {
-    if (run.potionsLeft <= 0) {
-      return { ok: false, reason: 'no_potions_left' };
-    }
-    const heal = Math.max(1, Math.round(run.playerMaxHp * 0.45));
-    const prevHp = run.playerHp;
-    run.playerHp = Math.min(run.playerMaxHp, run.playerHp + heal);
-    run.potionsLeft -= 1;
-    const actualHeal = run.playerHp - prevHp;
-    const line = `🧪 饮用生命药水，回复 **${actualHeal}** HP（当前 ${run.playerHp}/${run.playerMaxHp}，剩余药水 ${run.potionsLeft}）。`;
-    run.logs.push(line);
-    this.saveRunInTx(guildId, userId, run, nowMs);
-    return { ok: true, outcome: 'floor_cleared', run, logs: [line] };
-  }
-
-  private handleEventActionInTx(
-    guildId: string,
-    userId: string,
-    run: RpgRunState,
-    chapterDef: RpgChapterDef,
-    action: 'event_a' | 'event_b',
-    nowMs: number,
-    rng: () => number,
-  ): ActInRunResult {
-    const ev = run.event;
-    if (!ev) {
-      return { ok: false, reason: 'invalid_action_for_phase' };
-    }
-
-    const turnLogs: string[] = [];
-    let lootCoins = 0;
-    let lootXp = 0;
-    let lootItem: PendingRpgItem | null = null;
-
-    if (action === 'event_a') {
-      const roll = clampUnit(rng());
-      if (ev.key === 'shrine') {
-        if (roll < 0.6) {
-          run.atkBuffPct += 0.18;
-          lootCoins = Math.round(chapterDef.clearBaseCoins * 0.14);
-          lootXp = Math.round(chapterDef.clearBaseXp * 0.18);
-          turnLogs.push(
-            `⚡ 战神回应了你的祈祷！本局攻击 +18%，并暂存 **${lootCoins}** 金币与 **${lootXp}** 经验！`,
-          );
-        } else {
-          const loss = Math.max(5, Math.round(run.playerHp * 0.2));
-          run.playerHp = Math.max(1, run.playerHp - loss);
-          turnLogs.push(`💢 圣坛降下雷罚！损失 **${loss}** HP（剩余 ${run.playerHp}/${run.playerMaxHp}）。`);
-        }
-      } else if (ev.key === 'tavern') {
-        if (roll < 0.55) {
-          lootCoins = Math.round(chapterDef.clearBaseCoins * 0.2);
-          lootItem = generatePendingItem(chapterDef.chapter, 'event', rng);
-          const meta = RARITY_META[lootItem.rarity];
-          turnLogs.push(
-            `🎲 豪赌大胜！暂存 **${lootCoins}** 金币与 ${meta.emoji} **${lootItem.name}**！`,
-          );
-        } else {
-          const loss = Math.max(5, Math.round(run.playerHp * 0.18));
-          run.playerHp = Math.max(1, run.playerHp - loss);
-          turnLogs.push(`🗡️ 雇佣兵翻脸偷袭！损失 **${loss}** HP（剩余 ${run.playerHp}/${run.playerMaxHp}）。`);
-        }
-      } else if (ev.key === 'merchant') {
-        if (roll < 0.65) {
-          lootItem = generatePendingItem(chapterDef.chapter, 'event', rng, 'rare');
-          const meta = RARITY_META[lootItem.rarity];
-          turnLogs.push(`📦 暗箱开启成功！暂存 ${meta.emoji} **${lootItem.name}**！`);
-        } else {
-          const loss = Math.max(5, Math.round(run.playerHp * 0.15));
-          run.playerHp = Math.max(1, run.playerHp - loss);
-          turnLogs.push(`☠️ 暗箱喷出毒雾！损失 **${loss}** HP（剩余 ${run.playerHp}/${run.playerMaxHp}）。`);
-        }
-      } else {
-        // altar
-        const loss = Math.max(5, Math.round(run.playerMaxHp * 0.2));
-        run.playerHp = Math.max(1, run.playerHp - loss);
-        run.atkBuffPct += 0.22;
-        lootCoins = Math.round(chapterDef.clearBaseCoins * 0.22);
-        turnLogs.push(
-          `🩸 血祭完成！牺牲 **${loss}** HP，换取本局攻击 +22% 与 **${lootCoins}** 金币！`,
-        );
-      }
-    } else {
-      // event_b: safe/heal/buff
-      if (ev.key === 'shrine') {
-        const heal = Math.round(run.playerMaxHp * 0.35);
-        run.playerHp = Math.min(run.playerMaxHp, run.playerHp + heal);
-        turnLogs.push(`✨ 圣坛柔和的光芒治愈了你，回复 **${heal}** HP（当前 ${run.playerHp}/${run.playerMaxHp}）。`);
-      } else if (ev.key === 'tavern') {
-        const heal = Math.round(run.playerMaxHp * 0.3);
-        run.playerHp = Math.min(run.playerMaxHp, run.playerHp + heal);
-        run.potionsLeft += 1;
-        turnLogs.push(
-          `🍺 麦酒舒缓了疲惫！回复 **${heal}** HP 并获得 **1** 瓶生命药水（当前 ${run.potionsLeft} 瓶）。`,
-        );
-      } else if (ev.key === 'merchant') {
-        lootCoins = Math.round(chapterDef.clearBaseCoins * 0.1);
-        run.atkBuffPct += 0.12;
-        turnLogs.push(`🤝 公平交易！获得 **${lootCoins}** 金币与本局攻击 +12% 磨刀石增益。`);
-      } else {
-        const heal = Math.round(run.playerMaxHp * 0.25);
-        run.playerHp = Math.min(run.playerMaxHp, run.playerHp + heal);
-        lootCoins = Math.round(chapterDef.clearBaseCoins * 0.08);
-        lootXp = Math.round(chapterDef.clearBaseXp * 0.15);
-        turnLogs.push(
-          `🌟 净化了血月祭坛！回复 **${heal}** HP，获得 **${lootCoins}** 金币与 **${lootXp}** 经验。`,
-        );
-      }
-    }
-
-    run.pendingCoins += lootCoins;
-    run.pendingXp += lootXp;
-    if (lootItem) {
-      run.pendingItems.push(lootItem);
-    }
-    run.event = null;
-    run.phase = 'floor_clear';
-    run.logs.push(...turnLogs);
-    this.saveRunInTx(guildId, userId, run, nowMs);
+    const canClaim = character.classSelected && accruedMs >= MIN_IDLE_CLAIM_MS;
+    const waitSeconds = canClaim ? 0 : Math.ceil(Math.max(0, MIN_IDLE_CLAIM_MS - accruedMs) / 1000);
+    const injuredRemainingMs = Math.max(0, character.injuredUntil - nowMs);
 
     return {
-      ok: true,
-      outcome: 'floor_cleared',
-      run,
-      logs: turnLogs,
-      floorLoot: { coins: lootCoins, xp: lootXp, item: lootItem },
+      accruedMs,
+      isCapped: rawElapsedMs >= MAX_IDLE_ACCRUE_MS,
+      canClaim,
+      waitSeconds,
+      isInjuredNow: injuredRemainingMs > 0,
+      injuredRemainingMs,
+      powerMultiplier,
+      estimatedXp,
+      estimatedCoins,
+      realm,
+      atGate: isAtBreakthroughGate(character.level, character.xp),
     };
   }
 
-  private handleCombatActionInTx(
-    guildId: string,
-    userId: string,
-    run: RpgRunState,
-    chapterDef: RpgChapterDef,
-    action: 'attack' | 'skill' | 'defend' | 'potion',
-    nowMs: number,
-    rng: () => number,
-  ): ActInRunResult {
-    const enemy = run.enemy;
-    if (!enemy) {
-      return { ok: false, reason: 'invalid_action_for_phase' };
-    }
+  private computeBreakthroughPreviewForCharacter(
+    character: RpgCharacter,
+    hasPendingTrial: boolean,
+  ): BreakthroughPreview {
+    const fromRealm = getRpgRealmInfo(character.level);
+    const targetTierDef = fromRealm.nextTierDef;
+    const atMaxTier = !targetTierDef || character.level >= MAX_RPG_LEVEL;
+    const needXp = xpNeededForRpgLevel(character.level);
 
-    const classDef = RPG_CLASS_MAP.get(run.classKey) ?? RPG_CLASSES[0]!;
-    if (action === 'skill' && run.skillCooldown > 0) {
-      return { ok: false, reason: 'skill_on_cooldown', cooldownLeft: run.skillCooldown };
-    }
-    if (action === 'potion' && run.potionsLeft <= 0) {
-      return { ok: false, reason: 'no_potions_left' };
-    }
+    const pillsUsed = Math.max(0, Math.min(MAX_TRIAL_PILLS, character.trialPillsStaged, character.promoPills));
+    const usedGuard = character.trialUseGuard && character.guardElixirs > 0;
 
-    const turnLogs: string[] = [];
-    const effectiveAtk = Math.round(run.playerAtk * (1 + run.atkBuffPct));
-    const effectiveEnemyDef =
-      enemy.armorBreakTurns > 0 ? Math.floor(enemy.def * 0.7) : enemy.def;
+    const baseRatePct = targetTierDef ? fromRealm.tierDef.breakthroughBasePct : 0;
+    const pillBonusPct = pillsUsed * PROMO_PILL_BONUS_PCT;
 
-    const dealPlayerHit = (
-      atkMult: number,
-      bonusCritBp = 0,
-    ): { damage: number; isCrit: boolean } => {
-      const critChance = Math.min(0.95, (run.playerCritBp + bonusCritBp) / 10000);
-      const isCrit = clampUnit(rng()) < critChance;
-      const variance = 0.9 + clampUnit(rng()) * 0.2;
-      const raw = effectiveAtk * atkMult * variance - effectiveEnemyDef * 0.55;
-      const dmg = Math.max(5, Math.round(raw * (isCrit ? 1.6 : 1)));
-      enemy.hp = Math.max(0, enemy.hp - dmg);
-      return { damage: dmg, isCrit };
-    };
+    const activePet = this.socialPetRepo?.getActivePet(character.guildId, character.userId) ?? null;
+    const petBonusPct = activePet ? PET_BREAKTHROUGH_BONUS_PCT[activePet.rarity] : 0;
 
-    let defending = false;
-    let offensiveAction = false;
+    const creditScore = this.getUserCreditScore(character.guildId, character.userId);
+    const creditBonusPct = getCreditBreakthroughBonus(creditScore);
+    const pityBonusPct = character.breakthroughPity * PITY_BONUS_PER_FAIL_PCT;
 
-    if (action === 'attack') {
-      offensiveAction = true;
-      const hit = dealPlayerHit(1.0);
-      const critTag = hit.isCrit ? '💥暴击！' : '';
-      turnLogs.push(
-        `${classDef.emoji} 普通攻击 ${critTag}对 **${enemy.name}** 造成 **${hit.damage}** 伤害（敌方 HP ${enemy.hp}/${enemy.maxHp}）。`,
-      );
-      if (run.skillCooldown > 0) run.skillCooldown -= 1;
-    } else if (action === 'skill') {
-      offensiveAction = true;
-      run.skillCooldown = classDef.skillCooldown;
-      if (run.classKey === 'warrior') {
-        const hit = dealPlayerHit(1.85);
-        enemy.armorBreakTurns = 2;
-        const critTag = hit.isCrit ? '💥暴击！' : '';
-        turnLogs.push(
-          `⚔️ 施放「**${classDef.skillName}**」${critTag}造成 **${hit.damage}** 伤害并附加 2 回合破甲（敌方 HP ${enemy.hp}/${enemy.maxHp}）。`,
-        );
-      } else if (run.classKey === 'mage') {
-        const hit = dealPlayerHit(2.2);
-        enemy.burnTurns = 2;
-        enemy.burnDamage = Math.max(8, Math.round(effectiveAtk * 0.35));
-        const critTag = hit.isCrit ? '💥暴击！' : '';
-        turnLogs.push(
-          `🔮 施放「**${classDef.skillName}**」必中！${critTag}造成 **${hit.damage}** 伤害并点燃目标（敌方 HP ${enemy.hp}/${enemy.maxHp}）。`,
-        );
-      } else if (run.classKey === 'ranger') {
-        const hit1 = dealPlayerHit(1.05, 2500);
-        const hit2 = enemy.hp > 0 ? dealPlayerHit(1.05, 2500) : null;
-        const totalDmg = hit1.damage + (hit2?.damage ?? 0);
-        const crits = (hit1.isCrit ? 1 : 0) + (hit2?.isCrit ? 1 : 0);
-        const critTag = crits > 0 ? `💥${crits}段暴击！` : '';
-        turnLogs.push(
-          `🏹 施放「**${classDef.skillName}**」${critTag}两段连射共造成 **${totalDmg}** 伤害（敌方 HP ${enemy.hp}/${enemy.maxHp}）。`,
-        );
-      } else {
-        // paladin
-        const hit = dealPlayerHit(1.55);
-        const heal = Math.max(1, Math.round(run.playerMaxHp * 0.22));
-        run.playerHp = Math.min(run.playerMaxHp, run.playerHp + heal);
-        const critTag = hit.isCrit ? '💥暴击！' : '';
-        turnLogs.push(
-          `🛡️ 施放「**${classDef.skillName}**」${critTag}造成 **${hit.damage}** 伤害并回复 **${heal}** HP（敌方 HP ${enemy.hp}/${enemy.maxHp}）。`,
-        );
-      }
-    } else if (action === 'defend') {
-      defending = true;
-      const heal = Math.max(1, Math.round(run.playerMaxHp * 0.08));
-      run.playerHp = Math.min(run.playerMaxHp, run.playerHp + heal);
-      if (run.skillCooldown > 0) run.skillCooldown -= 1;
-      turnLogs.push(
-        `🛡️ 架起防御姿态（减伤55%），调息回复 **${heal}** HP（当前 ${run.playerHp}/${run.playerMaxHp}）。`,
-      );
-    } else {
-      // potion
-      const heal = Math.max(1, Math.round(run.playerMaxHp * 0.45));
-      run.playerHp = Math.min(run.playerMaxHp, run.playerHp + heal);
-      run.potionsLeft -= 1;
-      if (run.skillCooldown > 0) run.skillCooldown -= 1;
-      turnLogs.push(
-        `🧪 战斗中饮下生命药水，回复 **${heal}** HP（当前 ${run.playerHp}/${run.playerMaxHp}，余 ${run.potionsLeft} 瓶）。`,
-      );
-    }
-
-    // Pet assist trigger on offensive turns
-    if (offensiveAction && enemy.hp > 0 && run.petSynergy) {
-      if (clampUnit(rng()) < run.petSynergy.assistChance) {
-        const petDmg = Math.max(
-          5,
-          Math.round(run.petSynergy.assistDamage * (0.9 + clampUnit(rng()) * 0.2)),
-        );
-        enemy.hp = Math.max(0, enemy.hp - petDmg);
-        turnLogs.push(
-          `${run.petSynergy.emoji} 战宠「**${run.petSynergy.nickname}**」助战追击，造成 **${petDmg}** 伤害（敌方 HP ${enemy.hp}/${enemy.maxHp}）！`,
-        );
-      }
-    }
-
-    // Burn DoT tick
-    if (enemy.hp > 0 && enemy.burnTurns > 0) {
-      const burnDmg = Math.max(1, enemy.burnDamage);
-      enemy.hp = Math.max(0, enemy.hp - burnDmg);
-      enemy.burnTurns -= 1;
-      turnLogs.push(
-        `🔥 灼烧对 **${enemy.name}** 造成 **${burnDmg}** 伤害（敌方 HP ${enemy.hp}/${enemy.maxHp}）。`,
-      );
-    }
-
-    // Check enemy defeated
-    if (enemy.hp <= 0) {
-      turnLogs.push(`🏆 击败了 ${enemy.emoji} **${enemy.name}**！`);
-
-      if (enemy.kind === 'boss' || run.floor >= chapterDef.floors) {
-        return this.handleVictoryInTx(guildId, userId, run, chapterDef, turnLogs, nowMs, rng);
-      }
-
-      const isElite = enemy.kind === 'elite';
-      const floorCoins = Math.round(
-        chapterDef.clearBaseCoins * (isElite ? 0.18 : 0.1) * (0.9 + clampUnit(rng()) * 0.2),
-      );
-      const floorXp = Math.round(chapterDef.clearBaseXp * (isElite ? 0.28 : 0.16));
-      const dropChance = isElite ? 0.9 : 0.55;
-      const droppedItem =
-        clampUnit(rng()) < dropChance
-          ? generatePendingItem(chapterDef.chapter, isElite ? 'elite' : 'monster', rng)
-          : null;
-
-      run.pendingCoins += floorCoins;
-      run.pendingXp += floorXp;
-      if (droppedItem) {
-        run.pendingItems.push(droppedItem);
-        const meta = RARITY_META[droppedItem.rarity];
-        turnLogs.push(
-          `💰 战利品暂存：**+${floorCoins}** 金币、**+${floorXp}** 经验、${meta.emoji} **${droppedItem.name}**`,
-        );
-      } else {
-        turnLogs.push(`💰 战利品暂存：**+${floorCoins}** 金币、**+${floorXp}** 经验`);
-      }
-
-      run.enemy = null;
-      run.phase = 'floor_clear';
-      run.logs.push(...turnLogs);
-      this.saveRunInTx(guildId, userId, run, nowMs);
-
-      return {
-        ok: true,
-        outcome: 'floor_cleared',
-        run,
-        logs: turnLogs,
-        floorLoot: { coins: floorCoins, xp: floorXp, item: droppedItem },
-      };
-    }
-
-    // Enemy counter-attack
-    const dodged = clampUnit(rng()) < run.playerDodgeBp / 10000;
-    if (dodged) {
-      turnLogs.push(`💨 你灵巧闪避了 **${enemy.name}** 的反击！`);
-    } else {
-      const isBossSpecial = enemy.kind === 'boss' && run.turn % 3 === 0;
-      const enemyMult = isBossSpecial ? 1.35 : 1.0;
-      const variance = 0.9 + clampUnit(rng()) * 0.2;
-      const rawEnemyDmg = enemy.atk * enemyMult * variance - run.playerDef * 0.6;
-      const guardedDmg = defending ? rawEnemyDmg * 0.45 : rawEnemyDmg;
-      const finalEnemyDmg = Math.max(3, Math.round(guardedDmg));
-      run.playerHp = Math.max(0, run.playerHp - finalEnemyDmg);
-
-      if (isBossSpecial && enemy.bossSkillName) {
-        turnLogs.push(
-          `💢 **${enemy.name}** 释放「**${enemy.bossSkillName}**」造成 **${finalEnemyDmg}** 伤害（你的 HP ${run.playerHp}/${run.playerMaxHp}）！`,
-        );
-      } else {
-        turnLogs.push(
-          `🩸 **${enemy.name}** 反击造成 **${finalEnemyDmg}** 伤害（你的 HP ${run.playerHp}/${run.playerMaxHp}）。`,
-        );
-      }
-    }
-
-    if (enemy.armorBreakTurns > 0) {
-      enemy.armorBreakTurns -= 1;
-    }
-    run.turn += 1;
-
-    // Check player defeat
-    if (run.playerHp <= 0) {
-      turnLogs.push(`💀 你在第 ${run.floor} 层力竭倒下，本次探险未入库的战利品全部遗失！`);
-      this.rpgRepo.deleteRun(guildId, userId);
-      return {
-        ok: true,
-        outcome: 'defeat',
-        run: null,
-        chapter: run.chapter,
-        floor: run.floor,
-        logs: turnLogs,
-        lostLoot: {
-          coins: run.pendingCoins,
-          xp: run.pendingXp,
-          itemCount: run.pendingItems.length,
-        },
-      };
-    }
-
-    run.logs.push(...turnLogs);
-    this.saveRunInTx(guildId, userId, run, nowMs);
+    const rawBasePct = atMaxTier
+      ? 0
+      : baseRatePct + pillBonusPct + petBonusPct + creditBonusPct + pityBonusPct;
+    const totalRatePct = atMaxTier ? 0 : Math.max(5, Math.min(100, rawBasePct));
 
     return {
-      ok: true,
-      outcome: 'ongoing',
-      run,
-      logs: turnLogs,
-    };
-  }
-
-  private handleRetreatInTx(
-    guildId: string,
-    userId: string,
-    run: RpgRunState,
-    chapterDef: RpgChapterDef,
-    nowMs: number,
-  ): ActInRunResult {
-    const logs = [`🏃 见好就收！你带着已获得的战利品从「**${chapterDef.name}**」第 ${run.floor} 层安全撤退。`];
-    const character = this.getOrCreateCharacterInTx(guildId, userId, nowMs);
-    const {
-      reward,
-      legendaryDrops,
-      updatedCharacter,
-      balance,
-    } = this.bankLootInTx({
-      guildId,
-      userId,
-      character,
-      pendingCoins: run.pendingCoins,
-      pendingXp: run.pendingXp,
-      pendingItems: run.pendingItems,
-      bossBonusCoins: 0,
-      creditDelta: 0,
-      source: `rpg_retreat_ch${run.chapter}`,
-      nowMs,
-    });
-
-    this.rpgRepo.saveCharacter(updatedCharacter);
-    this.rpgRepo.deleteRun(guildId, userId);
-
-    return {
-      ok: true,
-      outcome: 'retreated',
-      run: null,
-      chapter: run.chapter,
-      floor: run.floor,
-      logs,
-      reward,
-      legendaryDrops,
-      character: updatedCharacter,
-      balance,
-    };
-  }
-
-  private handleVictoryInTx(
-    guildId: string,
-    userId: string,
-    run: RpgRunState,
-    chapterDef: RpgChapterDef,
-    turnLogs: string[],
-    nowMs: number,
-    rng: () => number,
-  ): ActInRunResult {
-    const character = this.getOrCreateCharacterInTx(guildId, userId, nowMs);
-    const firstClear = character.maxChapterCleared < chapterDef.chapter;
-
-    const bossItem = generatePendingItem(chapterDef.chapter, 'boss', rng);
-    const pendingItems = [...run.pendingItems, bossItem];
-
-    const bossBonusCoins = firstClear
-      ? Math.round(chapterDef.clearBaseCoins * chapterDef.firstClearMultiplier)
-      : chapterDef.clearBaseCoins;
-    const bossBonusXp = firstClear
-      ? Math.round(chapterDef.clearBaseXp * 1.5)
-      : chapterDef.clearBaseXp;
-
-    const creditDelta = firstClear ? 25 : 5;
-    const creditReason = firstClear
-      ? `RPG首通第${chapterDef.chapter}章「${chapterDef.name}」`
-      : `RPG通关第${chapterDef.chapter}章「${chapterDef.name}」`;
-
-    const {
-      reward,
-      legendaryDrops,
-      updatedCharacter: leveledChar,
-      balance,
-    } = this.bankLootInTx({
-      guildId,
-      userId,
-      character,
-      pendingCoins: run.pendingCoins,
-      pendingXp: run.pendingXp + bossBonusXp,
-      pendingItems,
-      bossBonusCoins,
-      creditDelta,
-      source: `rpg_clear_ch${chapterDef.chapter}`,
-      nowMs,
-    });
-
-    const finalCharacter: RpgCharacter = {
-      ...leveledChar,
-      maxChapterCleared: Math.max(leveledChar.maxChapterCleared, chapterDef.chapter),
-      totalClears: leveledChar.totalClears + 1,
-      totalBossKills: leveledChar.totalBossKills + 1,
-      updatedAt: nowMs,
-    };
-    this.rpgRepo.saveCharacter(finalCharacter);
-    this.rpgRepo.deleteRun(guildId, userId);
-
-    if (this.onCreditChange) {
-      this.onCreditChange(guildId, userId, creditDelta, creditReason, nowMs);
-    }
-
-    const meta = RARITY_META[bossItem.rarity];
-    turnLogs.push(
-      `🎉 通关第 ${chapterDef.chapter} 章「**${chapterDef.name}**」${firstClear ? '（首通双倍奖励！）' : ''}！掉落 ${meta.emoji} **${bossItem.name}**！`,
-    );
-
-    return {
-      ok: true,
-      outcome: 'victory',
-      run: null,
-      chapter: run.chapter,
-      floor: run.floor,
-      logs: turnLogs,
-      reward,
-      firstClear,
-      legendaryDrops,
-      character: finalCharacter,
-      balance,
+      eligible: !atMaxTier && isAtBreakthroughGate(character.level, character.xp) && !hasPendingTrial,
+      atMaxTier,
+      fromRealm,
+      targetTierDef,
+      needXp,
+      currentXp: character.xp,
+      pillsUsed,
+      usedGuard,
+      baseRatePct,
+      pillBonusPct,
+      petBonusPct,
+      petName: activePet ? activePet.nickname : null,
+      creditBonusPct,
+      creditScore,
+      pityBonusPct,
+      rawBasePct,
+      totalRatePct,
+      hasPendingTrial,
     };
   }
 
@@ -2603,16 +2268,21 @@ export class RpgService {
     guildId: string;
     userId: string;
     character: RpgCharacter;
-    pendingCoins: number;
-    pendingXp: number;
+    xpGain: number;
+    coinGain: number;
     pendingItems: PendingRpgItem[];
-    bossBonusCoins: number;
-    creditDelta: number;
     source: string;
     nowMs: number;
   }): {
-    reward: RunBankedReward;
+    bankedItems: RpgItem[];
     legendaryDrops: RpgItem[];
+    autoSalvagedCount: number;
+    autoSalvagedCoins: number;
+    grossCoins: number;
+    garnishedCoins: number;
+    netCoins: number;
+    levelsGained: number;
+    hitGate: boolean;
     updatedCharacter: RpgCharacter;
     balance: number;
   } {
@@ -2620,7 +2290,6 @@ export class RpgService {
     const currentItemCount = this.rpgRepo.countItems(input.guildId, input.userId);
     const availableSlots = Math.max(0, cfg.bagCapacity - currentItemCount);
 
-    // Prioritize higher rarity items for bag slots; auto-salvage overflow
     const sortedPending = [...input.pendingItems].sort(
       (a, b) => RARITY_ORDER[b.rarity] - RARITY_ORDER[a.rarity],
     );
@@ -2652,11 +2321,7 @@ export class RpgService {
       }
     }
 
-    const grossCoins =
-      Math.max(0, Math.floor(input.pendingCoins)) +
-      Math.max(0, Math.floor(input.bossBonusCoins)) +
-      autoSalvagedCoins;
-
+    const grossCoins = Math.max(0, Math.floor(input.coinGain)) + autoSalvagedCoins;
     let garnishedCoins = 0;
     let netCoins = grossCoins;
     if (grossCoins > 0 && this.onCoinsEarned) {
@@ -2676,29 +2341,144 @@ export class RpgService {
         ? this.profileRepo.addCoins(input.guildId, input.userId, netCoins)
         : this.profileRepo.getOrCreate(input.guildId, input.userId);
 
-    const { updated: leveledChar, levelsGained } = applyCharacterXp(
+    const { updated: leveledChar, levelsGained, hitGate } = applyCharacterXp(
       input.character,
-      input.pendingXp,
+      input.xpGain,
     );
 
     const legendaryDrops = bankedItems.filter((item) => item.rarity === 'legendary');
 
     return {
-      reward: {
+      bankedItems,
+      legendaryDrops,
+      autoSalvagedCount,
+      autoSalvagedCoins,
+      grossCoins,
+      garnishedCoins,
+      netCoins,
+      levelsGained,
+      hitGate,
+      updatedCharacter: { ...leveledChar, updatedAt: input.nowMs },
+      balance: updatedProfile.coins,
+    };
+  }
+
+  private resolveBreakthroughOutcomeInTx(input: {
+    guildId: string;
+    userId: string;
+    character: RpgCharacter;
+    targetTier: number;
+    usedGuard: boolean;
+    succeeded: boolean;
+    saboteurCount: number;
+    nowMs: number;
+  }): {
+    toRealm: RpgRealmInfo;
+    grossCoins: number;
+    garnishedCoins: number;
+    netCoins: number;
+    creditDelta: number;
+    xpLost: number;
+    injuredUntil: number;
+    character: RpgCharacter;
+    balance: number;
+  } {
+    const needXp = xpNeededForRpgLevel(input.character.level);
+
+    if (input.succeeded) {
+      const overflowXp = Math.max(0, input.character.xp - needXp);
+      const nextBaseChar: RpgCharacter = {
+        ...input.character,
+        level: Math.min(MAX_RPG_LEVEL, input.character.level + 1),
+        xp: 0,
+      };
+      const { updated: afterOverflow } = applyCharacterXp(nextBaseChar, overflowXp);
+      const toRealm = getRpgRealmInfo(afterOverflow.level);
+
+      const basePrize = input.targetTier * 6000;
+      const saboteurBonusMult = 1 + Math.max(0, input.saboteurCount) * (SABOTEUR_POOL_BONUS_PCT / 100);
+      const grossCoins = Math.round(basePrize * saboteurBonusMult);
+      let garnishedCoins = 0;
+      let netCoins = grossCoins;
+      if (grossCoins > 0 && this.onCoinsEarned) {
+        const hookRes = this.onCoinsEarned(
+          input.guildId,
+          input.userId,
+          grossCoins,
+          `rpg_breakthrough_tier${input.targetTier}`,
+          input.nowMs,
+        );
+        garnishedCoins = Math.max(0, Math.floor(hookRes.garnished));
+        netCoins = Math.max(0, Math.floor(hookRes.net));
+      }
+
+      const updatedProfile =
+        netCoins > 0
+          ? this.profileRepo.addCoins(input.guildId, input.userId, netCoins)
+          : this.profileRepo.getOrCreate(input.guildId, input.userId);
+
+      const creditDelta = 15;
+      if (this.onCreditChange) {
+        this.onCreditChange(
+          input.guildId,
+          input.userId,
+          creditDelta,
+          `RPG晋升突破至${toRealm.tierDef.name}`,
+          input.nowMs,
+        );
+      }
+
+      const finalChar: RpgCharacter = {
+        ...afterOverflow,
+        maxChapterCleared: Math.max(afterOverflow.maxChapterCleared, toRealm.tier),
+        breakthroughPity: 0,
+        totalBreakthroughs: afterOverflow.totalBreakthroughs + 1,
+        updatedAt: input.nowMs,
+      };
+      this.rpgRepo.saveCharacter(finalChar);
+
+      return {
+        toRealm,
         grossCoins,
         garnishedCoins,
         netCoins,
-        xpEarned: Math.max(0, Math.floor(input.pendingXp)),
-        levelsGained,
-        bankedItems,
-        autoSalvagedCount,
-        autoSalvagedCoins,
-        bossBonusCoins: input.bossBonusCoins,
-        creditDelta: input.creditDelta,
-      },
-      legendaryDrops,
-      updatedCharacter: { ...leveledChar, updatedAt: input.nowMs },
-      balance: updatedProfile.coins,
+        creditDelta,
+        xpLost: 0,
+        injuredUntil: finalChar.injuredUntil,
+        character: finalChar,
+        balance: updatedProfile.coins,
+      };
+    }
+
+    // Breakthrough failed
+    const xpLost = Math.min(
+      input.character.xp,
+      Math.round(needXp * (input.usedGuard ? 0.1 : 0.4)),
+    );
+    const nextInjuredUntil = input.usedGuard
+      ? input.character.injuredUntil
+      : Math.max(input.character.injuredUntil, input.nowMs + INJURY_DURATION_MS);
+
+    const finalChar: RpgCharacter = {
+      ...input.character,
+      xp: Math.max(0, input.character.xp - xpLost),
+      injuredUntil: nextInjuredUntil,
+      breakthroughPity: input.character.breakthroughPity + 1,
+      updatedAt: input.nowMs,
+    };
+    this.rpgRepo.saveCharacter(finalChar);
+    const profile = this.profileRepo.getOrCreate(input.guildId, input.userId);
+
+    return {
+      toRealm: getRpgRealmInfo(finalChar.level),
+      grossCoins: 0,
+      garnishedCoins: 0,
+      netCoins: 0,
+      creditDelta: 0,
+      xpLost,
+      injuredUntil: finalChar.injuredUntil,
+      character: finalChar,
+      balance: profile.coins,
     };
   }
 }

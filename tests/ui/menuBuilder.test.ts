@@ -550,12 +550,16 @@ describe('menuBuilder Discord component constraints & schema integration', () =>
     );
     expect(row1Ids).toEqual(['menu:bj:hit', 'menu:bj:stand', 'menu:bj:double']);
 
-    // Active RPG tabletop run via buildMenuMessage({ page: 'rpg' })
+    // RPG home view at breakthrough gate via buildMenuMessage({ page: 'rpg' })
     ctx.services.rpg.chooseOrSwitchClass('g1', 'u1', 'warrior');
-    ctx.services.rpg.startTabletopRun('g1', 'u1', 1);
-    const activeTtMsg = buildMenuMessage(ctx, 'g1', ACTOR, { page: 'rpg' });
-    assertDiscordMessageLimits(activeTtMsg, 'view:rpg:tabletop_active');
-    expect(activeTtMsg.embeds[0]!.toJSON().author?.name).toContain('博德跑团中');
+    ctx.repos.rpg.saveCharacter({
+      ...ctx.services.rpg.getOrCreateCharacter('g1', 'u1'),
+      level: 9,
+      xp: 3500,
+    });
+    const rpgGateMsg = buildMenuMessage(ctx, 'g1', ACTOR, { page: 'rpg' });
+    assertDiscordMessageLimits(rpgGateMsg, 'view:rpg:breakthrough_gate');
+    expect(rpgGateMsg.embeds[0]!.toJSON().description).toContain('已达当前阶位九重巅峰');
 
     ctx.db.close();
   });

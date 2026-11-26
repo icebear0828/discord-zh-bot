@@ -3,6 +3,7 @@ import type Database from 'better-sqlite3';
 export type RpgClassKey = 'warrior' | 'mage' | 'ranger' | 'paladin';
 export type RpgItemSlot = 'weapon' | 'armor' | 'accessory';
 export type RpgItemRarity = 'common' | 'uncommon' | 'rare' | 'epic' | 'legendary';
+export type RpgTrialStatus = 'pending' | 'succeeded' | 'failed' | 'cancelled';
 
 export const RPG_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS rpg_characters (
@@ -18,12 +19,19 @@ CREATE TABLE IF NOT EXISTS rpg_characters (
   max_chapter_cleared INTEGER NOT NULL DEFAULT 0,
   total_clears INTEGER NOT NULL DEFAULT 0,
   total_boss_kills INTEGER NOT NULL DEFAULT 0,
+  last_idle_claim_at INTEGER NOT NULL DEFAULT 0,
+  injured_until INTEGER NOT NULL DEFAULT 0,
+  breakthrough_pity INTEGER NOT NULL DEFAULT 0,
+  total_breakthroughs INTEGER NOT NULL DEFAULT 0,
+  promo_pills INTEGER NOT NULL DEFAULT 0,
+  guard_elixirs INTEGER NOT NULL DEFAULT 0,
+  pill_buys_today INTEGER NOT NULL DEFAULT 0,
+  elixir_buys_today INTEGER NOT NULL DEFAULT 0,
+  trial_pills_staged INTEGER NOT NULL DEFAULT 0,
+  trial_use_guard INTEGER NOT NULL DEFAULT 0,
   updated_at INTEGER NOT NULL,
   PRIMARY KEY (guild_id, user_id)
 );
-
-CREATE INDEX IF NOT EXISTS idx_rpg_characters_leaderboard
-  ON rpg_characters (guild_id, max_chapter_cleared DESC, level DESC, total_clears DESC, xp DESC);
 
 CREATE TABLE IF NOT EXISTS rpg_items (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -53,10 +61,64 @@ CREATE TABLE IF NOT EXISTS rpg_runs (
   updated_at INTEGER NOT NULL,
   PRIMARY KEY (guild_id, user_id)
 );
+
+CREATE TABLE IF NOT EXISTS rpg_trials (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  guild_id TEXT NOT NULL,
+  channel_id TEXT NOT NULL,
+  message_id TEXT,
+  user_id TEXT NOT NULL,
+  from_level INTEGER NOT NULL,
+  target_tier INTEGER NOT NULL,
+  pills_used INTEGER NOT NULL DEFAULT 0,
+  used_guard INTEGER NOT NULL DEFAULT 0,
+  base_chance_bp INTEGER NOT NULL,
+  supporters_json TEXT NOT NULL DEFAULT '[]',
+  saboteurs_json TEXT NOT NULL DEFAULT '[]',
+  status TEXT NOT NULL CHECK (status IN ('pending', 'succeeded', 'failed', 'cancelled')),
+  result_summary TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  resolved_at INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_rpg_trials_status_expires
+  ON rpg_trials (status, expires_at);
+
+CREATE INDEX IF NOT EXISTS idx_rpg_trials_guild_user_status
+  ON rpg_trials (guild_id, user_id, status);
 `;
+
+function ensureRpgColumn(
+  db: Database.Database,
+  table: string,
+  column: string,
+  definition: string,
+): void {
+  const cols = db.pragma(`table_info(${table})`) as Array<{ name: string }>;
+  if (!cols.some((col) => col.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition};`);
+  }
+}
 
 export function initRpgSchema(db: Database.Database): void {
   db.exec(RPG_SCHEMA_SQL);
+
+  ensureRpgColumn(db, 'rpg_characters', 'last_idle_claim_at', 'INTEGER NOT NULL DEFAULT 0');
+  ensureRpgColumn(db, 'rpg_characters', 'injured_until', 'INTEGER NOT NULL DEFAULT 0');
+  ensureRpgColumn(db, 'rpg_characters', 'breakthrough_pity', 'INTEGER NOT NULL DEFAULT 0');
+  ensureRpgColumn(db, 'rpg_characters', 'total_breakthroughs', 'INTEGER NOT NULL DEFAULT 0');
+  ensureRpgColumn(db, 'rpg_characters', 'promo_pills', 'INTEGER NOT NULL DEFAULT 0');
+  ensureRpgColumn(db, 'rpg_characters', 'guard_elixirs', 'INTEGER NOT NULL DEFAULT 0');
+  ensureRpgColumn(db, 'rpg_characters', 'pill_buys_today', 'INTEGER NOT NULL DEFAULT 0');
+  ensureRpgColumn(db, 'rpg_characters', 'elixir_buys_today', 'INTEGER NOT NULL DEFAULT 0');
+  ensureRpgColumn(db, 'rpg_characters', 'trial_pills_staged', 'INTEGER NOT NULL DEFAULT 0');
+  ensureRpgColumn(db, 'rpg_characters', 'trial_use_guard', 'INTEGER NOT NULL DEFAULT 0');
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_rpg_characters_realm_lb
+      ON rpg_characters (guild_id, level DESC, xp DESC, total_breakthroughs DESC, total_boss_kills DESC);
+  `);
 }
 
 export interface RpgCharacter {
@@ -72,6 +134,16 @@ export interface RpgCharacter {
   maxChapterCleared: number;
   totalClears: number;
   totalBossKills: number;
+  lastIdleClaimAt: number;
+  injuredUntil: number;
+  breakthroughPity: number;
+  totalBreakthroughs: number;
+  promoPills: number;
+  guardElixirs: number;
+  pillBuysToday: number;
+  elixirBuysToday: number;
+  trialPillsStaged: number;
+  trialUseGuard: boolean;
   updatedAt: number;
 }
 
@@ -91,13 +163,24 @@ export interface RpgItem {
   createdAt: number;
 }
 
-export interface RpgRunRecord {
+export interface RpgTrial {
+  id: number;
   guildId: string;
+  channelId: string;
+  messageId: string | null;
   userId: string;
-  chapter: number;
-  floor: number;
-  stateJson: string;
-  updatedAt: number;
+  fromLevel: number;
+  targetTier: number;
+  pillsUsed: number;
+  usedGuard: boolean;
+  baseChanceBp: number;
+  supporters: string[];
+  saboteurs: string[];
+  status: RpgTrialStatus;
+  resultSummary: string;
+  createdAt: number;
+  expiresAt: number;
+  resolvedAt: number;
 }
 
 interface RpgCharacterSqlRow {
@@ -113,6 +196,16 @@ interface RpgCharacterSqlRow {
   max_chapter_cleared: number;
   total_clears: number;
   total_boss_kills: number;
+  last_idle_claim_at?: number;
+  injured_until?: number;
+  breakthrough_pity?: number;
+  total_breakthroughs?: number;
+  promo_pills?: number;
+  guard_elixirs?: number;
+  pill_buys_today?: number;
+  elixir_buys_today?: number;
+  trial_pills_staged?: number;
+  trial_use_guard?: number;
   updated_at: number;
 }
 
@@ -132,13 +225,34 @@ interface RpgItemSqlRow {
   created_at: number;
 }
 
-interface RpgRunSqlRow {
+interface RpgTrialSqlRow {
+  id: number;
   guild_id: string;
+  channel_id: string;
+  message_id: string | null;
   user_id: string;
-  chapter: number;
-  floor: number;
-  state_json: string;
-  updated_at: number;
+  from_level: number;
+  target_tier: number;
+  pills_used: number;
+  used_guard: number;
+  base_chance_bp: number;
+  supporters_json: string;
+  saboteurs_json: string;
+  status: RpgTrialStatus;
+  result_summary: string;
+  created_at: number;
+  expires_at: number;
+  resolved_at: number;
+}
+
+function parseUserIdArray(raw: string): string[] {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((item): item is string => typeof item === 'string');
+  } catch {
+    return [];
+  }
 }
 
 function mapCharacter(row: RpgCharacterSqlRow): RpgCharacter {
@@ -155,6 +269,16 @@ function mapCharacter(row: RpgCharacterSqlRow): RpgCharacter {
     maxChapterCleared: row.max_chapter_cleared,
     totalClears: row.total_clears,
     totalBossKills: row.total_boss_kills,
+    lastIdleClaimAt: row.last_idle_claim_at ?? 0,
+    injuredUntil: row.injured_until ?? 0,
+    breakthroughPity: row.breakthrough_pity ?? 0,
+    totalBreakthroughs: row.total_breakthroughs ?? 0,
+    promoPills: row.promo_pills ?? 0,
+    guardElixirs: row.guard_elixirs ?? 0,
+    pillBuysToday: row.pill_buys_today ?? 0,
+    elixirBuysToday: row.elixir_buys_today ?? 0,
+    trialPillsStaged: row.trial_pills_staged ?? 0,
+    trialUseGuard: (row.trial_use_guard ?? 0) === 1,
     updatedAt: row.updated_at,
   };
 }
@@ -177,14 +301,25 @@ function mapItem(row: RpgItemSqlRow): RpgItem {
   };
 }
 
-function mapRun(row: RpgRunSqlRow): RpgRunRecord {
+function mapTrial(row: RpgTrialSqlRow): RpgTrial {
   return {
+    id: row.id,
     guildId: row.guild_id,
+    channelId: row.channel_id,
+    messageId: row.message_id,
     userId: row.user_id,
-    chapter: row.chapter,
-    floor: row.floor,
-    stateJson: row.state_json,
-    updatedAt: row.updated_at,
+    fromLevel: row.from_level,
+    targetTier: row.target_tier,
+    pillsUsed: row.pills_used,
+    usedGuard: row.used_guard === 1,
+    baseChanceBp: row.base_chance_bp,
+    supporters: parseUserIdArray(row.supporters_json),
+    saboteurs: parseUserIdArray(row.saboteurs_json),
+    status: row.status,
+    resultSummary: row.result_summary,
+    createdAt: row.created_at,
+    expiresAt: row.expires_at,
+    resolvedAt: row.resolved_at,
   };
 }
 
@@ -206,15 +341,20 @@ export class RpgRepo {
     classSelected?: boolean;
     stamina: number;
     lastStaminaDate: string | null;
+    lastIdleClaimAt?: number;
     updatedAt: number;
   }): RpgCharacter {
+    const lastIdleClaimAt = input.lastIdleClaimAt ?? input.updatedAt;
     this.db
       .prepare(
         `INSERT INTO rpg_characters (
           guild_id, user_id, class_key, class_selected, level, xp, stamina,
           last_stamina_date, stamina_buys_today, max_chapter_cleared,
-          total_clears, total_boss_kills, updated_at
-        ) VALUES (?, ?, ?, ?, 1, 0, ?, ?, 0, 0, 0, 0, ?)`,
+          total_clears, total_boss_kills, last_idle_claim_at,
+          injured_until, breakthrough_pity, total_breakthroughs,
+          promo_pills, guard_elixirs, pill_buys_today, elixir_buys_today,
+          trial_pills_staged, trial_use_guard, updated_at
+        ) VALUES (?, ?, ?, ?, 1, 0, ?, ?, 0, 0, 0, 0, ?, 0, 0, 0, 0, 0, 0, 0, 0, 0, ?)`,
       )
       .run(
         input.guildId,
@@ -223,6 +363,7 @@ export class RpgRepo {
         input.classSelected ? 1 : 0,
         input.stamina,
         input.lastStaminaDate,
+        lastIdleClaimAt,
         input.updatedAt,
       );
 
@@ -237,7 +378,10 @@ export class RpgRepo {
         `UPDATE rpg_characters SET
           class_key = ?, class_selected = ?, level = ?, xp = ?, stamina = ?,
           last_stamina_date = ?, stamina_buys_today = ?, max_chapter_cleared = ?,
-          total_clears = ?, total_boss_kills = ?, updated_at = ?
+          total_clears = ?, total_boss_kills = ?, last_idle_claim_at = ?,
+          injured_until = ?, breakthrough_pity = ?, total_breakthroughs = ?,
+          promo_pills = ?, guard_elixirs = ?, pill_buys_today = ?, elixir_buys_today = ?,
+          trial_pills_staged = ?, trial_use_guard = ?, updated_at = ?
          WHERE guild_id = ? AND user_id = ?`,
       )
       .run(
@@ -251,6 +395,16 @@ export class RpgRepo {
         character.maxChapterCleared,
         character.totalClears,
         character.totalBossKills,
+        character.lastIdleClaimAt,
+        character.injuredUntil,
+        character.breakthroughPity,
+        character.totalBreakthroughs,
+        character.promoPills,
+        character.guardElixirs,
+        character.pillBuysToday,
+        character.elixirBuysToday,
+        character.trialPillsStaged,
+        character.trialUseGuard ? 1 : 0,
         character.updatedAt,
         character.guildId,
         character.userId,
@@ -268,7 +422,7 @@ export class RpgRepo {
       .prepare(
         `SELECT * FROM rpg_characters
          WHERE guild_id = ?
-         ORDER BY max_chapter_cleared DESC, level DESC, total_clears DESC, xp DESC, updated_at ASC
+         ORDER BY level DESC, xp DESC, total_breakthroughs DESC, total_boss_kills DESC, updated_at ASC
          LIMIT ? OFFSET ?`,
       )
       .all(guildId, safeLimit, safeOffset) as RpgCharacterSqlRow[];
@@ -404,39 +558,98 @@ export class RpgRepo {
     return res.changes > 0;
   }
 
-  // Runs
-  getRun(guildId: string, userId: string): RpgRunRecord | null {
-    const row = this.db
-      .prepare('SELECT * FROM rpg_runs WHERE guild_id = ? AND user_id = ?')
-      .get(guildId, userId) as RpgRunSqlRow | undefined;
-    return row ? mapRun(row) : null;
-  }
-
-  upsertRun(record: RpgRunRecord): void {
-    this.db
+  // Public Breakthrough Trials
+  createTrial(input: {
+    guildId: string;
+    channelId: string;
+    userId: string;
+    fromLevel: number;
+    targetTier: number;
+    pillsUsed: number;
+    usedGuard: boolean;
+    baseChanceBp: number;
+    createdAt: number;
+    expiresAt: number;
+  }): RpgTrial {
+    const res = this.db
       .prepare(
-        `INSERT INTO rpg_runs (guild_id, user_id, chapter, floor, state_json, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?)
-         ON CONFLICT(guild_id, user_id) DO UPDATE SET
-           chapter = excluded.chapter,
-           floor = excluded.floor,
-           state_json = excluded.state_json,
-           updated_at = excluded.updated_at`,
+        `INSERT INTO rpg_trials (
+          guild_id, channel_id, message_id, user_id, from_level, target_tier,
+          pills_used, used_guard, base_chance_bp, supporters_json, saboteurs_json,
+          status, result_summary, created_at, expires_at, resolved_at
+        ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, '[]', '[]', 'pending', '', ?, ?, 0)`,
       )
       .run(
-        record.guildId,
-        record.userId,
-        record.chapter,
-        record.floor,
-        record.stateJson,
-        record.updatedAt,
+        input.guildId,
+        input.channelId,
+        input.userId,
+        input.fromLevel,
+        input.targetTier,
+        input.pillsUsed,
+        input.usedGuard ? 1 : 0,
+        input.baseChanceBp,
+        input.createdAt,
+        input.expiresAt,
+      );
+    const created = this.getTrialById(Number(res.lastInsertRowid));
+    if (!created) throw new Error('Failed to load created RPG trial');
+    return created;
+  }
+
+  getTrialById(trialId: number): RpgTrial | null {
+    const row = this.db
+      .prepare('SELECT * FROM rpg_trials WHERE id = ?')
+      .get(trialId) as RpgTrialSqlRow | undefined;
+    return row ? mapTrial(row) : null;
+  }
+
+  getPendingTrialForUser(guildId: string, userId: string): RpgTrial | null {
+    const row = this.db
+      .prepare(
+        "SELECT * FROM rpg_trials WHERE guild_id = ? AND user_id = ? AND status = 'pending' ORDER BY id DESC LIMIT 1",
+      )
+      .get(guildId, userId) as RpgTrialSqlRow | undefined;
+    return row ? mapTrial(row) : null;
+  }
+
+  bindTrialMessage(trialId: number, messageId: string, channelId?: string): void {
+    if (channelId) {
+      this.db
+        .prepare('UPDATE rpg_trials SET message_id = ?, channel_id = ? WHERE id = ?')
+        .run(messageId, channelId, trialId);
+      return;
+    }
+    this.db
+      .prepare('UPDATE rpg_trials SET message_id = ? WHERE id = ?')
+      .run(messageId, trialId);
+  }
+
+  saveTrial(trial: RpgTrial): void {
+    this.db
+      .prepare(
+        `UPDATE rpg_trials SET
+          channel_id = ?, message_id = ?, supporters_json = ?, saboteurs_json = ?,
+          status = ?, result_summary = ?, resolved_at = ?
+         WHERE id = ?`,
+      )
+      .run(
+        trial.channelId,
+        trial.messageId,
+        JSON.stringify(trial.supporters),
+        JSON.stringify(trial.saboteurs),
+        trial.status,
+        trial.resultSummary,
+        trial.resolvedAt,
+        trial.id,
       );
   }
 
-  deleteRun(guildId: string, userId: string): boolean {
-    const res = this.db
-      .prepare('DELETE FROM rpg_runs WHERE guild_id = ? AND user_id = ?')
-      .run(guildId, userId);
-    return res.changes > 0;
+  listDuePendingTrials(nowMs: number): RpgTrial[] {
+    const rows = this.db
+      .prepare(
+        "SELECT * FROM rpg_trials WHERE status = 'pending' AND expires_at <= ? ORDER BY expires_at ASC, id ASC",
+      )
+      .all(nowMs) as RpgTrialSqlRow[];
+    return rows.map(mapTrial);
   }
 }

@@ -803,6 +803,91 @@ describe('messageCreate isolation, world event guards, and AI safety/rate-limits
     );
     expect(spawnSpy).not.toHaveBeenCalled();
 
+    // Auto-locks onto #游戏聊天: messages in #生图区 must NEVER trigger or count, only #游戏聊天 does!
+    ctx.repos.guildConfig.updateModules('g1', { ...cfg.modules, worldEvents: true, economy: true });
+    ctx.repos.guildConfig.updateGames('g1', {
+      ...cfg.games,
+      eventChannelId: null,
+      eventMsgThreshold: 2,
+      eventCooldownSec: 1,
+    });
+    const gameChatSend = vi.fn(async () => ({ id: 'ev-msg-1' }));
+    const drawChatSend = vi.fn(async () => ({ id: 'draw-msg-1' }));
+    const gameChatObj = {
+      id: 'ch-game-chat',
+      name: '游戏聊天',
+      isTextBased: () => true,
+      isThread: () => false,
+      isSendable: () => true,
+      send: gameChatSend,
+    };
+    const drawChatObj = {
+      id: 'ch-draw-chat',
+      name: '生图区',
+      isTextBased: () => true,
+      isThread: () => false,
+      isSendable: () => true,
+      send: drawChatSend,
+    };
+    const guildWithGameChat = {
+      id: 'g1',
+      channels: {
+        cache: new Map([
+          ['ch-draw-chat', drawChatObj],
+          ['ch-game-chat', gameChatObj],
+        ]),
+      },
+    };
+    const clientWithChannels = {
+      user: { id: 'bot-1' },
+      channels: {
+        cache: guildWithGameChat.channels.cache,
+        fetch: vi.fn(async (id: string) => guildWithGameChat.channels.cache.get(id) ?? null),
+      },
+    } as unknown as Client;
+
+    // Messages in #生图区 do not call tryAutoSpawnOnMessage, while auto-resolving eventChannelId to #游戏聊天
+    for (let i = 0; i < 3; i++) {
+      await handleMessageCreate(
+        clientWithChannels,
+        makeMsg({
+          id: `draw-m-${i}`,
+          channelId: 'ch-draw-chat',
+          guild: guildWithGameChat,
+          mentions: { users: new Map() },
+        }),
+        ctx,
+      );
+    }
+    expect(spawnSpy).not.toHaveBeenCalled();
+    expect(drawChatSend).not.toHaveBeenCalled();
+    expect(ctx.repos.guildConfig.getOrCreate('g1').games.eventChannelId).toBe('ch-game-chat');
+
+    // 2 messages in #游戏聊天 trigger spawn strictly in #游戏聊天
+    await handleMessageCreate(
+      clientWithChannels,
+      makeMsg({
+        id: 'game-m-1',
+        channelId: 'ch-game-chat',
+        guild: guildWithGameChat,
+        mentions: { users: new Map() },
+      }),
+      ctx,
+    );
+    await handleMessageCreate(
+      clientWithChannels,
+      makeMsg({
+        id: 'game-m-2',
+        channelId: 'ch-game-chat',
+        guild: guildWithGameChat,
+        mentions: { users: new Map() },
+      }),
+      ctx,
+    );
+    expect(spawnSpy).toHaveBeenCalledTimes(2);
+    expect(gameChatSend).toHaveBeenCalledTimes(1);
+    expect(drawChatSend).not.toHaveBeenCalled();
+
     ctx.db.close();
   });
 
