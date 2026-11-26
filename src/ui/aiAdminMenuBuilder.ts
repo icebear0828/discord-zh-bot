@@ -350,7 +350,7 @@ export function buildAdminAiView(
     `🔌 **网关状态**：${llmConfigured ? '✅ 已连接配置' : '⚠️ 未配置网关参数'} ｜ **模块总开关**：${aiEnabled ? '✅ 已开启' : '⛔ 已关闭'}`,
     `🎭 **当前人格**：**${resolvedBinding.card.personaName}**（卡：\`${resolvedBinding.card.id}@v${resolvedBinding.card.version}\`）`,
     `🔓 **破限预设**：**${resolvedBinding.preset.name}**（\`${resolvedBinding.preset.id}@v${resolvedBinding.preset.version}\`）${channelOverrideCount > 0 ? ` ｜ 🧪 频道沙盒覆盖：**${channelOverrideCount}** 个` : ''}`,
-    `🤖 **当前模型**：\`${effectiveModel}\`${ai.modelOverride ? '（后台覆盖）' : '（默认）'} ｜ 温度 **${ai.temperature}** ｜ MaxTokens **${ai.maxTokens}**`,
+    `🤖 **当前模型**：\`${effectiveModel}\`${ai.modelOverride ? '（后台覆盖）' : '（默认）'} ｜ 🛡️ 兜底：\`${resolvedBinding.effectiveFallbackModel || '无'}\` ｜ 温度 **${ai.temperature}** ｜ MaxTokens **${ai.maxTokens}**`,
     `💬 **上下文与记忆**：滑窗 **${ai.contextWindowMessages}** 条 ｜ 记忆抽取 ${ai.memoryEnabled ? `✅ 开（每域上限 ${ai.maxMemoriesPerScope} 条）` : '⛔ 关'} ｜ 图片识图 ${ai.visionEnabled ? '✅ 开' : '⛔ 关'}`,
     `🔧 **正则替换与反八股**：启用 **${enabledRegexCount}/${ai.regexRules.length}** 条规则 ｜ 反八股提示词 ${ai.antiClichePromptEnabled ? '✅ 开' : '⛔ 关'}`,
     `👤 **人物关系档案**：已绑定 **${ai.userProfiles.length}/${MAX_AI_USER_PROFILES}** 人`,

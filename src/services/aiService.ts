@@ -55,6 +55,7 @@ import {
   LlmClient,
   LlmError,
   type LlmChatMessage,
+  type LlmChatResponse,
   type LlmContentPart,
   type LlmErrorCode,
   type LlmImageUrlPart,
@@ -129,6 +130,7 @@ export type GenerateAiReplyResult =
       allowedMentionUserIds: string[];
       storedMemoryCount: number;
       model: string;
+      fallbackUsed?: boolean;
       attempts: number;
       usage: AiReplyUsageInfo;
     }
@@ -998,6 +1000,7 @@ export interface PreviewCompiledPromptOutput {
   cardVersion: string;
   personaName: string;
   model: string;
+  fallbackModel: string | null;
   sampling: {
     temperature: number;
     maxTokens: number;
@@ -1013,6 +1016,7 @@ export interface ResolvedAiBinding {
   preset: PresetPack;
   card: CharacterCardPack;
   effectiveModel: string;
+  effectiveFallbackModel: string | null;
   usingCustomPreset: boolean;
   isChannelOverridden: boolean;
   channelOverride?: AiChannelOverride;
@@ -1300,6 +1304,7 @@ export class AiService {
       ...(override.presetId !== undefined ? { presetId: override.presetId } : {}),
       ...(override.cardId !== undefined ? { cardId: override.cardId } : {}),
       ...(override.modelOverride !== undefined ? { modelOverride: override.modelOverride } : {}),
+      ...(override.fallbackModel !== undefined ? { fallbackModel: override.fallbackModel } : {}),
     };
     existingOverrides[channelId] = merged;
 
@@ -1413,10 +1418,21 @@ export class AiService {
       aiCfg.modelOverride?.trim() ||
       this.llmClient.getDefaultModel();
 
+    const rawFallback =
+      chOverride?.fallbackModel !== undefined
+        ? chOverride.fallbackModel
+        : aiCfg.fallbackModel !== undefined
+          ? aiCfg.fallbackModel
+          : this.llmClient.getFallbackModel() || null;
+    const normalizedFallback = rawFallback?.trim() || null;
+    const effectiveFallbackModel =
+      normalizedFallback && normalizedFallback !== effectiveModel ? normalizedFallback : null;
+
     return {
       preset,
       card,
       effectiveModel,
+      effectiveFallbackModel,
       usingCustomPreset,
       isChannelOverridden: Boolean(chOverride),
       ...(chOverride ? { channelOverride: chOverride } : {}),
@@ -1561,6 +1577,7 @@ export class AiService {
       cardVersion: resolved.card.version,
       personaName: resolved.card.personaName,
       model: resolved.effectiveModel || '未配置',
+      fallbackModel: resolved.effectiveFallbackModel,
       sampling: {
         temperature,
         maxTokens,
@@ -1585,6 +1602,10 @@ export class AiService {
 
   getDefaultModel(): string {
     return this.llmClient.getDefaultModel();
+  }
+
+  getFallbackModel(): string {
+    return this.llmClient.getFallbackModel();
   }
 
   shouldTrigger(params: {
@@ -2115,10 +2136,46 @@ export class AiService {
         ? resolved.preset.sampling.maxTokens
         : aiCfg.maxTokens;
 
+    const extractCleanedCompletion = (rawContent: string) => {
+      const combinedRawStream =
+        compiled.renderedPrefill !== null
+          ? `${compiled.renderedPrefill}${rawContent}`
+          : rawContent;
+      const cotStripped = stripCotBlocks(combinedRawStream, resolved.preset.cotStrip);
+      let postCotText = cotStripped.cleaned;
+      if (
+        compiled.renderedPrefill !== null &&
+        !resolved.preset.assistantPrefill.keepInReply
+      ) {
+        const trimmedPrefill = compiled.renderedPrefill.trim();
+        if (trimmedPrefill && postCotText.startsWith(trimmedPrefill)) {
+          postCotText = postCotText.slice(trimmedPrefill.length).trimStart();
+        }
+      }
+      const tags = extractMemoryTags(postCotText);
+      const cleanedText = cleanAiOutput(
+        postCotText,
+        resolved.card.personaName,
+        effectiveRegexRules,
+      );
+      const hasSavableUserMemory =
+        aiCfg.memoryEnabled &&
+        !containsPromptInjectionMemoryTag(rawUserText) &&
+        tags.some((t) => t.scopeHint === 'user');
+      return {
+        cotStripped,
+        tags,
+        cleanedText,
+        isNonEmpty: cleanedText.length > 0 || hasSavableUserMemory,
+      };
+    };
+
     const startedAt = Date.now();
+    let primaryAttempts = 0;
+    let fallbackStarted = false;
+    let fallbackUsed = false;
     try {
-      const response = await this.llmClient.chat({
-        model: effectiveModel,
+      const baseRequest = {
         messages,
         temperature: effectiveTemperature,
         maxTokens: effectiveMaxTokens,
@@ -2131,31 +2188,45 @@ export class AiService {
         ...(resolved.preset.sampling.presencePenalty !== undefined
           ? { presencePenalty: resolved.preset.sampling.presencePenalty }
           : {}),
-      });
+        validateContent: (raw: string) => extractCleanedCompletion(raw).isNonEmpty,
+      };
+
+      let response: LlmChatResponse;
+      try {
+        response = await this.llmClient.chat({
+          ...baseRequest,
+          model: effectiveModel,
+        });
+      } catch (primaryErr) {
+        const primaryCode: LlmErrorCode =
+          primaryErr instanceof LlmError ? primaryErr.code : 'unknown';
+        primaryAttempts = primaryErr instanceof LlmError ? primaryErr.attempts : 1;
+        const fallbackModel = resolved.effectiveFallbackModel;
+        if (
+          !fallbackModel ||
+          primaryCode === 'not_configured' ||
+          primaryCode === 'context_too_long'
+        ) {
+          throw primaryErr;
+        }
+        console.info(
+          `[ai:fallback] from=${effectiveModel} to=${fallbackModel} reason=${primaryCode} primaryAttempts=${primaryAttempts} guild=${input.guildId} channel=${input.channelId}`,
+        );
+        fallbackStarted = true;
+        const fallbackResponse = await this.llmClient.chat({
+          ...baseRequest,
+          model: fallbackModel,
+          maxRetries: 3,
+        });
+        fallbackUsed = true;
+        response = {
+          ...fallbackResponse,
+          attempts: primaryAttempts + fallbackResponse.attempts,
+        };
+      }
       const latencyMs = Math.max(0, Date.now() - startedAt);
 
-      const combinedRawStream =
-        compiled.renderedPrefill !== null
-          ? `${compiled.renderedPrefill}${response.content}`
-          : response.content;
-      const cotStripped = stripCotBlocks(combinedRawStream, resolved.preset.cotStrip);
-      let postCotText = cotStripped.cleaned;
-      if (
-        compiled.renderedPrefill !== null &&
-        !resolved.preset.assistantPrefill.keepInReply
-      ) {
-        const trimmedPrefill = compiled.renderedPrefill.trim();
-        if (trimmedPrefill && postCotText.startsWith(trimmedPrefill)) {
-          postCotText = postCotText.slice(trimmedPrefill.length).trimStart();
-        }
-      }
-
-      const tags = extractMemoryTags(postCotText);
-      const cleanedText = cleanAiOutput(
-        postCotText,
-        resolved.card.personaName,
-        effectiveRegexRules,
-      );
+      const { cotStripped, tags, cleanedText } = extractCleanedCompletion(response.content);
 
       this.saveChannelDebugTrace({
         guildId: input.guildId,
@@ -2266,6 +2337,7 @@ export class AiService {
         allowedMentionUserIds: resolvedMentions.allowedMentionUserIds,
         storedMemoryCount,
         model: response.model,
+        ...(fallbackUsed ? { fallbackUsed: true } : {}),
         attempts: response.attempts,
         usage: {
           promptTokens,
@@ -2279,7 +2351,8 @@ export class AiService {
     } catch (err) {
       const latencyMs = Math.max(0, Date.now() - startedAt);
       const errorCode: LlmErrorCode = err instanceof LlmError ? err.code : 'unknown';
-      const attempts = err instanceof LlmError ? err.attempts : 1;
+      const errAttempts = err instanceof LlmError ? err.attempts : 1;
+      const attempts = fallbackStarted ? primaryAttempts + errAttempts : errAttempts;
       try {
         this.aiMemoryRepo.recordUsageLog({
           guildId: input.guildId,

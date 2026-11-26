@@ -89,12 +89,28 @@ function sanitizeChannelOverrides(raw: unknown): Record<string, AiChannelOverrid
         : item['modelOverride'] === null
           ? null
           : undefined;
+    const rawFallback = item['fallbackModel'];
+    const fallbackModel =
+      typeof rawFallback === 'string'
+        ? (() => {
+            const trimmed = rawFallback.trim();
+            return !trimmed || /^(none|off|false|-)$/i.test(trimmed) ? null : trimmed;
+          })()
+        : rawFallback === null
+          ? null
+          : undefined;
 
-    if (presetId || cardId || modelOverride !== undefined) {
+    if (
+      presetId ||
+      cardId ||
+      modelOverride !== undefined ||
+      fallbackModel !== undefined
+    ) {
       result[channelId] = {
         ...(presetId ? { presetId } : {}),
         ...(cardId ? { cardId } : {}),
         ...(modelOverride !== undefined ? { modelOverride } : {}),
+        ...(fallbackModel !== undefined ? { fallbackModel } : {}),
       };
     }
   }
@@ -182,6 +198,17 @@ export class GuildConfigRepo {
           const rawOutputPrice = rawAiObj['outputPricePer1MUsd'];
           const rawActivePresetId = rawAiObj['activePresetId'];
           const rawActiveCardId = rawAiObj['activeCardId'];
+          const rawFallbackModel = rawAiObj['fallbackModel'];
+          const fallbackModel =
+            typeof rawFallbackModel === 'string'
+              ? (() => {
+                  const trimmed = rawFallbackModel.trim();
+                  if (/^(none|off|false|-)$/i.test(trimmed)) return null;
+                  return trimmed || DEFAULT_AI_CONFIG.fallbackModel;
+                })()
+              : rawFallbackModel === null
+                ? null
+                : DEFAULT_AI_CONFIG.fallbackModel;
           return {
             ...aiRaw,
             activePresetId:
@@ -192,6 +219,7 @@ export class GuildConfigRepo {
               typeof rawActiveCardId === 'string' && rawActiveCardId.trim()
                 ? rawActiveCardId.trim()
                 : null,
+            fallbackModel,
             channelOverrides: sanitizeChannelOverrides(rawAiObj['channelOverrides']),
             inputPricePer1MUsd:
               typeof rawInputPrice === 'number' && Number.isFinite(rawInputPrice) && rawInputPrice >= 0

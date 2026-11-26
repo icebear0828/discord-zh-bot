@@ -150,6 +150,7 @@ export interface AiChannelOverride {
   presetId?: string;
   cardId?: string;
   modelOverride?: string | null;
+  fallbackModel?: string | null;
 }
 
 export interface AiConfig {
@@ -162,6 +163,7 @@ export interface AiConfig {
   activeCardId?: string | null;
   channelOverrides?: Record<string, AiChannelOverride>;
   modelOverride: string | null;
+  fallbackModel: string | null;
   temperature: number;
   maxTokens: number;
   contextWindowMessages: number;
@@ -370,6 +372,7 @@ export const DEFAULT_AI_CONFIG: AiConfig = {
   activeCardId: null,
   channelOverrides: {},
   modelOverride: null,
+  fallbackModel: 'pg/gemini-4-carbon',
   temperature: 0.85,
   maxTokens: 1024,
   contextWindowMessages: 20,

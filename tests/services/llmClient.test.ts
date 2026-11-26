@@ -242,4 +242,307 @@ describe('LlmClient', () => {
     ).rejects.toMatchObject({ code: 'timeout', attempts: 2 });
     expect(calls).toBe(2);
   });
+
+  it('defaults to 8 non-429 retries (9 attempts) while capping 429 rate-limit retries at 2 (3 attempts)', async () => {
+    const sleeps503: number[] = [];
+    let calls503 = 0;
+    const client503 = new LlmClient(
+      {
+        baseUrl: 'https://gateway.local/v1',
+        apiKey: 'sk-test',
+        model: 'pg/gemini-4-argon',
+        timeoutMs: 10_000,
+      },
+      {
+        sleepFn: async (ms) => {
+          sleeps503.push(ms);
+        },
+        fetchFn: async () => {
+          calls503++;
+          return makeJsonResponse({ error: 'peak busy' }, 503);
+        },
+      },
+    );
+
+    await expect(
+      client503.chat({ messages: [{ role: 'user', content: 'hi' }] }),
+    ).rejects.toMatchObject({ code: 'service_unavailable', status: 503, attempts: 9 });
+    expect(calls503).toBe(9);
+    expect(sleeps503).toHaveLength(8);
+    expect(sleeps503[0]).toBe(1200);
+
+    const sleeps429: number[] = [];
+    let calls429 = 0;
+    const client429 = new LlmClient(
+      {
+        baseUrl: 'https://gateway.local/v1',
+        apiKey: 'sk-test',
+        model: 'pg/gemini-4-argon',
+        timeoutMs: 10_000,
+      },
+      {
+        sleepFn: async (ms) => {
+          sleeps429.push(ms);
+        },
+        fetchFn: async () => {
+          calls429++;
+          return makeJsonResponse({ error: 'rate limit' }, 429, { 'Retry-After': '2' });
+        },
+      },
+    );
+
+    await expect(
+      client429.chat({ messages: [{ role: 'user', content: 'hi' }] }),
+    ).rejects.toMatchObject({ code: 'rate_limited', status: 429, attempts: 3 });
+    expect(calls429).toBe(3);
+    expect(sleeps429).toEqual([2000, 2000]);
+  });
+
+  it('retries transient upstream account-pool 401/403/400 errors and keeps direct auth/context fast-fail', async () => {
+    let calls = 0;
+    const client = new LlmClient(
+      {
+        baseUrl: 'https://gateway.local/v1',
+        apiKey: 'sk-test',
+        model: 'pg/gemini-4-argon',
+        timeoutMs: 10_000,
+      },
+      {
+        sleepFn: async () => undefined,
+        fetchFn: async () => {
+          calls++;
+          if (calls === 1) {
+            return makeJsonResponse(
+              { error: { code: 'upstream_http_error', message: '上游 HTTP 401: bad account' } },
+              401,
+            );
+          }
+          if (calls === 2) {
+            return makeJsonResponse(
+              { error: { message: 'no available account for pool' } },
+              403,
+            );
+          }
+          if (calls === 3) {
+            return makeJsonResponse(
+              { error: { code: 'upstream_http_error', message: '上游 HTTP 400: transient' } },
+              400,
+            );
+          }
+          return makeJsonResponse({
+            choices: [{ message: { content: '切号成功' } }],
+          });
+        },
+      },
+    );
+
+    const res = await client.chat({ messages: [{ role: 'user', content: 'hi' }] });
+    expect(res.content).toBe('切号成功');
+    expect(res.attempts).toBe(4);
+    expect(calls).toBe(4);
+  });
+
+  it('retries empty responses and validateContent failures with capped delay <= 3000ms', async () => {
+    const sleeps: number[] = [];
+    let calls = 0;
+    const client = new LlmClient(
+      {
+        baseUrl: 'https://gateway.local/v1',
+        apiKey: 'sk-test',
+        model: 'pg/gemini-4-argon',
+        timeoutMs: 10_000,
+      },
+      {
+        sleepFn: async (ms) => {
+          sleeps.push(ms);
+        },
+        fetchFn: async () => {
+          calls++;
+          if (calls === 1) {
+            return makeJsonResponse({ choices: [{ message: { content: '' } }] });
+          }
+          if (calls === 2) {
+            return makeJsonResponse({
+              choices: [{ message: { content: '<think>only thinking</think>' } }],
+            });
+          }
+          return makeJsonResponse({
+            choices: [{ message: { content: '<think>ok</think>正式回复' } }],
+          });
+        },
+      },
+    );
+
+    const res = await client.chat({
+      messages: [{ role: 'user', content: 'hi' }],
+      validateContent: (raw) => raw.replace(/<think>[\s\S]*?<\/think>/g, '').trim().length > 0,
+    });
+    expect(res.content).toBe('<think>ok</think>正式回复');
+    expect(res.attempts).toBe(3);
+    expect(sleeps).toEqual([1200, 2500]);
+
+    // Exhausting empty retries throws empty_response after 9 attempts with delays capped at 3000ms
+    const exhaustSleeps: number[] = [];
+    const exhaustClient = new LlmClient(
+      {
+        baseUrl: 'https://gateway.local/v1',
+        apiKey: 'sk-test',
+        model: 'pg/gemini-4-argon',
+        timeoutMs: 10_000,
+      },
+      {
+        sleepFn: async (ms) => {
+          exhaustSleeps.push(ms);
+        },
+        fetchFn: async () => makeJsonResponse({ choices: [{ message: { content: '   ' } }] }),
+      },
+    );
+
+    await expect(
+      exhaustClient.chat({ messages: [{ role: 'user', content: 'hi' }] }),
+    ).rejects.toMatchObject({ code: 'empty_response', attempts: 9 });
+    expect(exhaustSleeps).toHaveLength(8);
+    for (const ms of exhaustSleeps) {
+      expect(ms).toBeLessThanOrEqual(3000);
+    }
+  });
+
+  it('parses SSE text/event-stream split chunks without stream_options and retries on SSE error frames', async () => {
+    const encoder = new TextEncoder();
+    const makeSseResponse = (chunks: string[], status = 200) => {
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          for (const ch of chunks) {
+            controller.enqueue(encoder.encode(ch));
+          }
+          controller.close();
+        },
+      });
+      return new Response(stream, {
+        status,
+        headers: { 'Content-Type': 'text/event-stream; charset=utf-8' },
+      });
+    };
+
+    const capturedBodies: Array<Record<string, unknown>> = [];
+    let callIdx = 0;
+    const client = new LlmClient(
+      {
+        baseUrl: 'https://gateway.local/v1',
+        apiKey: 'sk-test',
+        model: 'pg/gemini-4-argon',
+        timeoutMs: 10_000,
+      },
+      {
+        sleepFn: async () => undefined,
+        fetchFn: async (_url, init) => {
+          capturedBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+          callIdx++;
+          if (callIdx === 1) {
+            return makeSseResponse([
+              'data: {"error":{"code":"upstream_http_error","message":"上游 HTTP 503: busy"}}\n\n',
+            ]);
+          }
+          return makeSseResponse([
+            ': keep-alive\r\n\r\n',
+            'data: {"model":"pg/gemini-4-argon","choices":[{"delta":{"content":"你好 "}}]}\n',
+            '\ndata: {"choices":[{"delta":{"content":"世',
+            '界！"}}]}\n\n',
+            'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":7,"total_tokens":18}}\n\n',
+            'data: [DONE]\n\n',
+          ]);
+        },
+      },
+    );
+
+    const res = await client.chat({ messages: [{ role: 'user', content: 'hi' }] });
+    expect(capturedBodies[0]?.['stream']).toBe(true);
+    expect('stream_options' in (capturedBodies[0] ?? {})).toBe(false);
+    expect(res.content).toBe('你好 世界！');
+    expect(res.model).toBe('pg/gemini-4-argon');
+    expect(res.attempts).toBe(2);
+    expect(res.usage).toEqual({ promptTokens: 11, completionTokens: 7, totalTokens: 18 });
+
+    // SSE 429 error frame must also respect the 2-retry (3-attempt) rate-limit cap
+    let sse429Calls = 0;
+    const sse429Client = new LlmClient(
+      {
+        baseUrl: 'https://gateway.local/v1',
+        apiKey: 'sk-test',
+        model: 'pg/gemini-4-argon',
+        timeoutMs: 10_000,
+      },
+      {
+        sleepFn: async () => undefined,
+        fetchFn: async () => {
+          sse429Calls++;
+          return makeSseResponse([
+            'data: {"error":{"code":"rate_limit_exceeded","status":429,"message":"Too many requests"}}\n\n',
+          ]);
+        },
+      },
+    );
+    await expect(
+      sse429Client.chat({ messages: [{ role: 'user', content: 'hi' }] }),
+    ).rejects.toMatchObject({ code: 'rate_limited', status: 429, attempts: 3 });
+    expect(sse429Calls).toBe(3);
+  });
+
+  it('stops after 2 60s hangs via 120s wall-clock cap while allowing all 9 attempts on fast 503s', async () => {
+    let nowHang = 0;
+    let hangCalls = 0;
+    const hangClient = new LlmClient(
+      {
+        baseUrl: 'https://gateway.local/v1',
+        apiKey: 'sk-test',
+        model: 'pg/gemini-4-argon',
+        timeoutMs: 60_000,
+      },
+      {
+        nowFn: () => nowHang,
+        sleepFn: async (ms) => {
+          nowHang += ms;
+        },
+        fetchFn: async () => {
+          hangCalls++;
+          nowHang += 60_000;
+          const err = new Error('timed out');
+          err.name = 'TimeoutError';
+          throw err;
+        },
+      },
+    );
+
+    await expect(
+      hangClient.chat({ messages: [{ role: 'user', content: 'hi' }] }),
+    ).rejects.toMatchObject({ code: 'timeout', attempts: 2 });
+    expect(hangCalls).toBe(2);
+
+    let nowFast = 0;
+    let fastCalls = 0;
+    const fastClient = new LlmClient(
+      {
+        baseUrl: 'https://gateway.local/v1',
+        apiKey: 'sk-test',
+        model: 'pg/gemini-4-argon',
+        timeoutMs: 60_000,
+      },
+      {
+        nowFn: () => nowFast,
+        sleepFn: async (ms) => {
+          nowFast += ms;
+        },
+        fetchFn: async () => {
+          fastCalls++;
+          nowFast += 2_000;
+          return makeJsonResponse({ error: 'busy' }, 503);
+        },
+      },
+    );
+
+    await expect(
+      fastClient.chat({ messages: [{ role: 'user', content: 'hi' }] }),
+    ).rejects.toMatchObject({ code: 'service_unavailable', status: 503, attempts: 9 });
+    expect(fastCalls).toBe(9);
+  });
 });

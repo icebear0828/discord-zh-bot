@@ -44,6 +44,29 @@ describe('env & database schema', () => {
       apiKey: 'sk-test',
       model: 'gemini-test',
       timeoutMs: 45_000,
+      fallbackModel: 'pg/gemini-4-carbon',
+      maxRetries: 8,
+      rateLimitMaxRetries: 2,
+    });
+
+    const withCustomLlm = parseEnv({
+      DISCORD_TOKEN: 'tok-123',
+      DISCORD_CLIENT_ID: 'app-456',
+      LLM_BASE_URL: 'https://example.com/v1',
+      LLM_API_KEY: 'sk-test',
+      LLM_MODEL: 'gemini-test',
+      LLM_FALLBACK_MODEL: 'none',
+      LLM_MAX_RETRIES: '10',
+      LLM_RATE_LIMIT_MAX_RETRIES: '3',
+    });
+    expect(withCustomLlm.llm).toEqual({
+      baseUrl: 'https://example.com/v1',
+      apiKey: 'sk-test',
+      model: 'gemini-test',
+      timeoutMs: 60_000,
+      fallbackModel: '',
+      maxRetries: 10,
+      rateLimitMaxRetries: 3,
     });
   });
 

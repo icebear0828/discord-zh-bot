@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   AI_PERSONA_PRESETS,
   createDefaultGuildConfig,
@@ -1129,5 +1129,291 @@ describe('aiService helpers & AiMemoryRepo', () => {
     expect(msgs4[1]?.content).toBe('[黑屌王(核心偏爱)]: 刚下班');
 
     db.close();
+  });
+
+  it('defaults fallbackModel to pg/gemini-4-carbon (including legacy DB rows) and allows explicit null disable', () => {
+    expect(DEFAULT_AI_CONFIG.fallbackModel).toBe('pg/gemini-4-carbon');
+
+    const db = createDatabase(':memory:');
+    const guildConfigRepo = new GuildConfigRepo(db);
+    guildConfigRepo.getOrCreate('g_fb_legacy');
+
+    const row = db
+      .prepare('SELECT ai_config_json FROM guild_configs WHERE guild_id = ?')
+      .get('g_fb_legacy') as { ai_config_json: string };
+    const parsed = JSON.parse(row.ai_config_json) as Record<string, unknown>;
+    delete parsed['fallbackModel'];
+    db.prepare('UPDATE guild_configs SET ai_config_json = ? WHERE guild_id = ?').run(
+      JSON.stringify(parsed),
+      'g_fb_legacy',
+    );
+
+    const legacyLoaded = guildConfigRepo.getOrCreate('g_fb_legacy');
+    expect(legacyLoaded.ai.fallbackModel).toBe('pg/gemini-4-carbon');
+
+    guildConfigRepo.updateAi('g_fb_legacy', { ...legacyLoaded.ai, fallbackModel: null });
+    expect(guildConfigRepo.getOrCreate('g_fb_legacy').ai.fallbackModel).toBeNull();
+
+    db.close();
+  });
+
+  it('rerolls <think>-only output and falls back to pg/gemini-4-carbon on exhausted primary failures', async () => {
+    const db = createDatabase(':memory:');
+    const guildConfigRepo = new GuildConfigRepo(db);
+    const aiMemoryRepo = new AiMemoryRepo(db);
+    const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+
+    try {
+      // Case A: <think>-only output rerolls without hitting fallback
+      let callCountA = 0;
+      const clientA = new LlmClient(
+        {
+          baseUrl: 'https://gateway.local/v1',
+          apiKey: 'sk-test',
+          model: 'pg/gemini-4-argon',
+          fallbackModel: 'pg/gemini-4-carbon',
+          timeoutMs: 10_000,
+        },
+        {
+          maxRetries: 8,
+          sleepFn: async () => undefined,
+          fetchFn: async (_url, init) => {
+            callCountA++;
+            const body = JSON.parse(String(init?.body)) as { model: string };
+            expect(body.model).toBe('pg/gemini-4-argon');
+            if (callCountA === 1) {
+              return new Response(
+                JSON.stringify({
+                  model: 'pg/gemini-4-argon',
+                  choices: [{ message: { content: '<think>只有思考没有正文</think>' } }],
+                }),
+                { status: 200, headers: { 'Content-Type': 'application/json' } },
+              );
+            }
+            return new Response(
+              JSON.stringify({
+                model: 'pg/gemini-4-argon',
+                choices: [{ message: { content: '<think>思考完毕</think>\n正常接话了' } }],
+              }),
+              { status: 200, headers: { 'Content-Type': 'application/json' } },
+            );
+          },
+        },
+      );
+      const aiA = new AiService(guildConfigRepo, aiMemoryRepo, clientA);
+      const resA = await aiA.generateReply({
+        guildId: 'g_reroll',
+        channelId: 'c1',
+        userId: 'u1',
+        userName: '测试君',
+        messageId: 'm_reroll',
+        userContent: '还在吗',
+      });
+      expect(resA.ok).toBe(true);
+      if (resA.ok) {
+        expect(resA.replyText).toBe('正常接话了');
+        expect(resA.model).toBe('pg/gemini-4-argon');
+        expect(resA.attempts).toBe(2);
+        expect(resA.fallbackUsed).toBeFalsy();
+      }
+
+      // Case B: Primary fails across 503 (9 attempts), 429 (3 attempts), timeout (9 attempts), and <think>-only empty (9 attempts) -> falls back to pg/gemini-4-carbon
+      const scenarios: Array<{
+        name: string;
+        expectedPrimaryCalls: number;
+        failPrimary: () => Promise<Response>;
+      }> = [
+        {
+          name: '503',
+          expectedPrimaryCalls: 9,
+          failPrimary: async () =>
+            new Response(JSON.stringify({ error: 'overloaded' }), { status: 503 }),
+        },
+        {
+          name: '429',
+          expectedPrimaryCalls: 3,
+          failPrimary: async () =>
+            new Response(JSON.stringify({ error: 'rate limited' }), { status: 429 }),
+        },
+        {
+          name: 'timeout',
+          expectedPrimaryCalls: 9,
+          failPrimary: async () => {
+            const err = new Error('timed out');
+            err.name = 'TimeoutError';
+            throw err;
+          },
+        },
+        {
+          name: 'empty_cot',
+          expectedPrimaryCalls: 9,
+          failPrimary: async () =>
+            new Response(
+              JSON.stringify({
+                model: 'pg/gemini-4-argon',
+                choices: [{ message: { content: '<think>empty</think>' } }],
+              }),
+              { status: 200, headers: { 'Content-Type': 'application/json' } },
+            ),
+        },
+      ];
+
+      for (const scenario of scenarios) {
+        const modelsCalled: string[] = [];
+        const clientB = new LlmClient(
+          {
+            baseUrl: 'https://gateway.local/v1',
+            apiKey: 'sk-test',
+            model: 'pg/gemini-4-argon',
+            fallbackModel: 'pg/gemini-4-carbon',
+            timeoutMs: 10_000,
+          },
+          {
+            maxRetries: 8,
+            sleepFn: async () => undefined,
+            fetchFn: async (_url, init) => {
+              const body = JSON.parse(String(init?.body)) as { model: string };
+              modelsCalled.push(body.model);
+              if (body.model === 'pg/gemini-4-argon') {
+                return scenario.failPrimary();
+              }
+              return new Response(
+                JSON.stringify({
+                  model: 'pg/gemini-4-carbon',
+                  choices: [{ message: { content: `4C 兜底成功 (${scenario.name})` } }],
+                  usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+                }),
+                { status: 200, headers: { 'Content-Type': 'application/json' } },
+              );
+            },
+          },
+        );
+        const guildId = `g_fb_${scenario.name}`;
+        const aiB = new AiService(guildConfigRepo, aiMemoryRepo, clientB);
+        const resB = await aiB.generateReply({
+          guildId,
+          channelId: 'c1',
+          userId: 'u1',
+          userName: '测试君',
+          messageId: `m_${scenario.name}`,
+          userContent: '在吗',
+        });
+
+        expect(resB.ok).toBe(true);
+        if (resB.ok) {
+          expect(resB.model).toBe('pg/gemini-4-carbon');
+          expect(resB.fallbackUsed).toBe(true);
+          expect(resB.attempts).toBe(scenario.expectedPrimaryCalls + 1);
+          expect(resB.replyText).toBe(`4C 兜底成功 (${scenario.name})`);
+        }
+        expect(modelsCalled.filter((m) => m === 'pg/gemini-4-argon')).toHaveLength(
+          scenario.expectedPrimaryCalls,
+        );
+        expect(modelsCalled.filter((m) => m === 'pg/gemini-4-carbon')).toHaveLength(1);
+
+        const logs = aiB.listRecentUsageLogs(guildId, 5);
+        expect(logs).toHaveLength(1);
+        expect(logs[0]?.status).toBe('ok');
+        expect(logs[0]?.model).toBe('pg/gemini-4-carbon');
+        expect(logs[0]?.attempts).toBe(scenario.expectedPrimaryCalls + 1);
+      }
+
+      // Case C: context_too_long, disabled fallback (null), or primary === fallback must NOT trigger duplicate fallback call
+      let callsC1 = 0;
+      const clientCtx = new LlmClient(
+        {
+          baseUrl: 'https://gateway.local/v1',
+          apiKey: 'sk-test',
+          model: 'pg/gemini-4-argon',
+          fallbackModel: 'pg/gemini-4-carbon',
+          timeoutMs: 10_000,
+        },
+        {
+          sleepFn: async () => undefined,
+          fetchFn: async () => {
+            callsC1++;
+            return new Response(
+              JSON.stringify({ error: { message: 'maximum context length exceeded' } }),
+              { status: 400, headers: { 'Content-Type': 'application/json' } },
+            );
+          },
+        },
+      );
+      const aiCtx = new AiService(guildConfigRepo, aiMemoryRepo, clientCtx);
+      const resCtx = await aiCtx.generateReply({
+        guildId: 'g_ctx_nofb',
+        channelId: 'c1',
+        userId: 'u1',
+        userName: '测试君',
+        messageId: 'm_ctx',
+        userContent: '超长了',
+      });
+      expect(resCtx.ok).toBe(false);
+      expect(callsC1).toBe(1);
+
+      let callsC2 = 0;
+      const clientSame = new LlmClient(
+        {
+          baseUrl: 'https://gateway.local/v1',
+          apiKey: 'sk-test',
+          model: 'pg/gemini-4-carbon',
+          fallbackModel: 'pg/gemini-4-carbon',
+          timeoutMs: 10_000,
+        },
+        {
+          maxRetries: 0,
+          sleepFn: async () => undefined,
+          fetchFn: async () => {
+            callsC2++;
+            return new Response(JSON.stringify({ error: 'busy' }), { status: 503 });
+          },
+        },
+      );
+      const aiSame = new AiService(guildConfigRepo, aiMemoryRepo, clientSame);
+      const resSame = await aiSame.generateReply({
+        guildId: 'g_same_nofb',
+        channelId: 'c1',
+        userId: 'u1',
+        userName: '测试君',
+        messageId: 'm_same',
+        userContent: '同模型不兜底',
+      });
+      expect(resSame.ok).toBe(false);
+      expect(callsC2).toBe(1);
+
+      let callsC3 = 0;
+      const clientDisabled = new LlmClient(
+        {
+          baseUrl: 'https://gateway.local/v1',
+          apiKey: 'sk-test',
+          model: 'pg/gemini-4-argon',
+          timeoutMs: 10_000,
+        },
+        {
+          maxRetries: 0,
+          sleepFn: async () => undefined,
+          fetchFn: async () => {
+            callsC3++;
+            return new Response(JSON.stringify({ error: 'busy' }), { status: 503 });
+          },
+        },
+      );
+      const cfgDis = guildConfigRepo.getOrCreate('g_dis_nofb');
+      guildConfigRepo.updateAi('g_dis_nofb', { ...cfgDis.ai, fallbackModel: null });
+      const aiDis = new AiService(guildConfigRepo, aiMemoryRepo, clientDisabled);
+      const resDis = await aiDis.generateReply({
+        guildId: 'g_dis_nofb',
+        channelId: 'c1',
+        userId: 'u1',
+        userName: '测试君',
+        messageId: 'm_dis',
+        userContent: '禁用兜底',
+      });
+      expect(resDis.ok).toBe(false);
+      expect(callsC3).toBe(1);
+    } finally {
+      infoSpy.mockRestore();
+      db.close();
+    }
   });
 });

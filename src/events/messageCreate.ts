@@ -13,7 +13,7 @@ import { sendLevelUpNotice, syncLevelRewardRoles } from './ready.js';
 
 const AI_USER_COOLDOWN_MS = 5_000;
 export const AI_CHANNEL_MAX_PENDING = 4;
-const AI_QUEUE_TASK_TTL_MS = 90_000;
+const AI_QUEUE_TASK_TTL_MS = 300_000;
 const AI_MAX_REPLY_CHAIN_DEPTH = 6;
 const AI_MAX_USER_INPUT_CHARS = 4_000;
 
@@ -236,7 +236,7 @@ async function executeAiTask(task: QueuedAiTask): Promise<void> {
     }
 
     console.log(
-      `[ai:ok] model=${res.model} user=${userHandle}(${message.author.id}) guild=${guildId} channel=${message.channelId} tokens=${res.usage.promptTokens}+${res.usage.completionTokens}=${res.usage.totalTokens}${res.usage.estimated ? '(est)' : ''} cost=$${res.usage.costUsd.toFixed(6)} latency=${res.usage.latencyMs}ms attempts=${res.attempts}`,
+      `[ai:ok] model=${res.model}${res.fallbackUsed ? ' fallback=true' : ''} user=${userHandle}(${message.author.id}) guild=${guildId} channel=${message.channelId} tokens=${res.usage.promptTokens}+${res.usage.completionTokens}=${res.usage.totalTokens}${res.usage.estimated ? '(est)' : ''} cost=$${res.usage.costUsd.toFixed(6)} latency=${res.usage.latencyMs}ms attempts=${res.attempts}`,
     );
 
     for (let i = 0; i < res.chunks.length; i++) {

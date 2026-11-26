@@ -81,16 +81,34 @@ function buildAiPersonaModal(ai: AiConfig): ModalBuilder {
     );
 }
 
-function buildAiParamsModal(ai: AiConfig, defaultModel: string): ModalBuilder {
+function buildAiParamsModal(
+  ai: AiConfig,
+  defaultModel: string,
+  defaultFallbackModel = '',
+): ModalBuilder {
+  const fallbackValue =
+    ai.fallbackModel !== undefined ? ai.fallbackModel : (defaultFallbackModel || null);
   const modelField = new TextInputBuilder()
     .setCustomId('modelOverride')
-    .setLabel('模型覆盖（留空则使用 .env 默认模型）')
+    .setLabel(truncateText('主模型 | 兜底模型（留空默认，none关兜底）', 45))
     .setStyle(TextInputStyle.Short)
-    .setMaxLength(100)
-    .setPlaceholder(defaultModel ? `当前默认: ${truncateText(defaultModel, 60)}` : '例如：gpt-4o-mini')
+    .setMaxLength(150)
+    .setPlaceholder(
+      defaultModel
+        ? `默认: ${truncateText(defaultModel, 40)} | 兜底: ${truncateText(fallbackValue || '无', 30)}`
+        : '例如：pg/gemini-4-argon | pg/gemini-4-carbon',
+    )
     .setRequired(false);
-  if (ai.modelOverride?.trim()) {
-    modelField.setValue(truncateText(ai.modelOverride.trim(), 100));
+  const leftPrefill = ai.modelOverride?.trim() ?? '';
+  const rightPrefill = fallbackValue === null ? 'none' : fallbackValue.trim();
+  if (leftPrefill || ai.fallbackModel !== undefined) {
+    const combinedPrefill =
+      ai.fallbackModel !== undefined
+        ? `${leftPrefill} | ${rightPrefill}`.trim()
+        : leftPrefill;
+    if (combinedPrefill && combinedPrefill !== '|') {
+      modelField.setValue(truncateText(combinedPrefill, 150));
+    }
   }
 
   return new ModalBuilder()
@@ -274,7 +292,13 @@ export async function tryHandleAiMenuButton(
     if (parts[2] === 'admin_ai_persona') {
       await interaction.showModal(buildAiPersonaModal(cfg.ai));
     } else if (parts[2] === 'admin_ai_params') {
-      await interaction.showModal(buildAiParamsModal(cfg.ai, ctx.services.ai.getDefaultModel()));
+      await interaction.showModal(
+        buildAiParamsModal(
+          cfg.ai,
+          ctx.services.ai.getDefaultModel(),
+          ctx.services.ai.getFallbackModel(),
+        ),
+      );
     } else if (parts[2] === 'admin_ai_pricing') {
       await interaction.showModal(buildAiPricingModal(cfg.ai));
     } else {
@@ -1003,7 +1027,20 @@ export async function tryHandleAiMenuModal(
     return true;
   }
 
-  const modelOverrideRaw = interaction.fields.getTextInputValue('modelOverride').trim();
+  const modelInputRaw = interaction.fields.getTextInputValue('modelOverride').trim();
+  let nextModelOverride: string | null = modelInputRaw || null;
+  let nextFallbackModel: string | null = cfg.ai.fallbackModel;
+  if (modelInputRaw.includes('|')) {
+    const [leftRaw, ...rightParts] = modelInputRaw.split('|');
+    const left = leftRaw?.trim() ?? '';
+    const right = rightParts.join('|').trim();
+    nextModelOverride = left || null;
+    if (!right || /^(none|off|false|-)$/i.test(right)) {
+      nextFallbackModel = null;
+    } else {
+      nextFallbackModel = right;
+    }
+  }
   const temperature = parseNumberInRange(
     interaction.fields.getTextInputValue('temperature'),
     0,
@@ -1049,7 +1086,8 @@ export async function tryHandleAiMenuModal(
 
   ctx.repos.guildConfig.updateAi(guildId, {
     ...cfg.ai,
-    modelOverride: modelOverrideRaw || null,
+    modelOverride: nextModelOverride,
+    fallbackModel: nextFallbackModel,
     temperature: Number(temperature.toFixed(2)),
     maxTokens,
     contextWindowMessages,
@@ -1065,7 +1103,7 @@ export async function tryHandleAiMenuModal(
       { page: 'admin_ai' },
       {
         type: 'success',
-        text: `已更新 AI 模型与上下文参数（模型：\`${modelOverrideRaw || ctx.services.ai.getDefaultModel() || '默认'}\`，温度 ${Number(temperature.toFixed(2))}）。`,
+        text: `已更新 AI 模型与上下文参数（主模型：\`${nextModelOverride || ctx.services.ai.getDefaultModel() || '默认'}\`，兜底：\`${nextFallbackModel || '无'}\`，温度 ${Number(temperature.toFixed(2))}）。`,
       },
     ),
   );

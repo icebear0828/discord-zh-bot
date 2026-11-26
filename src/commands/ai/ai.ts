@@ -1767,6 +1767,7 @@ export const aiCommand: CommandDefinition = {
                   `• **生效破限预设**：\`${current.preset.id}\`（${current.preset.name} \`v${current.preset.version}\`）`,
                   `• **生效角色卡**：\`${current.card.id}\`（**${current.card.personaName}** \`v${current.card.version}\`）`,
                   `• **生效模型**：\`${current.effectiveModel || '未配置'}\``,
+                  `• **生效兜底模型**：\`${current.effectiveFallbackModel || '无'}\``,
                 ].join('\n'),
               ),
             ],
@@ -1834,7 +1835,7 @@ export const aiCommand: CommandDefinition = {
                 [
                   `• **挂载预设**：\`${preview.presetId}\`（${preview.presetName} \`v${preview.presetVersion}\`）`,
                   `• **挂载角色卡**：\`${preview.cardId}\`（**${preview.personaName}** \`v${preview.cardVersion}\`）`,
-                  `• **目标模型**：\`${preview.model}\` ｜ 温度 **${preview.sampling.temperature}** ｜ MaxTokens **${preview.sampling.maxTokens}**`,
+                  `• **目标模型**：\`${preview.model}\` ｜ **兜底模型**：\`${preview.fallbackModel || '无'}\` ｜ 温度 **${preview.sampling.temperature}** ｜ MaxTokens **${preview.sampling.maxTokens}**`,
                   `• **消息块序列**：${preview.messages.map((m) => `\`${m.role}\``).join(' → ')}（共 ${preview.messages.length} 块）`,
                   `• **命中世界书词条**：${loreText}`,
                   '',

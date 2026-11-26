@@ -1,4 +1,8 @@
-import type { LlmEnvConfig } from '../config/env.js';
+import {
+  DEFAULT_LLM_MAX_RETRIES,
+  DEFAULT_LLM_RATE_LIMIT_MAX_RETRIES,
+  type LlmEnvConfig,
+} from '../config/env.js';
 
 export interface LlmTextPart {
   type: 'text';
@@ -29,6 +33,9 @@ export interface LlmChatRequest {
   frequencyPenalty?: number;
   presencePenalty?: number;
   timeoutMs?: number;
+  stream?: boolean;
+  maxRetries?: number;
+  validateContent?: (rawContent: string) => boolean;
 }
 
 export interface LlmUsage {
@@ -81,11 +88,40 @@ export class LlmError extends Error {
 export interface LlmClientDeps {
   fetchFn?: typeof fetch;
   sleepFn?: (ms: number) => Promise<void>;
+  nowFn?: () => number;
   maxRetries?: number;
+  maxRateLimitRetries?: number;
+  maxTotalDurationMs?: number;
 }
 
-const RETRYABLE_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
-const DEFAULT_RETRY_DELAYS_MS = [1200, 2800] as const;
+export const DEFAULT_MAX_RETRIES = DEFAULT_LLM_MAX_RETRIES;
+export const DEFAULT_MAX_RATE_LIMIT_RETRIES = DEFAULT_LLM_RATE_LIMIT_MAX_RETRIES;
+export const DEFAULT_RETRY_DELAYS_MS = [
+  1200,
+  2500,
+  4000,
+  6000,
+  8000,
+  10_000,
+  12_000,
+  15_000,
+] as const;
+
+const EMPTY_RESPONSE_MAX_DELAY_MS = 3000;
+const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 45_000;
+const DEFAULT_MAX_TOTAL_DURATION_MS = 120_000;
+
+class SseUpstreamError extends Error {
+  readonly status: number;
+  readonly bodyText: string;
+
+  constructor(status: number, bodyText: string) {
+    super(`SSE upstream error ${status}: ${bodyText.slice(0, 200)}`);
+    this.name = 'SseUpstreamError';
+    this.status = status;
+    this.bodyText = bodyText;
+  }
+}
 
 export function resolveChatCompletionsUrl(baseUrl: string): string {
   const cleaned = baseUrl.trim().replace(/\/+$/, '');
@@ -123,6 +159,58 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+function extractUsage(rawUsage: unknown): LlmUsage | undefined {
+  if (!isRecord(rawUsage)) return undefined;
+  const promptTokens =
+    typeof rawUsage.prompt_tokens === 'number'
+      ? rawUsage.prompt_tokens
+      : typeof rawUsage.input_tokens === 'number'
+        ? rawUsage.input_tokens
+        : undefined;
+  const completionTokens =
+    typeof rawUsage.completion_tokens === 'number'
+      ? rawUsage.completion_tokens
+      : typeof rawUsage.output_tokens === 'number'
+        ? rawUsage.output_tokens
+        : undefined;
+  const totalTokens =
+    typeof rawUsage.total_tokens === 'number'
+      ? rawUsage.total_tokens
+      : promptTokens !== undefined || completionTokens !== undefined
+        ? (promptTokens ?? 0) + (completionTokens ?? 0)
+        : undefined;
+
+  if (
+    promptTokens === undefined &&
+    completionTokens === undefined &&
+    totalTokens === undefined
+  ) {
+    return undefined;
+  }
+
+  return {
+    ...(promptTokens !== undefined ? { promptTokens } : {}),
+    ...(completionTokens !== undefined ? { completionTokens } : {}),
+    ...(totalTokens !== undefined ? { totalTokens } : {}),
+  };
+}
+
+function extractTextFromContentField(rawContent: unknown): string {
+  if (typeof rawContent === 'string') {
+    return rawContent;
+  }
+  if (Array.isArray(rawContent)) {
+    const texts: string[] = [];
+    for (const part of rawContent) {
+      if (isRecord(part) && part.type === 'text' && typeof part.text === 'string') {
+        texts.push(part.text);
+      }
+    }
+    return texts.join('');
+  }
+  return '';
+}
+
 function extractResponseContent(data: unknown): {
   content: string;
   model?: string;
@@ -133,39 +221,7 @@ function extractResponseContent(data: unknown): {
   }
 
   const model = typeof data.model === 'string' ? data.model : undefined;
-  let usage: LlmUsage | undefined;
-  if (isRecord(data.usage)) {
-    const promptTokens =
-      typeof data.usage.prompt_tokens === 'number'
-        ? data.usage.prompt_tokens
-        : typeof data.usage.input_tokens === 'number'
-          ? data.usage.input_tokens
-          : undefined;
-    const completionTokens =
-      typeof data.usage.completion_tokens === 'number'
-        ? data.usage.completion_tokens
-        : typeof data.usage.output_tokens === 'number'
-          ? data.usage.output_tokens
-          : undefined;
-    const totalTokens =
-      typeof data.usage.total_tokens === 'number'
-        ? data.usage.total_tokens
-        : promptTokens !== undefined || completionTokens !== undefined
-          ? (promptTokens ?? 0) + (completionTokens ?? 0)
-          : undefined;
-
-    if (
-      promptTokens !== undefined ||
-      completionTokens !== undefined ||
-      totalTokens !== undefined
-    ) {
-      usage = {
-        ...(promptTokens !== undefined ? { promptTokens } : {}),
-        ...(completionTokens !== undefined ? { completionTokens } : {}),
-        ...(totalTokens !== undefined ? { totalTokens } : {}),
-      };
-    }
-  }
+  const usage = extractUsage(data.usage);
 
   const choices = data.choices;
   if (!Array.isArray(choices) || choices.length === 0) {
@@ -182,22 +238,69 @@ function extractResponseContent(data: unknown): {
     return { content: '', model, usage };
   }
 
-  const rawContent = msg.content;
-  if (typeof rawContent === 'string') {
-    return { content: rawContent.trim(), model, usage };
-  }
+  const text = extractTextFromContentField(msg.content).trim();
+  return { content: text, model, usage };
+}
 
-  if (Array.isArray(rawContent)) {
-    const texts: string[] = [];
-    for (const part of rawContent) {
-      if (isRecord(part) && part.type === 'text' && typeof part.text === 'string') {
-        texts.push(part.text);
-      }
+function isContextTooLong(status: number, bodyText: string): boolean {
+  const lower = bodyText.toLowerCase();
+  return (
+    status === 413 ||
+    (status === 400 &&
+      (lower.includes('context_length') ||
+        lower.includes('maximum context') ||
+        lower.includes('too many tokens') ||
+        lower.includes('token limit')))
+  );
+}
+
+function isUpstreamPoolError(bodyText: string): boolean {
+  const lower = bodyText.toLowerCase();
+  return (
+    lower.includes('upstream_http_error') ||
+    lower.includes('upstream error') ||
+    lower.includes('上游 http') ||
+    lower.includes('上游错误') ||
+    lower.includes('no available account') ||
+    lower.includes('account_unavailable') ||
+    lower.includes('channel_error')
+  );
+}
+
+function isRetryableHttpStatus(status: number, bodyText: string): boolean {
+  if (isContextTooLong(status, bodyText)) {
+    return false;
+  }
+  if (status === 429 || status === 408 || status === 409 || status === 425 || status >= 500) {
+    return true;
+  }
+  if ((status === 400 || status === 401 || status === 403) && isUpstreamPoolError(bodyText)) {
+    return true;
+  }
+  return false;
+}
+
+function extractSseErrorStatus(errObj: Record<string, unknown>): number {
+  if (typeof errObj.status === 'number' && Number.isFinite(errObj.status)) {
+    return errObj.status;
+  }
+  if (typeof errObj.status_code === 'number' && Number.isFinite(errObj.status_code)) {
+    return errObj.status_code;
+  }
+  const msg = typeof errObj.message === 'string' ? errObj.message : '';
+  const code = typeof errObj.code === 'string' ? errObj.code : '';
+  const httpMatch = /HTTP\s+(\d{3})/i.exec(msg);
+  if (httpMatch?.[1]) {
+    const parsed = Number(httpMatch[1]);
+    if (Number.isFinite(parsed) && parsed >= 400 && parsed <= 599) {
+      return parsed;
     }
-    return { content: texts.join('').trim(), model, usage };
   }
-
-  return { content: '', model, usage };
+  const combined = `${code} ${msg}`.toLowerCase();
+  if (combined.includes('rate_limit') || combined.includes('too many requests') || combined.includes('429')) {
+    return 429;
+  }
+  return 502;
 }
 
 function mapHttpError(
@@ -205,7 +308,6 @@ function mapHttpError(
   bodyText: string,
   attempts: number,
 ): LlmError {
-  const lower = bodyText.toLowerCase();
   if (status === 429) {
     return new LlmError({
       code: 'rate_limited',
@@ -215,7 +317,7 @@ function mapHttpError(
       userMessage: 'AI 当前请求人数较多（429 限流），已自动重试仍未成功，请稍等几秒再试。',
     });
   }
-  if (status === 502 || status === 503 || status === 504 || status === 500 || status === 408) {
+  if (status >= 500 || status === 408 || status === 409 || status === 425) {
     return new LlmError({
       code: 'service_unavailable',
       status,
@@ -233,14 +335,7 @@ function mapHttpError(
       userMessage: 'AI 网关鉴权失败（401/403），请联系管理员检查服务配置。',
     });
   }
-  if (
-    status === 413 ||
-    (status === 400 &&
-      (lower.includes('context_length') ||
-        lower.includes('maximum context') ||
-        lower.includes('too many tokens') ||
-        lower.includes('token limit')))
-  ) {
+  if (isContextTooLong(status, bodyText)) {
     return new LlmError({
       code: 'context_too_long',
       status,
@@ -276,10 +371,21 @@ function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function getFallbackDelayMs(attempt: number): number {
+  return (
+    DEFAULT_RETRY_DELAYS_MS[attempt - 1] ??
+    DEFAULT_RETRY_DELAYS_MS[DEFAULT_RETRY_DELAYS_MS.length - 1] ??
+    15_000
+  );
+}
+
 export class LlmClient {
   private readonly fetchFn: typeof fetch;
   private readonly sleepFn: (ms: number) => Promise<void>;
+  private readonly nowFn: () => number;
   private readonly maxRetries: number;
+  private readonly maxRateLimitRetries: number;
+  private readonly maxTotalDurationMs: number;
 
   constructor(
     private readonly config: LlmEnvConfig | undefined,
@@ -287,7 +393,13 @@ export class LlmClient {
   ) {
     this.fetchFn = deps.fetchFn ?? fetch;
     this.sleepFn = deps.sleepFn ?? defaultSleep;
-    this.maxRetries = Math.max(0, Math.min(4, deps.maxRetries ?? 2));
+    this.nowFn = deps.nowFn ?? Date.now;
+    const rawMaxRetries = deps.maxRetries ?? config?.maxRetries ?? DEFAULT_MAX_RETRIES;
+    this.maxRetries = Math.max(0, Math.min(15, Math.floor(rawMaxRetries)));
+    const rawRateLimitRetries =
+      deps.maxRateLimitRetries ?? config?.rateLimitMaxRetries ?? DEFAULT_MAX_RATE_LIMIT_RETRIES;
+    this.maxRateLimitRetries = Math.max(0, Math.min(15, Math.floor(rawRateLimitRetries)));
+    this.maxTotalDurationMs = Math.max(1_000, deps.maxTotalDurationMs ?? DEFAULT_MAX_TOTAL_DURATION_MS);
   }
 
   isConfigured(): boolean {
@@ -296,6 +408,137 @@ export class LlmClient {
 
   getDefaultModel(): string {
     return this.config?.model ?? '';
+  }
+
+  getFallbackModel(): string {
+    return this.config?.fallbackModel?.trim() ?? '';
+  }
+
+  private async readSseStream(
+    res: Response,
+    timeoutMs: number,
+    controller: AbortController,
+    onTimedOut: () => void,
+  ): Promise<{ content: string; model?: string; usage?: LlmUsage }> {
+    const body = res.body;
+    if (!body) {
+      return { content: '' };
+    }
+
+    const reader = body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    const idleTimeoutMs = Math.min(timeoutMs, DEFAULT_STREAM_IDLE_TIMEOUT_MS);
+    const totalStreamTimeoutMs = Math.max(timeoutMs * 3, 180_000);
+
+    let idleTimer: NodeJS.Timeout | undefined;
+    const resetIdleTimer = (): void => {
+      if (idleTimer !== undefined) {
+        clearTimeout(idleTimer);
+      }
+      idleTimer = setTimeout(() => {
+        onTimedOut();
+        controller.abort();
+      }, idleTimeoutMs);
+    };
+
+    const totalTimer = setTimeout(() => {
+      onTimedOut();
+      controller.abort();
+    }, totalStreamTimeoutMs);
+
+    const contentParts: string[] = [];
+    let resolvedModel: string | undefined;
+    let usage: LlmUsage | undefined;
+    let lineBuffer = '';
+    let doneSeen = false;
+
+    const processLine = (rawLine: string): void => {
+      const line = rawLine.replace(/\r$/, '');
+      if (!line.trim() || line.startsWith(':') || !line.startsWith('data:')) {
+        return;
+      }
+      const payload = line.slice(5).trim();
+      if (!payload) return;
+      if (payload === '[DONE]') {
+        doneSeen = true;
+        return;
+      }
+
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(payload);
+      } catch {
+        return;
+      }
+      if (!isRecord(parsed)) return;
+
+      if (isRecord(parsed.error)) {
+        const status = extractSseErrorStatus(parsed.error);
+        throw new SseUpstreamError(status, JSON.stringify({ error: parsed.error }));
+      }
+
+      if (typeof parsed.model === 'string' && parsed.model.trim()) {
+        resolvedModel = parsed.model;
+      }
+      const frameUsage = extractUsage(parsed.usage);
+      if (frameUsage) {
+        usage = frameUsage;
+      }
+
+      const choices = parsed.choices;
+      if (!Array.isArray(choices) || choices.length === 0) return;
+      const first = choices[0];
+      if (!isRecord(first)) return;
+
+      if (isRecord(first.delta)) {
+        const chunkText = extractTextFromContentField(first.delta.content);
+        if (chunkText) {
+          contentParts.push(chunkText);
+        }
+      } else if (isRecord(first.message)) {
+        const msgText = extractTextFromContentField(first.message.content);
+        if (msgText) {
+          contentParts.push(msgText);
+        }
+      }
+    };
+
+    try {
+      while (!doneSeen) {
+        resetIdleTimer();
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) {
+          lineBuffer += decoder.decode(value, { stream: true });
+          const lines = lineBuffer.split('\n');
+          lineBuffer = lines.pop() ?? '';
+          for (const line of lines) {
+            processLine(line);
+            if (doneSeen) break;
+          }
+        }
+      }
+      if (!doneSeen) {
+        lineBuffer += decoder.decode();
+        if (lineBuffer.trim()) {
+          processLine(lineBuffer);
+        }
+      }
+    } finally {
+      if (idleTimer !== undefined) {
+        clearTimeout(idleTimer);
+      }
+      if (totalTimer !== undefined) {
+        clearTimeout(totalTimer);
+      }
+      reader.releaseLock();
+    }
+
+    return {
+      content: contentParts.join('').trim(),
+      model: resolvedModel,
+      usage,
+    };
   }
 
   async chat(request: LlmChatRequest): Promise<LlmChatResponse> {
@@ -320,9 +563,30 @@ export class LlmClient {
 
     const url = resolveChatCompletionsUrl(this.config.baseUrl);
     const timeoutMs = request.timeoutMs ?? this.config.timeoutMs;
-    const totalAttempts = this.maxRetries + 1;
+    const effectiveMaxRetries =
+      request.maxRetries !== undefined
+        ? Math.max(0, Math.min(this.maxRetries, Math.floor(request.maxRetries)))
+        : this.maxRetries;
+    const effectiveRateLimitCap = Math.min(effectiveMaxRetries, this.maxRateLimitRetries);
+    const totalAttempts = effectiveMaxRetries + 1;
+    const useStream = request.stream ?? true;
+    const startedAt = this.nowFn();
+    let rateLimitRetriesUsed = 0;
+
+    const canRetryAfterDelay = (attempt: number, delayMs: number): boolean => {
+      if (attempt >= totalAttempts) return false;
+      if (this.nowFn() - startedAt + delayMs > this.maxTotalDurationMs) return false;
+      return true;
+    };
 
     for (let attempt = 1; attempt <= totalAttempts; attempt++) {
+      const controller = new AbortController();
+      let timedOut = false;
+      let ttfbTimer: NodeJS.Timeout | undefined = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, timeoutMs);
+
       try {
         const res = await this.fetchFn(url, {
           method: 'POST',
@@ -332,6 +596,7 @@ export class LlmClient {
           },
           body: JSON.stringify({
             model,
+            stream: useStream,
             messages: request.messages,
             ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
             ...(request.maxTokens !== undefined ? { max_tokens: request.maxTokens } : {}),
@@ -343,30 +608,73 @@ export class LlmClient {
               ? { presence_penalty: request.presencePenalty }
               : {}),
           }),
-          signal: AbortSignal.timeout(timeoutMs),
+          signal: controller.signal,
         });
+
+        clearTimeout(ttfbTimer);
+        ttfbTimer = undefined;
 
         if (!res.ok) {
           const bodyText = await res.text().catch(() => '');
-          if (RETRYABLE_STATUSES.has(res.status) && attempt < totalAttempts) {
-            const retryAfter = parseRetryAfterMs(res.headers.get('retry-after'));
-            const fallbackDelay =
-              DEFAULT_RETRY_DELAYS_MS[attempt - 1] ?? DEFAULT_RETRY_DELAYS_MS[1];
-            await this.sleepFn(retryAfter ?? fallbackDelay);
-            continue;
+          if (isRetryableHttpStatus(res.status, bodyText)) {
+            if (res.status === 429) {
+              if (rateLimitRetriesUsed < effectiveRateLimitCap) {
+                const retryAfter = parseRetryAfterMs(res.headers.get('retry-after'), this.nowFn());
+                const delayMs = retryAfter ?? getFallbackDelayMs(attempt);
+                if (canRetryAfterDelay(attempt, delayMs)) {
+                  rateLimitRetriesUsed++;
+                  await this.sleepFn(delayMs);
+                  continue;
+                }
+              }
+            } else {
+              const delayMs = getFallbackDelayMs(attempt);
+              if (canRetryAfterDelay(attempt, delayMs)) {
+                await this.sleepFn(delayMs);
+                continue;
+              }
+            }
           }
           throw mapHttpError(res.status, bodyText, attempt);
         }
 
-        const json: unknown = await res.json();
-        const extracted = extractResponseContent(json);
-        if (!extracted.content) {
+        const contentType = (res.headers.get('content-type') ?? '').toLowerCase();
+        let extracted: { content: string; model?: string; usage?: LlmUsage };
+        if (contentType.includes('text/event-stream') && res.body) {
+          extracted = await this.readSseStream(res, timeoutMs, controller, () => {
+            timedOut = true;
+          });
+        } else {
+          let bodyTimer: NodeJS.Timeout | undefined = setTimeout(() => {
+            timedOut = true;
+            controller.abort();
+          }, Math.min(timeoutMs, DEFAULT_STREAM_IDLE_TIMEOUT_MS));
+          try {
+            const json: unknown = await res.json();
+            extracted = extractResponseContent(json);
+          } finally {
+            clearTimeout(bodyTimer);
+            bodyTimer = undefined;
+          }
+        }
+
+        const isValid =
+          Boolean(extracted.content) &&
+          (!request.validateContent || request.validateContent(extracted.content));
+        if (!isValid) {
+          const delayMs = Math.min(getFallbackDelayMs(attempt), EMPTY_RESPONSE_MAX_DELAY_MS);
+          if (canRetryAfterDelay(attempt, delayMs)) {
+            await this.sleepFn(delayMs);
+            continue;
+          }
           throw new LlmError({
             code: 'empty_response',
             status: res.status,
             attempts: attempt,
-            message: 'LLM returned empty content',
-            userMessage: 'AI 返回了空内容，请换个问法或稍后再试。',
+            message: extracted.content
+              ? 'LLM returned empty content after CoT/output validation'
+              : 'LLM returned empty content',
+            userMessage: 'AI 返回了空内容，已自动重试仍为空，请换个问法或稍后再试。',
           });
         }
 
@@ -377,16 +685,42 @@ export class LlmClient {
           ...(extracted.usage ? { usage: extracted.usage } : {}),
         };
       } catch (err) {
+        if (ttfbTimer !== undefined) {
+          clearTimeout(ttfbTimer);
+          ttfbTimer = undefined;
+        }
         if (err instanceof LlmError) {
           throw err;
         }
-        const timedOut = isTimeoutError(err);
-        if (attempt < totalAttempts) {
-          const delay = DEFAULT_RETRY_DELAYS_MS[attempt - 1] ?? DEFAULT_RETRY_DELAYS_MS[1];
-          await this.sleepFn(delay);
+        if (err instanceof SseUpstreamError) {
+          if (isRetryableHttpStatus(err.status, err.bodyText)) {
+            if (err.status === 429) {
+              if (rateLimitRetriesUsed < effectiveRateLimitCap) {
+                const delayMs = getFallbackDelayMs(attempt);
+                if (canRetryAfterDelay(attempt, delayMs)) {
+                  rateLimitRetriesUsed++;
+                  await this.sleepFn(delayMs);
+                  continue;
+                }
+              }
+            } else {
+              const delayMs = getFallbackDelayMs(attempt);
+              if (canRetryAfterDelay(attempt, delayMs)) {
+                await this.sleepFn(delayMs);
+                continue;
+              }
+            }
+          }
+          throw mapHttpError(err.status, err.bodyText, attempt);
+        }
+
+        const isTimedOut = timedOut || isTimeoutError(err);
+        const delayMs = getFallbackDelayMs(attempt);
+        if (canRetryAfterDelay(attempt, delayMs)) {
+          await this.sleepFn(delayMs);
           continue;
         }
-        if (timedOut) {
+        if (isTimedOut) {
           throw new LlmError({
             code: 'timeout',
             attempts: attempt,

@@ -1,10 +1,17 @@
 import dotenv from 'dotenv';
 
+export const DEFAULT_LLM_FALLBACK_MODEL = 'pg/gemini-4-carbon';
+export const DEFAULT_LLM_MAX_RETRIES = 8;
+export const DEFAULT_LLM_RATE_LIMIT_MAX_RETRIES = 2;
+
 export interface LlmEnvConfig {
   baseUrl: string;
   apiKey: string;
   model: string;
   timeoutMs: number;
+  fallbackModel?: string;
+  maxRetries?: number;
+  rateLimitMaxRetries?: number;
 }
 
 export interface AppEnv {
@@ -16,16 +23,32 @@ export interface AppEnv {
   llm?: LlmEnvConfig;
 }
 
-function parseLlmTimeoutMs(raw: string | undefined): number {
+function parseIntInBounds(
+  raw: string | undefined,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
   const trimmed = raw?.trim();
   if (!trimmed || !/^\d+$/.test(trimmed)) {
-    return 60_000;
+    return fallback;
   }
   const parsed = Number(trimmed);
   if (!Number.isSafeInteger(parsed)) {
-    return 60_000;
+    return fallback;
   }
-  return Math.max(5_000, Math.min(300_000, parsed));
+  return Math.max(min, Math.min(max, parsed));
+}
+
+function parseLlmFallbackModel(raw: string | undefined): string {
+  const trimmed = raw?.trim();
+  if (!trimmed) {
+    return DEFAULT_LLM_FALLBACK_MODEL;
+  }
+  if (/^(none|off|false|-)$/i.test(trimmed)) {
+    return '';
+  }
+  return trimmed;
 }
 
 export function parseEnv(source: Record<string, string | undefined>): AppEnv {
@@ -51,7 +74,15 @@ export function parseEnv(source: Record<string, string | undefined>): AppEnv {
         baseUrl: llmBaseUrlRaw.replace(/\/+$/, ''),
         apiKey: llmApiKey,
         model: llmModel,
-        timeoutMs: parseLlmTimeoutMs(source.LLM_TIMEOUT_MS),
+        timeoutMs: parseIntInBounds(source.LLM_TIMEOUT_MS, 60_000, 5_000, 300_000),
+        fallbackModel: parseLlmFallbackModel(source.LLM_FALLBACK_MODEL),
+        maxRetries: parseIntInBounds(source.LLM_MAX_RETRIES, DEFAULT_LLM_MAX_RETRIES, 0, 15),
+        rateLimitMaxRetries: parseIntInBounds(
+          source.LLM_RATE_LIMIT_MAX_RETRIES,
+          DEFAULT_LLM_RATE_LIMIT_MAX_RETRIES,
+          0,
+          8,
+        ),
       }
     : undefined;
 
