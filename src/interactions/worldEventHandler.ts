@@ -296,13 +296,27 @@ export async function handleWorldEventButton(
     );
 
     const mvpBonus = Math.floor(res.event.rewardPool * 0.25);
+    const myDust = res.rewards.find((r) => r.userId === interaction.user.id)?.dustAwarded ?? 0;
+    const bonusParts: string[] = [];
+    if (res.petName) {
+      bonusParts.push(`出战宠物「${res.petName}」助战 +${res.petBonus}`);
+    }
+    if (res.rpgBonus > 0) {
+      bonusParts.push(
+        `${res.rpgHeroLabel ? `勇者「${res.rpgHeroLabel}」` : 'RPG 勇者'}增伤 +${res.rpgBonus}`,
+      );
+    }
+    const bonusText = bonusParts.length > 0 ? `（含${bonusParts.join('，')}）` : '';
+    const killText = res.killed
+      ? `\n🏆 **恭喜你拿下尾刀绝杀！额外获得 25% 尾刀奖 +${mvpBonus} ${cfg.economy.currencyName}${myDust > 0 ? `，掉落 ✨ 魔尘 +${myDust}` : ''}！**`
+      : '';
     await interaction.followUp({
       embeds: [
         res.missed
           ? createInfoEmbed('💨 蓄力重击空大了！', '差一点就命中了，等冷却结束再来一击！')
           : createSuccessEmbed(
               res.crit ? '💥 暴击命中！' : '⚔️ 攻击命中！',
-              `造成 **${res.damage}** 点伤害${res.petName ? `（含出战宠物「${res.petName}」助战 +${res.petBonus}）` : ''}！${res.killed ? `\n🏆 **恭喜你拿下尾刀绝杀！额外获得 25% 尾刀奖 +${mvpBonus} ${cfg.economy.currencyName}！**` : ''}`,
+              `造成 **${res.damage}** 点伤害${bonusText}！${killText}`,
             ),
       ],
       flags: MessageFlags.Ephemeral,

@@ -97,12 +97,37 @@ export type ClaimChestResult =
 
 export type BossAttackMode = 'normal' | 'heavy';
 
+export const RPG_BOSS_NORMAL_BONUS_CAP = 120;
+export const RPG_BOSS_HEAVY_BONUS_CAP = 180;
+
+export interface RpgWorldBossBonus {
+  bonusDamage: number;
+  classEmoji: string;
+  realmLabel: string;
+}
+
+export interface RpgWorldBossBridge {
+  getBossAttackBonus(
+    guildId: string,
+    userId: string,
+    mode: BossAttackMode,
+    nowMs: number,
+  ): RpgWorldBossBonus | null;
+  awardBossKillDust(
+    guildId: string,
+    participantUserIds: readonly string[],
+    mvpUserId: string,
+    nowMs: number,
+  ): ReadonlyMap<string, number>;
+}
+
 export interface BossRewardEntry {
   userId: string;
   damage: number;
   baseReward: number;
   mvpBonus: number;
   totalReward: number;
+  dustAwarded?: number;
 }
 
 export type AttackBossResult =
@@ -114,6 +139,8 @@ export type AttackBossResult =
       missed: boolean;
       petBonus: number;
       petName: string | null;
+      rpgBonus: number;
+      rpgHeroLabel: string | null;
       killed: boolean;
       rewards: BossRewardEntry[];
       participants: WorldEventParticipant[];
@@ -154,6 +181,7 @@ const BOSS_TTL_MS = 10 * 60 * 1000;
 export class WorldEventService {
   private readonly guildMsgCounts = new Map<string, number>();
   private readonly lastAutoEventAt = new Map<string, number>();
+  private rpgBridge?: RpgWorldBossBridge;
 
   constructor(
     private readonly db: Database.Database,
@@ -162,7 +190,14 @@ export class WorldEventService {
     private readonly worldEventRepo: WorldEventRepo,
     private readonly socialPetRepo?: SocialPetRepo,
     private readonly creditLoanService?: CreditLoanService,
-  ) {}
+    rpgBridge?: RpgWorldBossBridge,
+  ) {
+    this.rpgBridge = rpgBridge;
+  }
+
+  setRpgBridge(bridge: RpgWorldBossBridge | undefined): void {
+    this.rpgBridge = bridge;
+  }
 
   // Predictions
   getPredictionSummary(predictionId: number): PredictionSummary | null {
@@ -770,6 +805,8 @@ export class WorldEventService {
       let missed = false;
       let crit = false;
       let rawDamage = 0;
+      let rpgBonus = 0;
+      let rpgHeroLabel: string | null = null;
 
       if (mode === 'heavy') {
         if (rng() < 0.25) {
@@ -783,6 +820,25 @@ export class WorldEventService {
         const base = 35 + Math.floor(rng() * 31);
         crit = rng() < 0.15;
         rawDamage = Math.floor(base * (crit ? 1.5 : 1)) + petBonus;
+      }
+
+      if (!missed) {
+        const rpgRaw =
+          this.rpgBridge?.getBossAttackBonus(event.guildId, userId, mode, nowMs) ?? null;
+        if (rpgRaw) {
+          const bonusCap =
+            mode === 'heavy' ? RPG_BOSS_HEAVY_BONUS_CAP : RPG_BOSS_NORMAL_BONUS_CAP;
+          rpgBonus = Number.isFinite(rpgRaw.bonusDamage)
+            ? Math.min(bonusCap, Math.max(0, Math.floor(rpgRaw.bonusDamage)))
+            : 0;
+          if (rpgBonus > 0) {
+            const label = [rpgRaw.classEmoji.trim(), rpgRaw.realmLabel.trim()]
+              .filter(Boolean)
+              .join(' ');
+            rpgHeroLabel = label.length > 0 ? label : null;
+            rawDamage += rpgBonus;
+          }
+        }
       }
 
       const actualDamage = Math.min(event.currentHp, Math.max(0, rawDamage));
@@ -803,6 +859,13 @@ export class WorldEventService {
 
       if (killed) {
         const hitters = participants.filter((p) => p.damageOrReward > 0);
+        const participantIds = hitters.length > 0 ? hitters.map((h) => h.userId) : [userId];
+        const dustMap = this.rpgBridge?.awardBossKillDust(
+          event.guildId,
+          participantIds,
+          userId,
+          nowMs,
+        );
         const totalDamage = hitters.reduce((sum, p) => sum + p.damageOrReward, 0);
         const mvpBonusTotal = Math.floor(event.rewardPool * 0.25);
 
@@ -812,12 +875,15 @@ export class WorldEventService {
             const baseReward = Math.floor((p.damageOrReward * event.rewardPool) / totalDamage);
             distributed += baseReward;
             const mvpBonus = p.userId === userId ? mvpBonusTotal : 0;
+            const rawDust = dustMap?.get(p.userId) ?? 0;
+            const dustAwarded = Number.isFinite(rawDust) ? Math.max(0, Math.floor(rawDust)) : 0;
             return {
               userId: p.userId,
               damage: p.damageOrReward,
               baseReward,
               mvpBonus,
               totalReward: baseReward + mvpBonus,
+              dustAwarded,
             };
           });
 
@@ -838,12 +904,15 @@ export class WorldEventService {
             rewards.push(entry);
           }
         } else {
+          const rawDust = dustMap?.get(userId) ?? 0;
+          const dustAwarded = Number.isFinite(rawDust) ? Math.max(0, Math.floor(rawDust)) : 0;
           const entry: BossRewardEntry = {
             userId,
             damage: actualDamage,
             baseReward: event.rewardPool,
             mvpBonus: mvpBonusTotal,
             totalReward: event.rewardPool + mvpBonusTotal,
+            dustAwarded,
           };
           this.profileRepo.addCoins(event.guildId, userId, entry.totalReward);
           rewards.push(entry);
@@ -867,6 +936,8 @@ export class WorldEventService {
         missed,
         petBonus,
         petName,
+        rpgBonus,
+        rpgHeroLabel,
         killed,
         rewards,
         participants,

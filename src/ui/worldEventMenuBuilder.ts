@@ -12,10 +12,12 @@ import {
   PREDICTION_MAX_BET,
 } from '../config/economyConstants.js';
 import type { WorldEvent, WorldEventParticipant } from '../db/repositories/worldEventRepo.js';
-import type {
-  BossAttackMode,
-  BossRewardEntry,
-  PredictionSummary,
+import {
+  RPG_BOSS_HEAVY_BONUS_CAP,
+  RPG_BOSS_NORMAL_BONUS_CAP,
+  type BossAttackMode,
+  type BossRewardEntry,
+  type PredictionSummary,
 } from '../services/worldEventService.js';
 import { COLORS, renderProgressBar, type AppContext } from './embeds.js';
 import {
@@ -49,7 +51,10 @@ export function formatBossAttackLog(
     damage: number;
     petName: string | null;
     petBonus: number;
+    rpgBonus?: number;
+    rpgHeroLabel?: string | null;
     killed: boolean;
+    rewards?: readonly BossRewardEntry[];
     event?: Pick<WorldEvent, 'rewardPool'>;
   },
   economyCfg?: Pick<EconomyConfig, 'currencyName'>,
@@ -57,15 +62,25 @@ export function formatBossAttackLog(
   if (res.missed) {
     return `<@${userId}> 蓄力重击挥空了！（0 伤害）`;
   }
-  const petTag = res.petName ? `（🐾${res.petName}助战+${res.petBonus}）` : '';
+  const bonusParts: string[] = [];
+  if (res.petName) {
+    bonusParts.push(`🐾${res.petName}助战+${res.petBonus}`);
+  }
+  const rpgBonus = res.rpgBonus ?? 0;
+  if (rpgBonus > 0) {
+    bonusParts.push(`${res.rpgHeroLabel ?? '⚔️勇者'}增伤+${rpgBonus}`);
+  }
+  const bonusTag = bonusParts.length > 0 ? `（${bonusParts.join('｜')}）` : '';
   const mvpBonus = res.event ? Math.floor(res.event.rewardPool * 0.25) : 0;
   const currencyName = economyCfg?.currencyName ?? '';
+  const killerDust = res.rewards?.find((r) => r.userId === userId)?.dustAwarded ?? 0;
+  const dustTag = killerDust > 0 ? `，✨ 魔尘 +${killerDust}` : '';
   const killTag = res.killed
     ? mvpBonus > 0 && currencyName
-      ? ` 🏆 拿下尾刀绝杀（额外 25% 尾刀奖 +${mvpBonus} ${currencyName}）！`
-      : ' 🏆 拿下尾刀绝杀（额外 25% 尾刀奖）！'
+      ? ` 🏆 拿下尾刀绝杀（额外 25% 尾刀奖 +${mvpBonus} ${currencyName}${dustTag}）！`
+      : ` 🏆 拿下尾刀绝杀（额外 25% 尾刀奖${dustTag}）！`
     : '';
-  return `<@${userId}> ${mode === 'heavy' ? '蓄力重击' : '普通攻击'}${res.crit ? '💥暴击' : ''}造成了 **${res.damage}** 伤害！${petTag}${killTag}`;
+  return `<@${userId}> ${mode === 'heavy' ? '蓄力重击' : '普通攻击'}${res.crit ? '💥暴击' : ''}造成了 **${res.damage}** 伤害！${bonusTag}${killTag}`;
 }
 
 export function parseBossRewardsJson(raw: string): BossRewardEntry[] {
@@ -83,12 +98,17 @@ export function parseBossRewardsJson(raw: string): BossRewardEntry[] {
         typeof obj.mvpBonus === 'number' &&
         typeof obj.totalReward === 'number'
       ) {
+        const dustAwarded =
+          typeof obj.dustAwarded === 'number' && Number.isFinite(obj.dustAwarded)
+            ? Math.max(0, Math.floor(obj.dustAwarded))
+            : 0;
         list.push({
           userId: obj.userId,
           damage: obj.damage,
           baseReward: obj.baseReward,
           mvpBonus: obj.mvpBonus,
           totalReward: obj.totalReward,
+          dustAwarded,
         });
       }
     }
@@ -683,7 +703,9 @@ export function buildWorldBossCard(
           4096,
         ),
       )
-      .setFooter({ text: `世界事件 #${event.id} · 出战宠物可自动助战增伤（上限 +${PET_BOSS_BONUS_CAP}）` })
+      .setFooter({
+        text: `世界事件 #${event.id} · 宠物助战上限 +${PET_BOSS_BONUS_CAP} ｜ RPG 勇者增伤上限 +${RPG_BOSS_NORMAL_BONUS_CAP}/+${RPG_BOSS_HEAVY_BONUS_CAP}`,
+      })
       .setTimestamp();
 
     return {
@@ -706,7 +728,7 @@ export function buildWorldBossCard(
             .slice(0, 10)
             .map(
               (r) =>
-                `• <@${r.userId}>（伤害 ${r.damage}）分得 **+${r.totalReward}** ${economyCfg.currencyName}${r.mvpBonus > 0 ? ` 👑 含尾刀+${r.mvpBonus}` : ''}`,
+                `• <@${r.userId}>（伤害 ${r.damage}）分得 **+${r.totalReward}** ${economyCfg.currencyName}${r.mvpBonus > 0 ? ` 👑 含尾刀+${r.mvpBonus}` : ''}${(r.dustAwarded ?? 0) > 0 ? ` ｜ ✨ 魔尘 +${r.dustAwarded}` : ''}`,
             )
         : topHitters;
 
@@ -717,6 +739,7 @@ export function buildWorldBossCard(
         truncateText(
           [
             `💥 **尾刀绝杀英雄：<@${event.killerId}>**`,
+            ...(extraLog ? [`⚡ ${extraLog}`] : []),
             `💰 奖池分配结果（总池 ${event.rewardPool} + 尾刀暴击 ${Math.floor(event.rewardPool * 0.25)} ${economyCfg.currencyName}）：`,
             '',
             ...rewardLines,
