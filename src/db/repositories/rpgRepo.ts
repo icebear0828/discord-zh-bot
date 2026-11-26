@@ -1,4 +1,14 @@
 import type Database from 'better-sqlite3';
+import {
+  awakenLegacyItemAffixes,
+  parseAffixesJson,
+  parseLegendaryEffect,
+  type RpgAffix,
+  type RpgAffixKind,
+  type RpgLegendaryEffect,
+} from '../../services/rpgAffixes.js';
+
+export type { RpgAffix, RpgAffixKind, RpgLegendaryEffect };
 
 export type RpgClassKey = 'warrior' | 'mage' | 'ranger' | 'paladin';
 export type RpgItemSlot = 'weapon' | 'armor' | 'accessory';
@@ -7,49 +17,6 @@ export type RpgTrialStatus = 'pending' | 'succeeded' | 'failed' | 'cancelled';
 export type RpgDuelRulesMode = 'full' | 'equalized';
 export type RpgDuelStatus = 'pending' | 'completed' | 'expired' | 'cancelled';
 export type RpgRaidStatus = 'recruiting' | 'completed' | 'failed' | 'cancelled';
-
-export type RpgAffixKind =
-  | 'lifesteal'
-  | 'combo'
-  | 'thorns'
-  | 'crit_dmg'
-  | 'armor_pen'
-  | 'dodge'
-  | 'dmg_reduce'
-  | 'greed';
-
-export interface RpgAffix {
-  kind: RpgAffixKind;
-  valueBp: number;
-}
-
-export type RpgLegendaryEffect =
-  | 'phoenix_rebirth'
-  | 'twin_meteor'
-  | 'ancestral_war_cry'
-  | 'godslayer_execute'
-  | 'titan_aegis'
-  | 'abyss_soul_drain';
-
-const VALID_AFFIX_KINDS: ReadonlySet<string> = new Set<RpgAffixKind>([
-  'lifesteal',
-  'combo',
-  'thorns',
-  'crit_dmg',
-  'armor_pen',
-  'dodge',
-  'dmg_reduce',
-  'greed',
-]);
-
-const VALID_LEGENDARY_EFFECTS: ReadonlySet<string> = new Set<RpgLegendaryEffect>([
-  'phoenix_rebirth',
-  'twin_meteor',
-  'ancestral_war_cry',
-  'godslayer_execute',
-  'titan_aegis',
-  'abyss_soul_drain',
-]);
 
 const VALID_CLASS_KEYS: ReadonlySet<string> = new Set<RpgClassKey>([
   'warrior',
@@ -67,40 +34,6 @@ const VALID_RARITIES: ReadonlySet<string> = new Set<RpgItemRarity>([
 ]);
 
 const VALID_SLOTS: ReadonlySet<string> = new Set<RpgItemSlot>(['weapon', 'armor', 'accessory']);
-
-function parseAffixesRaw(raw: string | null | undefined): RpgAffix[] {
-  if (!raw) return [];
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    const out: RpgAffix[] = [];
-    for (const entry of parsed) {
-      if (typeof entry !== 'object' || entry === null) continue;
-      const rec = entry as Record<string, unknown>;
-      if (
-        typeof rec.kind === 'string' &&
-        VALID_AFFIX_KINDS.has(rec.kind) &&
-        typeof rec.valueBp === 'number' &&
-        Number.isFinite(rec.valueBp) &&
-        rec.valueBp > 0
-      ) {
-        out.push({
-          kind: rec.kind as RpgAffixKind,
-          valueBp: Math.round(rec.valueBp),
-        });
-      }
-    }
-    return out;
-  } catch {
-    return [];
-  }
-}
-
-function parseLegendaryEffectRaw(raw: string | null | undefined): RpgLegendaryEffect | null {
-  if (typeof raw !== 'string') return null;
-  const trimmed = raw.trim();
-  return VALID_LEGENDARY_EFFECTS.has(trimmed) ? (trimmed as RpgLegendaryEffect) : null;
-}
 
 export const RPG_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS rpg_characters (
@@ -691,8 +624,8 @@ function mapItem(row: RpgItemSqlRow): RpgItem {
     baseCritBp: row.base_crit_bp,
     enhanceLevel: row.enhance_level,
     equipped: row.equipped === 1,
-    affixes: parseAffixesRaw(row.affixes_json),
-    legendaryEffect: parseLegendaryEffectRaw(row.legendary_effect),
+    affixes: parseAffixesJson(row.affixes_json),
+    legendaryEffect: parseLegendaryEffect(row.legendary_effect),
     locked: (row.locked ?? 0) === 1,
     affixesAwakened: (row.affixes_awakened ?? 0) === 1,
     createdAt: row.created_at,
@@ -1066,7 +999,12 @@ export class RpgRepo {
         affixesAwakened,
         input.createdAt,
       );
-    const created = this.getItemById(Number(res.lastInsertRowid));
+    const insertedId = Number(res.lastInsertRowid);
+    if (!hasExplicitAffixInit) {
+      const awakened = awakenLegacyItemAffixes({ id: insertedId, rarity: input.rarity });
+      this.updateItemAffixes(insertedId, awakened.affixes, awakened.legendaryEffect, true);
+    }
+    const created = this.getItemById(insertedId);
     if (!created) throw new Error('Failed to load created RPG item');
     return created;
   }
