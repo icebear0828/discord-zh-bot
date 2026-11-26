@@ -4,6 +4,7 @@ import { initBlackjackSchema } from './repositories/blackjackRepo.js';
 import { initChaosSchema } from './repositories/chaosRepo.js';
 import { initCreditLoanSchema } from './repositories/creditLoanRepo.js';
 import { initDuelSchema } from './repositories/duelRepo.js';
+import { initImageSchema } from './repositories/imageRepo.js';
 import { initMonitorSchema } from './repositories/monitorRepo.js';
 import { initRedPacketSchema } from './repositories/redPacketRepo.js';
 import { initRpgSchema } from './repositories/rpgRepo.js';
@@ -22,6 +23,7 @@ CREATE TABLE IF NOT EXISTS guild_configs (
   ticket_config_json TEXT NOT NULL,
   games_config_json TEXT NOT NULL DEFAULT '{}',
   ai_config_json TEXT NOT NULL DEFAULT '{}',
+  image_config_json TEXT NOT NULL DEFAULT '{}',
   credit_loan_config_json TEXT NOT NULL DEFAULT '{}',
   rpg_config_json TEXT NOT NULL DEFAULT '{}',
   updated_at INTEGER NOT NULL
@@ -233,6 +235,7 @@ export function initSchema(db: Database.Database): void {
   initWorldEventSchema(db);
   initSocialPetSchema(db);
   initAiSchema(db);
+  initImageSchema(db);
   initMonitorSchema(db);
   initBlackjackSchema(db);
   initDuelSchema(db);
@@ -242,6 +245,7 @@ export function initSchema(db: Database.Database): void {
   ensureColumn(db, 'guild_configs', 'admin_user_ids_json', "TEXT NOT NULL DEFAULT '[]'");
   ensureColumn(db, 'guild_configs', 'games_config_json', "TEXT NOT NULL DEFAULT '{}'");
   ensureColumn(db, 'guild_configs', 'ai_config_json', "TEXT NOT NULL DEFAULT '{}'");
+  ensureColumn(db, 'guild_configs', 'image_config_json', "TEXT NOT NULL DEFAULT '{}'");
   ensureColumn(db, 'guild_configs', 'credit_loan_config_json', "TEXT NOT NULL DEFAULT '{}'");
   ensureColumn(db, 'guild_configs', 'rpg_config_json', "TEXT NOT NULL DEFAULT '{}'");
 

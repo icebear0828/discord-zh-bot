@@ -10,17 +10,21 @@ import {
   DEFAULT_CREDIT_LOAN_CONFIG,
   DEFAULT_ECONOMY_CONFIG,
   DEFAULT_GAMES_CONFIG,
+  DEFAULT_IMAGE_GEN_CONFIG,
   DEFAULT_LEVELING_CONFIG,
   DEFAULT_MODULES,
   DEFAULT_RPG_CONFIG,
   DEFAULT_TICKET_CONFIG,
   DEFAULT_WELCOME_CONFIG,
+  VALID_IMAGE_ASPECT_RATIOS,
   type AiChannelOverride,
   type AiConfig,
   type CreditLoanConfig,
   type EconomyConfig,
   type GamesConfig,
   type GuildConfig,
+  type ImageAspectRatio,
+  type ImageGenConfig,
   type LevelingConfig,
   type ModuleToggles,
   type RpgConfig,
@@ -39,6 +43,7 @@ interface GuildConfigRow {
   ticket_config_json: string;
   games_config_json?: string;
   ai_config_json?: string;
+  image_config_json?: string;
   credit_loan_config_json?: string;
   rpg_config_json?: string;
   updated_at: number;
@@ -115,6 +120,96 @@ function sanitizeChannelOverrides(raw: unknown): Record<string, AiChannelOverrid
     }
   }
   return result;
+}
+
+function sanitizeBoundedNumber(
+  raw: unknown,
+  fallback: number,
+  min: number,
+  max: number,
+  round = false,
+): number {
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return fallback;
+  const clamped = Math.max(min, Math.min(max, raw));
+  return round ? Math.round(clamped) : clamped;
+}
+
+function sanitizeNullableString(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  return trimmed ? trimmed : null;
+}
+
+function sanitizeImageGenConfig(raw: string | undefined): ImageGenConfig {
+  const obj = parseJsonObject(raw ?? '{}');
+  const rawRatio = obj['defaultAspectRatio'];
+  const defaultAspectRatio: ImageAspectRatio =
+    typeof rawRatio === 'string' &&
+    (VALID_IMAGE_ASPECT_RATIOS as readonly string[]).includes(rawRatio)
+      ? (rawRatio as ImageAspectRatio)
+      : DEFAULT_IMAGE_GEN_CONFIG.defaultAspectRatio;
+
+  return {
+    modelOverride: sanitizeNullableString(obj['modelOverride']),
+    defaultAspectRatio,
+    defaultSteps: sanitizeBoundedNumber(
+      obj['defaultSteps'],
+      DEFAULT_IMAGE_GEN_CONFIG.defaultSteps,
+      1,
+      50,
+      true,
+    ),
+    defaultScale: sanitizeBoundedNumber(
+      obj['defaultScale'],
+      DEFAULT_IMAGE_GEN_CONFIG.defaultScale,
+      1.0,
+      10.0,
+    ),
+    defaultPositivePrompt:
+      typeof obj['defaultPositivePrompt'] === 'string'
+        ? obj['defaultPositivePrompt'].trim().slice(0, 800)
+        : DEFAULT_IMAGE_GEN_CONFIG.defaultPositivePrompt,
+    defaultNegativePrompt:
+      typeof obj['defaultNegativePrompt'] === 'string'
+        ? obj['defaultNegativePrompt'].trim().slice(0, 800)
+        : DEFAULT_IMAGE_GEN_CONFIG.defaultNegativePrompt,
+    translateChinese:
+      typeof obj['translateChinese'] === 'boolean'
+        ? obj['translateChinese']
+        : DEFAULT_IMAGE_GEN_CONFIG.translateChinese,
+    translatorModel: sanitizeNullableString(obj['translatorModel']),
+    cooldownSec: sanitizeBoundedNumber(
+      obj['cooldownSec'],
+      DEFAULT_IMAGE_GEN_CONFIG.cooldownSec,
+      0,
+      600,
+      true,
+    ),
+    maxConcurrency: sanitizeBoundedNumber(
+      obj['maxConcurrency'],
+      DEFAULT_IMAGE_GEN_CONFIG.maxConcurrency,
+      1,
+      5,
+      true,
+    ),
+    maxPendingQueue: sanitizeBoundedNumber(
+      obj['maxPendingQueue'],
+      DEFAULT_IMAGE_GEN_CONFIG.maxPendingQueue,
+      1,
+      20,
+      true,
+    ),
+    forceSpoiler:
+      typeof obj['forceSpoiler'] === 'boolean'
+        ? obj['forceSpoiler']
+        : DEFAULT_IMAGE_GEN_CONFIG.forceSpoiler,
+    allowedChannelIds: Array.isArray(obj['allowedChannelIds'])
+      ? obj['allowedChannelIds'].filter((id): id is string => typeof id === 'string')
+      : [],
+    ignoredChannelIds: Array.isArray(obj['ignoredChannelIds'])
+      ? obj['ignoredChannelIds'].filter((id): id is string => typeof id === 'string')
+      : [],
+  };
 }
 
 export class GuildConfigRepo {
@@ -246,6 +341,7 @@ export class GuildConfigRepo {
               : [],
           };
         })(),
+        imageGen: sanitizeImageGenConfig(row.image_config_json),
         creditLoan: parseRecord<CreditLoanConfig>(row.credit_loan_config_json ?? '{}', {
           ...DEFAULT_CREDIT_LOAN_CONFIG,
         }),
@@ -263,8 +359,8 @@ export class GuildConfigRepo {
           guild_id, modules_json, admin_role_ids_json, admin_user_ids_json,
           leveling_config_json, economy_config_json,
           welcome_config_json, ticket_config_json, games_config_json, ai_config_json,
-          credit_loan_config_json, rpg_config_json, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          image_config_json, credit_loan_config_json, rpg_config_json, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         created.guildId,
@@ -277,6 +373,7 @@ export class GuildConfigRepo {
         JSON.stringify(created.ticket),
         JSON.stringify(created.games),
         JSON.stringify(created.ai),
+        JSON.stringify(created.imageGen),
         JSON.stringify(created.creditLoan),
         JSON.stringify(created.rpg),
         created.updatedAt,
@@ -361,6 +458,15 @@ export class GuildConfigRepo {
         'UPDATE guild_configs SET ai_config_json = ?, updated_at = ? WHERE guild_id = ?',
       )
       .run(JSON.stringify(ai), Date.now(), guildId);
+  }
+
+  updateImageGen(guildId: string, imageGen: ImageGenConfig): void {
+    this.getOrCreate(guildId);
+    this.db
+      .prepare(
+        'UPDATE guild_configs SET image_config_json = ?, updated_at = ? WHERE guild_id = ?',
+      )
+      .run(JSON.stringify(imageGen), Date.now(), guildId);
   }
 
   updateCreditLoan(guildId: string, creditLoan: CreditLoanConfig): void {

@@ -38,6 +38,11 @@ import {
   handleDuelArenaStringSelect,
 } from './duelArenaHandler.js';
 import { handleRpgButton, handleRpgStringSelect } from './rpgHandler.js';
+import {
+  handleImageButton,
+  handleImageModal,
+  handleImageStringSelect,
+} from './imageHandler.js';
 
 import { extractDiscordErrorCode } from './menuHelpers.js';
 
@@ -260,6 +265,8 @@ export async function routeInteraction(
         await handleRpgButton(interaction, ctx);
       } else if (prefix === 'da') {
         await handleDuelArenaButton(interaction, ctx);
+      } else if (prefix === 'img') {
+        await handleImageButton(interaction, ctx);
       }
     } else if (interaction.isStringSelectMenu()) {
       const prefix = interaction.customId.split(':')[0];
@@ -277,6 +284,8 @@ export async function routeInteraction(
         await handleLeaderboardSelect(interaction, ctx);
       } else if (prefix === 'da') {
         await handleDuelArenaStringSelect(interaction, ctx);
+      } else if (prefix === 'img') {
+        await handleImageStringSelect(interaction, ctx);
       }
     } else if (interaction.isUserSelectMenu()) {
       const prefix = interaction.customId.split(':')[0];
@@ -309,6 +318,8 @@ export async function routeInteraction(
         await handleCreditLoanModal(interaction, ctx);
       } else if (prefix === 'da') {
         await handleDuelArenaModal(interaction, ctx);
+      } else if (prefix === 'img') {
+        await handleImageModal(interaction, ctx);
       }
     }
 

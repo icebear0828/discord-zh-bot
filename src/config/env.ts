@@ -4,6 +4,10 @@ export const DEFAULT_LLM_FALLBACK_MODEL = 'pg/gemini-4-carbon';
 export const DEFAULT_LLM_MAX_RETRIES = 8;
 export const DEFAULT_LLM_RATE_LIMIT_MAX_RETRIES = 2;
 
+export const DEFAULT_IMAGE_MODEL = 'nai/nai-diffusion-5-full';
+export const DEFAULT_IMAGE_TIMEOUT_MS = 90_000;
+export const DEFAULT_IMAGE_MAX_RETRIES = 2;
+
 export interface LlmEnvConfig {
   baseUrl: string;
   apiKey: string;
@@ -14,6 +18,14 @@ export interface LlmEnvConfig {
   rateLimitMaxRetries?: number;
 }
 
+export interface ImageEnvConfig {
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+  timeoutMs: number;
+  maxRetries: number;
+}
+
 export interface AppEnv {
   discordToken: string;
   discordClientId: string;
@@ -21,6 +33,7 @@ export interface AppEnv {
   dbPath: string;
   timezone: string;
   llm?: LlmEnvConfig;
+  image?: ImageEnvConfig;
 }
 
 function parseIntInBounds(
@@ -86,6 +99,29 @@ export function parseEnv(source: Record<string, string | undefined>): AppEnv {
       }
     : undefined;
 
+  const imageBaseUrlRaw = source.IMAGE_BASE_URL?.trim();
+  const imageApiKey = source.IMAGE_API_KEY?.trim() ?? '';
+  const imageModel = source.IMAGE_MODEL?.trim() || DEFAULT_IMAGE_MODEL;
+  const image: ImageEnvConfig | undefined = imageBaseUrlRaw
+    ? {
+        baseUrl: imageBaseUrlRaw.replace(/\/+$/, ''),
+        apiKey: imageApiKey,
+        model: imageModel,
+        timeoutMs: parseIntInBounds(
+          source.IMAGE_TIMEOUT_MS,
+          DEFAULT_IMAGE_TIMEOUT_MS,
+          10_000,
+          300_000,
+        ),
+        maxRetries: parseIntInBounds(
+          source.IMAGE_MAX_RETRIES,
+          DEFAULT_IMAGE_MAX_RETRIES,
+          0,
+          8,
+        ),
+      }
+    : undefined;
+
   return {
     discordToken,
     discordClientId,
@@ -93,6 +129,7 @@ export function parseEnv(source: Record<string, string | undefined>): AppEnv {
     dbPath,
     timezone,
     ...(llm ? { llm } : {}),
+    ...(image ? { image } : {}),
   };
 }
 

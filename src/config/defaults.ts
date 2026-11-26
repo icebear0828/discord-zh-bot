@@ -43,6 +43,7 @@ export interface ModuleToggles {
   worldEvents: boolean;
   petsAndCp: boolean;
   ai: boolean;
+  imageGen: boolean;
   creditLoan: boolean;
   rpg: boolean;
 }
@@ -180,6 +181,26 @@ export interface AiConfig {
   ignoredChannelIds: string[];
 }
 
+export const VALID_IMAGE_ASPECT_RATIOS = ['2:3', '3:2', '1:1', '9:16', '16:9'] as const;
+export type ImageAspectRatio = (typeof VALID_IMAGE_ASPECT_RATIOS)[number];
+
+export interface ImageGenConfig {
+  modelOverride: string | null;
+  defaultAspectRatio: ImageAspectRatio;
+  defaultSteps: number;
+  defaultScale: number;
+  defaultPositivePrompt: string;
+  defaultNegativePrompt: string;
+  translateChinese: boolean;
+  translatorModel: string | null;
+  cooldownSec: number;
+  maxConcurrency: number;
+  maxPendingQueue: number;
+  forceSpoiler: boolean;
+  allowedChannelIds: string[];
+  ignoredChannelIds: string[];
+}
+
 export interface GuildConfig {
   guildId: string;
   modules: ModuleToggles;
@@ -191,6 +212,7 @@ export interface GuildConfig {
   ticket: TicketConfig;
   games: GamesConfig;
   ai: AiConfig;
+  imageGen: ImageGenConfig;
   creditLoan: CreditLoanConfig;
   rpg: RpgConfig;
   updatedAt: number;
@@ -209,6 +231,7 @@ export const DEFAULT_MODULES: ModuleToggles = {
   worldEvents: true,
   petsAndCp: true,
   ai: true,
+  imageGen: true,
   creditLoan: true,
   rpg: true,
 };
@@ -389,6 +412,23 @@ export const DEFAULT_AI_CONFIG: AiConfig = {
   ignoredChannelIds: [],
 };
 
+export const DEFAULT_IMAGE_GEN_CONFIG: ImageGenConfig = {
+  modelOverride: null,
+  defaultAspectRatio: '2:3',
+  defaultSteps: 28,
+  defaultScale: 5.0,
+  defaultPositivePrompt: '',
+  defaultNegativePrompt: '',
+  translateChinese: true,
+  translatorModel: null,
+  cooldownSec: 15,
+  maxConcurrency: 2,
+  maxPendingQueue: 6,
+  forceSpoiler: false,
+  allowedChannelIds: [],
+  ignoredChannelIds: [],
+};
+
 export function createDefaultGuildConfig(guildId: string, nowMs = Date.now()): GuildConfig {
   return {
     guildId,
@@ -417,6 +457,11 @@ export function createDefaultGuildConfig(guildId: string, nowMs = Date.now()): G
       regexRules: cloneDefaultAiRegexRules(),
       userProfiles: [],
       freeChatChannelIds: [],
+      allowedChannelIds: [],
+      ignoredChannelIds: [],
+    },
+    imageGen: {
+      ...DEFAULT_IMAGE_GEN_CONFIG,
       allowedChannelIds: [],
       ignoredChannelIds: [],
     },

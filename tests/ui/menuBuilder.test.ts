@@ -15,6 +15,7 @@ import { TicketRepo } from '../../src/db/repositories/ticketRepo.js';
 import { WorldEventRepo } from '../../src/db/repositories/worldEventRepo.js';
 import { AiMemoryRepo } from '../../src/db/repositories/aiMemoryRepo.js';
 import { CreditLoanRepo } from '../../src/db/repositories/creditLoanRepo.js';
+import { ImageRepo } from '../../src/db/repositories/imageRepo.js';
 import { RpgRepo } from '../../src/db/repositories/rpgRepo.js';
 import { BlackjackManager, type Card } from '../../src/services/blackjackService.js';
 import { ChaosService } from '../../src/services/chaosService.js';
@@ -33,9 +34,16 @@ import { TicketService } from '../../src/services/ticketService.js';
 import { WorldEventService } from '../../src/services/worldEventService.js';
 import { LlmClient } from '../../src/services/llmClient.js';
 import { AiService } from '../../src/services/aiService.js';
+import { ImageClient } from '../../src/services/imageClient.js';
+import { ImageService } from '../../src/services/imageService.js';
 import { buildLeaderboardMessage } from '../../src/commands/leveling/leaderboard.js';
 import { buildNumberBombCard, buildRouletteCard } from '../../src/ui/chaosMenuBuilder.js';
 import type { AppContext } from '../../src/ui/embeds.js';
+import {
+  buildAdminImageView,
+  buildImageLobbyMessage,
+  buildUserImageMenuView,
+} from '../../src/ui/imageMenuBuilder.js';
 import {
   buildDuelMessage,
   buildLobbyMessage,
@@ -69,7 +77,9 @@ function createTestCtx(): AppContext {
   const aiMemory = new AiMemoryRepo(db);
   const creditLoanRepo = new CreditLoanRepo(db);
   const rpgRepo = new RpgRepo(db);
+  const imageRepo = new ImageRepo(db);
   const llmClient = new LlmClient(undefined);
+  const imageClient = new ImageClient(undefined);
   const creditLoan = new CreditLoanService(
     db,
     guildConfig,
@@ -111,6 +121,7 @@ function createTestCtx(): AppContext {
       aiMemory,
       creditLoan: creditLoanRepo,
       rpg: rpgRepo,
+      image: imageRepo,
     },
     services: {
       leveling: new LevelingService(guildConfig, profile, invite, creditLoan, rpg),
@@ -141,6 +152,7 @@ function createTestCtx(): AppContext {
         creditLoan,
       ),
       ai: new AiService(guildConfig, aiMemory, llmClient),
+      image: new ImageService(guildConfig, imageRepo, imageClient),
       creditLoan,
       rpg,
     },
@@ -380,6 +392,7 @@ describe('menuBuilder Discord component constraints & schema integration', () =>
       { page: 'loan' },
       { page: 'hustle' },
       { page: 'rpg' },
+      { page: 'image' },
       { page: 'multi' },
       { page: 'rob' },
       { page: 'pay' },
@@ -428,6 +441,8 @@ describe('menuBuilder Discord component constraints & schema integration', () =>
       { page: 'admin_ai', tab: 'channels' },
       { page: 'admin_ai', tab: 'regex', regexPage: 1 },
       { page: 'admin_ai', tab: 'usage' },
+      { page: 'admin_image', tab: 'basic' },
+      { page: 'admin_image', tab: 'channels' },
       { page: 'admin_credit_rpg' },
       { page: 'admin_monitor', filter: 'issues' },
       { page: 'admin_monitor', filter: 'all' },
@@ -877,6 +892,77 @@ describe('menuBuilder Discord component constraints & schema integration', () =>
     expect(rpDesc).toContain('仅展示前 25 条，共 35 人已领');
     expect(rpDesc).toContain('<@u-35>');
     expect(rpDesc).not.toContain('<@u-30>');
+
+    // 6. Interactive AI image workbench states (0 history, 20 history + custom prefs, admin, and lobby card)
+    const emptyUserImg = buildUserImageMenuView(
+      ctx,
+      'g1',
+      { ...ACTOR, id: 'img-empty', isAdmin: false },
+      undefined,
+      undefined,
+    );
+    assertDiscordMessageLimits(emptyUserImg, 'image:empty');
+    expect(emptyUserImg.components).toHaveLength(3);
+
+    for (let i = 1; i <= 20; i++) {
+      ctx.repos.image!.create({
+        guildId: 'g1',
+        channelId: 'c1',
+        userId: 'u1',
+        rawPrompt: `提示词_${i}_${'长文本'.repeat(20)}`,
+        finalPrompt: `prompt_${i}`,
+        negativePrompt: 'lowres',
+        aspectRatio: '2:3',
+        steps: 28,
+        scale: 5.0,
+        seed: null,
+        spoiler: false,
+        ephemeral: false,
+        model: 'nai/nai-diffusion-5-full',
+        status: 'ok',
+        errorCode: null,
+        latencyMs: 12000,
+      });
+    }
+    ctx.services.image!.updateUserPrefs('g1', 'u1', {
+      aspectRatio: '16:9',
+      steps: 24,
+      scale: 6.5,
+      negativePrompt: 'blurry, bad hands',
+      spoiler: true,
+      ephemeral: true,
+    });
+    const busyUserImg = buildUserImageMenuView(
+      ctx,
+      'g1',
+      { ...ACTOR, isAdmin: false },
+      undefined,
+      { type: 'info', text: '提示' },
+    );
+    assertDiscordMessageLimits(busyUserImg, 'image:busy:user');
+    expect(busyUserImg.components).toHaveLength(4);
+
+    const busyAdminImg = buildUserImageMenuView(
+      ctx,
+      'g1',
+      { ...ACTOR, isAdmin: true },
+      undefined,
+      undefined,
+    );
+    assertDiscordMessageLimits(busyAdminImg, 'image:busy:admin');
+    expect(busyAdminImg.components).toHaveLength(4);
+
+    const adminImgBasic = buildAdminImageView(
+      ctx,
+      'g1',
+      { ...ACTOR, isAdmin: true },
+      undefined,
+      'basic',
+    );
+    assertDiscordMessageLimits(adminImgBasic, 'admin_image:basic');
+
+    const imgLobby = buildImageLobbyMessage('黑吊国');
+    assertDiscordMessageLimits(imgLobby, 'image_lobby');
 
     ctx.db.close();
   });

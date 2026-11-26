@@ -8,6 +8,7 @@ import { createDatabase } from '../../src/db/database.js';
 import { initSchema } from '../../src/db/schema.js';
 import { GuildConfigRepo } from '../../src/db/repositories/guildConfigRepo.js';
 import { GiveawayRepo } from '../../src/db/repositories/giveawayRepo.js';
+import { ImageRepo } from '../../src/db/repositories/imageRepo.js';
 import { ProfileRepo } from '../../src/db/repositories/profileRepo.js';
 import { RolePanelRepo } from '../../src/db/repositories/rolePanelRepo.js';
 
@@ -68,6 +69,38 @@ describe('env & database schema', () => {
       maxRetries: 10,
       rateLimitMaxRetries: 3,
     });
+
+    expect(env.image).toBeUndefined();
+    const withImage = parseEnv({
+      DISCORD_TOKEN: 'tok-123',
+      DISCORD_CLIENT_ID: 'app-456',
+      IMAGE_BASE_URL: 'https://img.example.com/v1///',
+      IMAGE_API_KEY: 'sk-img',
+    });
+    expect(withImage.image).toEqual({
+      baseUrl: 'https://img.example.com/v1',
+      apiKey: 'sk-img',
+      model: 'nai/nai-diffusion-5-full',
+      timeoutMs: 90_000,
+      maxRetries: 2,
+    });
+
+    const withCustomImage = parseEnv({
+      DISCORD_TOKEN: 'tok-123',
+      DISCORD_CLIENT_ID: 'app-456',
+      IMAGE_BASE_URL: 'https://img.example.com/v1',
+      IMAGE_API_KEY: 'sk-img',
+      IMAGE_MODEL: 'custom/model',
+      IMAGE_TIMEOUT_MS: '999999',
+      IMAGE_MAX_RETRIES: '99',
+    });
+    expect(withCustomImage.image).toEqual({
+      baseUrl: 'https://img.example.com/v1',
+      apiKey: 'sk-img',
+      model: 'custom/model',
+      timeoutMs: 300_000,
+      maxRetries: 8,
+    });
   });
 
   it('initializes schema idempotently, enables foreign keys, and configures WAL for file DBs', () => {
@@ -118,6 +151,8 @@ describe('env & database schema', () => {
           'pet_battles',
           'ai_memories',
           'ai_channel_resets',
+          'image_generations',
+          'image_user_prefs',
           'interaction_logs',
           'blackjack_games',
           'duel_challenges',
@@ -313,6 +348,7 @@ describe('env & database schema', () => {
     expect(colNames).toContain('admin_user_ids_json');
     expect(colNames).toContain('games_config_json');
     expect(colNames).toContain('ai_config_json');
+    expect(colNames).toContain('image_config_json');
     expect(colNames).toContain('credit_loan_config_json');
     expect(colNames).toContain('rpg_config_json');
 
@@ -321,13 +357,159 @@ describe('env & database schema', () => {
     expect(repo.getOrCreate('g1').games.petGachaPrice).toBe(500);
     expect(repo.getOrCreate('g1').modules.socialGames).toBe(true);
     expect(repo.getOrCreate('g1').modules.ai).toBe(true);
+    expect(repo.getOrCreate('g1').modules.imageGen).toBe(true);
     expect(repo.getOrCreate('g1').modules.creditLoan).toBe(true);
     expect(repo.getOrCreate('g1').modules.rpg).toBe(true);
     expect(repo.getOrCreate('g1').ai.preset).toBe('community');
+    expect(repo.getOrCreate('g1').imageGen).toEqual({
+      modelOverride: null,
+      defaultAspectRatio: '2:3',
+      defaultSteps: 28,
+      defaultScale: 5.0,
+      defaultPositivePrompt: '',
+      defaultNegativePrompt: '',
+      translateChinese: true,
+      translatorModel: null,
+      cooldownSec: 15,
+      maxConcurrency: 2,
+      maxPendingQueue: 6,
+      forceSpoiler: false,
+      allowedChannelIds: [],
+      ignoredChannelIds: [],
+    });
     expect(repo.getOrCreate('g1').creditLoan.garnishRate).toBe(0.5);
     expect(repo.getOrCreate('g1').rpg.dailyStamina).toBe(5);
     repo.updateAdminUsers('g1', ['u100', 'u200']);
     expect(repo.getOrCreate('g1').adminUserIds).toEqual(['u100', 'u200']);
+    repo.updateImageGen('g1', {
+      ...repo.getOrCreate('g1').imageGen,
+      defaultSteps: 24,
+      forceSpoiler: true,
+      allowedChannelIds: ['ch1'],
+    });
+    expect(repo.getOrCreate('g1').imageGen.defaultSteps).toBe(24);
+    expect(repo.getOrCreate('g1').imageGen.forceSpoiler).toBe(true);
+    expect(repo.getOrCreate('g1').imageGen.allowedChannelIds).toEqual(['ch1']);
+
+    db.close();
+  });
+
+  it('persists image generation records, summarizes usage, and enforces rolling guild retention', () => {
+    const db = createDatabase(':memory:');
+    const imageRepo = new ImageRepo(db);
+
+    const rec1 = imageRepo.create({
+      guildId: 'g1',
+      channelId: 'c1',
+      userId: 'u1',
+      rawPrompt: '银发少女',
+      finalPrompt: 'silver hair girl',
+      negativePrompt: 'lowres',
+      aspectRatio: '2:3',
+      steps: 28,
+      scale: 5.0,
+      seed: 12345,
+      spoiler: false,
+      ephemeral: false,
+      model: 'nai/nai-diffusion-5-full',
+      status: 'ok',
+      errorCode: null,
+      latencyMs: 18500,
+      createdAt: 1_000,
+    });
+    expect(imageRepo.getById(rec1.id)).toEqual(rec1);
+
+    imageRepo.create({
+      guildId: 'g1',
+      channelId: 'c1',
+      userId: 'u2',
+      rawPrompt: 'cat',
+      finalPrompt: 'cat',
+      negativePrompt: '',
+      aspectRatio: '1:1',
+      steps: 20,
+      scale: 5.0,
+      seed: null,
+      spoiler: true,
+      ephemeral: true,
+      model: 'nai/nai-diffusion-5-full',
+      status: 'error',
+      errorCode: 'timeout',
+      latencyMs: 90000,
+      createdAt: 2_000,
+    });
+
+    const summary = imageRepo.getUsageSummary('g1', 500);
+    expect(summary).toEqual({
+      totalCalls: 2,
+      okCalls: 1,
+      errorCalls: 1,
+      avgLatencyMs: 54250,
+    });
+    const recent = imageRepo.listRecent('g1', 10);
+    expect(recent).toHaveLength(2);
+    expect(recent[0]?.id).toBeGreaterThan(recent[1]!.id);
+
+    const userHistory = imageRepo.listByUser('g1', 'u1', 15);
+    expect(userHistory).toHaveLength(1);
+    expect(userHistory[0]?.id).toBe(rec1.id);
+    expect(imageRepo.listByUser('g1', 'u2', 15)).toHaveLength(0);
+
+    expect(imageRepo.getUserPrefs('g1', 'u1')).toMatchObject({
+      guildId: 'g1',
+      userId: 'u1',
+      aspectRatio: null,
+      steps: null,
+      scale: null,
+      negativePrompt: '',
+      spoiler: false,
+      ephemeral: false,
+    });
+
+    const savedPref = imageRepo.upsertUserPrefs('g1', 'u1', {
+      aspectRatio: '16:9',
+      steps: 24,
+      scale: 6.5,
+      negativePrompt: 'lowres, bad hands',
+      spoiler: true,
+      ephemeral: true,
+    });
+    expect(savedPref).toMatchObject({
+      aspectRatio: '16:9',
+      steps: 24,
+      scale: 6.5,
+      negativePrompt: 'lowres, bad hands',
+      spoiler: true,
+      ephemeral: true,
+    });
+    expect(imageRepo.getUserPrefs('g1', 'u1')).toMatchObject({
+      aspectRatio: '16:9',
+      steps: 24,
+      scale: 6.5,
+      negativePrompt: 'lowres, bad hands',
+      spoiler: true,
+      ephemeral: true,
+    });
+
+    imageRepo.resetUserPrefs('g1', 'u1');
+    expect(imageRepo.getUserPrefs('g1', 'u1')).toMatchObject({
+      aspectRatio: null,
+      steps: null,
+      scale: null,
+      negativePrompt: '',
+      spoiler: false,
+      ephemeral: false,
+    });
+
+    const indexes = (
+      db.prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all() as Array<{ name: string }>
+    ).map((r) => r.name);
+    expect(indexes).toEqual(
+      expect.arrayContaining([
+        'idx_image_generations_guild_created',
+        'idx_image_generations_user_created',
+      ]),
+    );
 
     db.close();
   });

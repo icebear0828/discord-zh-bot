@@ -43,6 +43,10 @@ import {
 } from './adminConfigMenuBuilder.js';
 import { buildAdminAiView } from './aiAdminMenuBuilder.js';
 import {
+  buildAdminImageView,
+  buildUserImageMenuView,
+} from './imageMenuBuilder.js';
+import {
   buildBountyView,
   buildBombView,
   buildPropsView,
@@ -137,6 +141,7 @@ export function buildLobbyMessage(guildName?: string): BuiltButtonMessage {
         '',
         '• 🎮 **独立游玩**：每日签到、打工赚币、今日运势、老虎机、猜大小、二十一点',
         '• ⚔️ **西幻 RPG 冒险**：4 大职业、6 大地下城 Roguelike 闯关、装备强化与宠物协同助战',
+        '• 🎨 **AI 独立生图**：`/画图` 与工作台出图、中文直译、比例/步数/种子与一键重绘',
         '• 💳 **银行借贷与卖屁股**：存钱降险领息、信用分权益、银行信用贷/黑市高利贷、1h 卖屁股与老赖通缉',
         '• 👥 **多人博弈与吃瓜事件**：偷钱劫金库、转账、决斗、红包、黑市道具、悬赏、轮盘、数字炸弹、吃瓜开盘、天降宝箱与世界 Boss',
         '• 💞 **关系宠物与商店榜单**：结婚/结拜 CP、盲盒宠物斗兽场、商店背包与全服 12 大排行榜',
@@ -249,7 +254,11 @@ function buildHomeView(
     makeButton('menu:nav:self_roles', '🎭 自助身份组', ButtonStyle.Secondary),
   );
 
-  return { embeds: [embed], components: [navRow, quickRow, extraRow] };
+  const imageRow = buttonRow(
+    makeButton('menu:nav:image', '🎨 AI 绘图', ButtonStyle.Primary),
+  );
+
+  return { embeds: [embed], components: [navRow, quickRow, extraRow, imageRow] };
 }
 
 function buildSoloView(
@@ -1417,6 +1426,7 @@ const MODULE_META: ReadonlyArray<{ key: ModuleKey; label: string; emoji: string 
   { key: 'worldEvents', label: '吃瓜与事件', emoji: '🎯' },
   { key: 'petsAndCp', label: '关系与宠物', emoji: '💞' },
   { key: 'ai', label: 'AI 对话', emoji: '🤖' },
+  { key: 'imageGen', label: 'AI 绘图', emoji: '🎨' },
   { key: 'creditLoan', label: '征信与借贷', emoji: '🏦' },
   { key: 'rpg', label: '奇幻RPG地牢', emoji: '⚔️' },
 ];
@@ -1480,6 +1490,7 @@ function buildAdminOverviewView(
       ),
       buttonRow(
         makeButton('menu:nav:admin_credit_rpg', '💳 信用/借贷/RPG', ButtonStyle.Primary),
+        makeButton('menu:nav:admin_image', '🎨 AI 生图配置', ButtonStyle.Primary),
         makeButton('menu:nav:admin', '🔄 刷新配置', ButtonStyle.Secondary),
         makeButton('menu:nav:home', '🏠 主菜单', ButtonStyle.Secondary),
       ),
@@ -1935,6 +1946,8 @@ export function buildMenuMessage(
       }
       return buildRpgHomeView(ctx, guildId, actor, feedback, nowMs);
     }
+    case 'image':
+      return buildUserImageMenuView(ctx, guildId, actor, view.ratio, feedback);
     case 'multi':
       return buildMultiView(ctx, guildId, actor, feedback, nowMs);
     case 'rob':
@@ -2023,6 +2036,8 @@ export function buildMenuMessage(
         view.regexPage ?? 1,
         view.profilePage ?? 1,
       );
+    case 'admin_image':
+      return buildAdminImageView(ctx, guildId, actor, feedback, view.tab ?? 'basic');
     case 'admin_credit_rpg':
       return buildAdminCreditRpgView(ctx, guildId, actor, feedback);
     case 'admin_monitor':

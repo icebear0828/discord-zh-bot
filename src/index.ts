@@ -18,6 +18,7 @@ import { AiMemoryRepo } from './db/repositories/aiMemoryRepo.js';
 import { BlackjackRepo } from './db/repositories/blackjackRepo.js';
 import { CreditLoanRepo } from './db/repositories/creditLoanRepo.js';
 import { DuelRepo } from './db/repositories/duelRepo.js';
+import { ImageRepo } from './db/repositories/imageRepo.js';
 import { MonitorRepo } from './db/repositories/monitorRepo.js';
 import { RpgRepo } from './db/repositories/rpgRepo.js';
 import { LevelingService } from './services/levelingService.js';
@@ -36,6 +37,9 @@ import { SocialPetService } from './services/socialPetService.js';
 import { LlmClient } from './services/llmClient.js';
 import { AiPackStore } from './services/aiPackStore.js';
 import { AiService } from './services/aiService.js';
+import { ImageClient } from './services/imageClient.js';
+import { LiteralTranslationPromptProcessor } from './services/imagePromptProcessor.js';
+import { ImageService } from './services/imageService.js';
 import { CreditLoanService } from './services/creditLoanService.js';
 import { DuelArenaService } from './services/duelArenaService.js';
 import { RpgService } from './services/rpgService.js';
@@ -70,7 +74,13 @@ function main(): void {
   const monitorRepo = new MonitorRepo(db);
   const creditLoanRepo = new CreditLoanRepo(db);
   const rpgRepo = new RpgRepo(db);
+  const imageRepo = new ImageRepo(db);
   const llmClient = new LlmClient(env.llm);
+  const imageClient = new ImageClient(env.image);
+  const imagePromptProcessor = new LiteralTranslationPromptProcessor(
+    llmClient,
+    env.llm?.fallbackModel || env.llm?.model,
+  );
   const aiPacksDir =
     env.dbPath === ':memory:'
       ? undefined
@@ -129,6 +139,7 @@ function main(): void {
       blackjack: blackjackRepo,
       duel: duelRepo,
       monitor: monitorRepo,
+      image: imageRepo,
     },
     services: {
       leveling: new LevelingService(
@@ -187,6 +198,7 @@ function main(): void {
         creditLoanService,
       ),
       ai: new AiService(guildConfigRepo, aiMemoryRepo, llmClient, fetch, aiPackStore),
+      image: new ImageService(guildConfigRepo, imageRepo, imageClient, imagePromptProcessor),
       creditLoan: creditLoanService,
       rpg: rpgService,
       duelArena: new DuelArenaService(db, profileRepo, duelRepo, chaosRepo, creditLoanService),

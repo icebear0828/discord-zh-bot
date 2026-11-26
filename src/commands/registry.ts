@@ -30,6 +30,7 @@ import { giveawayCommand } from './giveaways/giveaway.js';
 import { invitesCommand } from './invites/invites.js';
 import { rolePanelCommand } from './roles/rolePanel.js';
 import { aiCommand } from './ai/ai.js';
+import { drawCommand } from './ai/draw.js';
 
 export const commands: readonly CommandDefinition[] = [
   helpCommand,
@@ -63,6 +64,7 @@ export const commands: readonly CommandDefinition[] = [
   invitesCommand,
   rolePanelCommand,
   aiCommand,
+  drawCommand,
 ];
 
 export const commandMap: ReadonlyMap<string, CommandDefinition> = new Map(

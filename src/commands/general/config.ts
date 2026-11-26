@@ -28,6 +28,7 @@ const MODULE_LABELS: Record<ModuleKey, string> = {
   worldEvents: '吃瓜与世界事件',
   petsAndCp: '关系与宠物',
   ai: 'AI 对话',
+  imageGen: 'AI 绘图',
   creditLoan: '征信与借贷',
   rpg: '奇幻RPG地牢',
 };
@@ -45,6 +46,7 @@ const MODULE_CHOICES: ReadonlyArray<{ name: string; value: ModuleKey }> = [
   { name: '吃瓜与世界事件 (worldEvents)', value: 'worldEvents' },
   { name: '关系与宠物 (petsAndCp)', value: 'petsAndCp' },
   { name: 'AI 对话 (ai)', value: 'ai' },
+  { name: 'AI 绘图 (imageGen)', value: 'imageGen' },
   { name: '征信与借贷 (creditLoan)', value: 'creditLoan' },
   { name: '奇幻RPG地牢 (rpg)', value: 'rpg' },
 ];

@@ -8,6 +8,7 @@ import {
   StringSelectMenuBuilder,
   UserSelectMenuBuilder,
 } from 'discord.js';
+import type { ImageAspectRatio } from '../config/defaults.js';
 import type { ShopItem, ShopItemType } from '../db/repositories/shopRepo.js';
 import type { BlackjackGame } from '../services/blackjackService.js';
 import type { DiceChoice, RobTargetHints } from '../services/economyService.js';
@@ -51,6 +52,7 @@ export type MenuView =
   | { page: 'loan' }
   | { page: 'hustle' }
   | { page: 'rpg' }
+  | { page: 'image'; ratio?: ImageAspectRatio }
   | { page: 'multi' }
   | { page: 'rob' }
   | { page: 'pay' }
@@ -95,6 +97,7 @@ export type MenuView =
       regexPage?: number;
       profilePage?: number;
     }
+  | { page: 'admin_image'; tab?: 'basic' | 'channels' }
   | { page: 'admin_credit_rpg' }
   | { page: 'admin_monitor'; filter?: 'issues' | 'all'; confirmClear?: boolean };
 

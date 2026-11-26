@@ -72,6 +72,11 @@ import {
   tryHandleAiMenuUserSelect,
 } from './aiMenuHandler.js';
 import {
+  tryHandleAdminImageButton,
+  tryHandleAdminImageChannelSelect,
+  tryHandleAdminImageModal,
+} from './imageHandler.js';
+import {
   tryHandleGamesMenuButton,
   tryHandleGamesMenuModal,
   tryHandleGamesMenuStringSelect,
@@ -114,6 +119,7 @@ const VALID_MODULE_KEYS: ReadonlySet<string> = new Set<ModuleKey>([
   'worldEvents',
   'petsAndCp',
   'ai',
+  'imageGen',
   'creditLoan',
   'rpg',
 ]);
@@ -554,8 +560,35 @@ export async function handleMenuButton(
     return;
   }
 
+  if (await tryHandleAdminImageButton(interaction, ctx, guildId, actor)) {
+    return;
+  }
+
   if (section === 'nav') {
     const target = parts[2];
+    if (target === 'admin_image') {
+      if (!actor.isAdmin) {
+        await interaction.update(
+          buildMenuMessage(ctx, guildId, actor, { page: 'home' }, ADMIN_DENIED_FEEDBACK),
+        );
+        return;
+      }
+      const tab = parts[3] === 'channels' ? 'channels' : 'basic';
+      await interaction.update(buildMenuMessage(ctx, guildId, actor, { page: 'admin_image', tab }));
+      return;
+    }
+
+    if (target === 'image') {
+      const disabledMsg = checkModuleDisabled(ctx, guildId, 'imageGen', 'AI 绘图');
+      if (disabledMsg) {
+        await interaction.update(
+          buildMenuMessage(ctx, guildId, actor, { page: 'home' }, { type: 'error', text: disabledMsg }),
+        );
+        return;
+      }
+      await interaction.update(buildMenuMessage(ctx, guildId, actor, { page: 'image' }));
+      return;
+    }
     if (
       target === 'admin' ||
       target === 'admin_econ' ||
@@ -2673,6 +2706,10 @@ export async function handleMenuModal(
     return;
   }
 
+  if (await tryHandleAdminImageModal(interaction, ctx, guildId, actor)) {
+    return;
+  }
+
   if (modalType === 'shop_custom_title') {
     const disabledMsg = checkModuleDisabled(ctx, guildId, 'economy', '经济系统');
     if (disabledMsg) {
@@ -3836,5 +3873,8 @@ export async function handleMenuChannelSelect(
   if (await tryHandleConfigMenuChannelSelect(interaction, ctx, guildId, actor, parts)) {
     return;
   }
-  await tryHandleAiMenuChannelSelect(interaction, ctx, guildId, actor, parts);
+  if (await tryHandleAiMenuChannelSelect(interaction, ctx, guildId, actor, parts)) {
+    return;
+  }
+  await tryHandleAdminImageChannelSelect(interaction, ctx, guildId, actor);
 }
