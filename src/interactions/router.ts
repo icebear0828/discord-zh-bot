@@ -37,7 +37,12 @@ import {
   handleDuelArenaModal,
   handleDuelArenaStringSelect,
 } from './duelArenaHandler.js';
-import { handleRpgButton, handleRpgStringSelect } from './rpgHandler.js';
+import {
+  handleRpgButton,
+  handleRpgModal,
+  handleRpgStringSelect,
+  handleRpgUserSelect,
+} from './rpgHandler.js';
 import {
   handleImageButton,
   handleImageModal,
@@ -293,6 +298,8 @@ export async function routeInteraction(
         await handleMenuUserSelect(interaction, ctx);
       } else if (prefix === 'cl') {
         await handleCreditLoanUserSelect(interaction, ctx);
+      } else if (prefix === 'rpg') {
+        await handleRpgUserSelect(interaction, ctx);
       }
     } else if (interaction.isRoleSelectMenu()) {
       const prefix = interaction.customId.split(':')[0];
@@ -318,6 +325,8 @@ export async function routeInteraction(
         await handleCreditLoanModal(interaction, ctx);
       } else if (prefix === 'da') {
         await handleDuelArenaModal(interaction, ctx);
+      } else if (prefix === 'rpg') {
+        await handleRpgModal(interaction, ctx);
       } else if (prefix === 'img') {
         await handleImageModal(interaction, ctx);
       }

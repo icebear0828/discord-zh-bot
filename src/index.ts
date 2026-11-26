@@ -97,6 +97,12 @@ function main(): void {
     timezone: env.timezone,
     guildConfigRepo,
     socialPetRepo,
+    creditLoanService,
+    isGamblingBlocked: (guildId, userId, nowMs) =>
+      creditLoanService.isDeadbeatBlocked(guildId, userId, nowMs).blocked,
+    recordGamblingResult: (guildId, userId, stake, netProfit, nowMs) => {
+      creditLoanService.recordGamblingResult(guildId, userId, stake, netProfit, nowMs);
+    },
     onCoinsEarned: (guildId, userId, grossCoins, source, nowMs) => {
       const res = creditLoanService.garnishIncomingCoins(
         guildId,
@@ -184,6 +190,7 @@ function main(): void {
         worldEventRepo,
         socialPetRepo,
         creditLoanService,
+        rpgService.createWorldBossBridge(),
       ),
       socialPet: new SocialPetService(
         db,

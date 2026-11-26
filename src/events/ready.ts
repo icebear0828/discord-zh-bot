@@ -23,7 +23,11 @@ import {
 } from '../ui/embeds.js';
 import { buildDuelMessage, buildRedPacketMessage } from '../ui/menuBuilder.js';
 import { truncateText } from '../ui/menuShared.js';
-import { buildPublicTrialCard } from '../ui/rpgMenuBuilder.js';
+import {
+  buildPublicTrialCard,
+  buildRpgCoopRaidCard,
+  buildRpgPublicDuelCard,
+} from '../ui/rpgMenuBuilder.js';
 import { buildPetBattleCard, buildProposalCard } from '../ui/socialPetMenuBuilder.js';
 import {
   buildPredictionCard,
@@ -383,6 +387,75 @@ export async function runGamesTick(readyClient: Client, ctx: AppContext): Promis
       }
     } catch (subErr) {
       console.error('[timer:games:rpgTrial]', subErr);
+    }
+
+    try {
+      const expiredRpgDuels = ctx.services.rpg?.expireDuePublicDuels?.() ?? [];
+      for (const duel of expiredRpgDuels) {
+        try {
+          if (!duel.messageId) continue;
+          const economy = ctx.repos.guildConfig.getOrCreate(duel.guildId).economy;
+          const guild = readyClient.guilds.cache.get(duel.guildId);
+          await editChannelMessage(
+            readyClient,
+            duel.channelId,
+            duel.messageId,
+            buildRpgPublicDuelCard(duel, economy),
+            guild,
+          );
+        } catch (itemErr) {
+          console.error(`[timer:games:rpgDuel:${duel.id}]`, itemErr);
+        }
+      }
+    } catch (subErr) {
+      console.error('[timer:games:rpgDuel]', subErr);
+    }
+
+    try {
+      const settledRaids = ctx.services.rpg?.settleDueCoopRaids?.() ?? [];
+      for (const item of settledRaids) {
+        try {
+          const economy = ctx.repos.guildConfig.getOrCreate(item.raid.guildId).economy;
+          const guild = readyClient.guilds.cache.get(item.raid.guildId);
+          await editChannelMessage(
+            readyClient,
+            item.raid.channelId,
+            item.raid.messageId,
+            buildRpgCoopRaidCard(item.raid, economy),
+            guild,
+          );
+          const humanTags = item.payouts
+            .filter((p) => !p.isMercenary)
+            .map((p) => `<@${p.userId}>`)
+            .join('、');
+          const mvpPayout = item.payouts.find((p) => p.isMvp);
+          const mvpNote = mvpPayout
+            ? ` ｜ 🏅 MVP：${mvpPayout.isMercenary ? `**${mvpPayout.name}**` : `<@${mvpPayout.userId}>`}`
+            : '';
+          const embed = item.succeeded
+            ? createSuccessEmbed(
+                `🐉 集结团本 #${item.raid.id} 讨伐捷报！`,
+                `${item.raid.resultSummary}\n👥 参战勇者：${humanTags || `<@${item.raid.leaderId}>`}${mvpNote}`,
+              )
+            : createInfoEmbed(
+                `🐉 集结团本 #${item.raid.id} 结算通告`,
+                `${item.raid.resultSummary}\n👥 参战勇者：${humanTags || `<@${item.raid.leaderId}>`}${mvpNote}`,
+              );
+          await sendToChannel(
+            readyClient,
+            item.raid.channelId,
+            {
+              allowedMentions: { parse: ['users'] },
+              embeds: [embed],
+            },
+            guild,
+          );
+        } catch (itemErr) {
+          console.error(`[timer:games:rpgCoop:${item.raid.id}]`, itemErr);
+        }
+      }
+    } catch (subErr) {
+      console.error('[timer:games:rpgCoop]', subErr);
     }
 
     try {
