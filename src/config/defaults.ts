@@ -183,16 +183,22 @@ export interface AiConfig {
 
 export const VALID_IMAGE_ASPECT_RATIOS = ['2:3', '3:2', '1:1', '9:16', '16:9'] as const;
 export type ImageAspectRatio = (typeof VALID_IMAGE_ASPECT_RATIOS)[number];
+export const MAX_IMAGE_STEPS = 28;
+export const MAX_IMAGE_BATCH_COUNT = 5;
+export const VALID_IMAGE_BATCH_COUNTS = [1, 2, 3, 4, 5] as const;
+
+export const DEFAULT_NAI_POSITIVE_PROMPT = 'nsfw, rating:explicit, uncensored';
+export const DEFAULT_NAI_NEGATIVE_PROMPT =
+  'lowres, {bad}, error, fewer, extra, missing, worst quality, jpeg artifacts, bad quality, watermark, unfinished, displeasing, chromatic aberration, signature, extra digits, artistic error, username, scan, [abstract], bad anatomy, bad hands, censored, mosaic censoring, bar censor, light censor, pointillism censor';
 
 export interface ImageGenConfig {
   modelOverride: string | null;
   defaultAspectRatio: ImageAspectRatio;
   defaultSteps: number;
   defaultScale: number;
+  defaultCfgRescale: number;
   defaultPositivePrompt: string;
   defaultNegativePrompt: string;
-  translateChinese: boolean;
-  translatorModel: string | null;
   cooldownSec: number;
   maxConcurrency: number;
   maxPendingQueue: number;
@@ -415,14 +421,13 @@ export const DEFAULT_AI_CONFIG: AiConfig = {
 export const DEFAULT_IMAGE_GEN_CONFIG: ImageGenConfig = {
   modelOverride: null,
   defaultAspectRatio: '2:3',
-  defaultSteps: 28,
+  defaultSteps: MAX_IMAGE_STEPS,
   defaultScale: 5.0,
-  defaultPositivePrompt: '',
-  defaultNegativePrompt: '',
-  translateChinese: true,
-  translatorModel: null,
+  defaultCfgRescale: 0.3,
+  defaultPositivePrompt: DEFAULT_NAI_POSITIVE_PROMPT,
+  defaultNegativePrompt: DEFAULT_NAI_NEGATIVE_PROMPT,
   cooldownSec: 15,
-  maxConcurrency: 2,
+  maxConcurrency: 1,
   maxPendingQueue: 6,
   forceSpoiler: false,
   allowedChannelIds: [],

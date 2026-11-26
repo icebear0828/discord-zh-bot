@@ -3,6 +3,10 @@ import Database from 'better-sqlite3';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import {
+  DEFAULT_NAI_NEGATIVE_PROMPT,
+  DEFAULT_NAI_POSITIVE_PROMPT,
+} from '../../src/config/defaults.js';
 import { parseEnv } from '../../src/config/env.js';
 import { createDatabase } from '../../src/db/database.js';
 import { initSchema } from '../../src/db/schema.js';
@@ -368,12 +372,11 @@ describe('env & database schema', () => {
       defaultAspectRatio: '2:3',
       defaultSteps: 28,
       defaultScale: 5.0,
-      defaultPositivePrompt: '',
-      defaultNegativePrompt: '',
-      translateChinese: true,
-      translatorModel: null,
+      defaultCfgRescale: 0.3,
+      defaultPositivePrompt: DEFAULT_NAI_POSITIVE_PROMPT,
+      defaultNegativePrompt: DEFAULT_NAI_NEGATIVE_PROMPT,
       cooldownSec: 15,
-      maxConcurrency: 2,
+      maxConcurrency: 1,
       maxPendingQueue: 6,
       forceSpoiler: false,
       allowedChannelIds: [],
@@ -463,6 +466,7 @@ describe('env & database schema', () => {
       aspectRatio: null,
       steps: null,
       scale: null,
+      batchCount: null,
       negativePrompt: '',
       spoiler: false,
       ephemeral: false,
@@ -470,38 +474,123 @@ describe('env & database schema', () => {
 
     const savedPref = imageRepo.upsertUserPrefs('g1', 'u1', {
       aspectRatio: '16:9',
-      steps: 24,
+      steps: 40,
       scale: 6.5,
+      batchCount: 9,
       negativePrompt: 'lowres, bad hands',
       spoiler: true,
       ephemeral: true,
     });
     expect(savedPref).toMatchObject({
       aspectRatio: '16:9',
-      steps: 24,
+      steps: 28,
       scale: 6.5,
+      batchCount: 5,
       negativePrompt: 'lowres, bad hands',
       spoiler: true,
       ephemeral: true,
     });
     expect(imageRepo.getUserPrefs('g1', 'u1')).toMatchObject({
       aspectRatio: '16:9',
-      steps: 24,
+      steps: 28,
       scale: 6.5,
+      batchCount: 5,
       negativePrompt: 'lowres, bad hands',
       spoiler: true,
       ephemeral: true,
     });
+
+    const validBatchPref = imageRepo.upsertUserPrefs('g1', 'u1', { batchCount: 3 });
+    expect(validBatchPref.batchCount).toBe(3);
 
     imageRepo.resetUserPrefs('g1', 'u1');
     expect(imageRepo.getUserPrefs('g1', 'u1')).toMatchObject({
       aspectRatio: null,
       steps: null,
       scale: null,
+      batchCount: null,
       negativePrompt: '',
       spoiler: false,
       ephemeral: false,
     });
+
+    // Idempotent migration adds batch_count to legacy image_user_prefs tables
+    const legacyImgDb = new Database(':memory:');
+    legacyImgDb.exec(`
+      CREATE TABLE image_generations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild_id TEXT NOT NULL,
+        channel_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        raw_prompt TEXT NOT NULL,
+        final_prompt TEXT NOT NULL,
+        negative_prompt TEXT NOT NULL DEFAULT '',
+        aspect_ratio TEXT NOT NULL,
+        steps INTEGER NOT NULL,
+        scale REAL NOT NULL,
+        seed INTEGER,
+        spoiler INTEGER NOT NULL DEFAULT 0,
+        ephemeral INTEGER NOT NULL DEFAULT 0,
+        model TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('ok', 'error')),
+        error_code TEXT,
+        latency_ms INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL
+      );
+      CREATE TABLE image_user_prefs (
+        guild_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        aspect_ratio TEXT,
+        steps INTEGER,
+        scale REAL,
+        negative_prompt TEXT NOT NULL DEFAULT '',
+        spoiler INTEGER NOT NULL DEFAULT 0,
+        ephemeral INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (guild_id, user_id)
+      );
+    `);
+    const migratedRepo = new ImageRepo(legacyImgDb);
+    const migratedCols = (
+      legacyImgDb.pragma('table_info(image_user_prefs)') as Array<{ name: string }>
+    ).map((c) => c.name);
+    expect(migratedCols).toContain('batch_count');
+    const migratedGenCols = (
+      legacyImgDb.pragma('table_info(image_generations)') as Array<{ name: string }>
+    ).map((c) => c.name);
+    expect(migratedGenCols).toEqual(expect.arrayContaining(['char_captions_json', 'use_coords']));
+    const charRec = migratedRepo.create({
+      guildId: 'g1',
+      channelId: 'c1',
+      userId: 'u1',
+      rawPrompt: '2girls, sunset',
+      finalPrompt: 'nsfw, 2girls, sunset',
+      negativePrompt: 'lowres',
+      charCaptions: [
+        { char_caption: 'girl, silver hair', uc: 'glasses', centers: [{ x: 0.3, y: 0.5 }] },
+        { char_caption: 'girl, black hair', centers: [{ x: 0.7, y: 0.5 }] },
+      ],
+      useCoords: true,
+      aspectRatio: '3:2',
+      steps: 28,
+      scale: 5.0,
+      seed: 888,
+      spoiler: false,
+      ephemeral: false,
+      model: 'nai/nai-diffusion-5-full',
+      status: 'ok',
+      errorCode: null,
+      latencyMs: 5000,
+    });
+    expect(migratedRepo.getById(charRec.id)).toMatchObject({
+      useCoords: true,
+      charCaptions: [
+        { char_caption: 'girl, silver hair', uc: 'glasses', centers: [{ x: 0.3, y: 0.5 }] },
+        { char_caption: 'girl, black hair', centers: [{ x: 0.7, y: 0.5 }] },
+      ],
+    });
+    expect(migratedRepo.upsertUserPrefs('g1', 'u1', { batchCount: 4 }).batchCount).toBe(4);
+    legacyImgDb.close();
 
     const indexes = (
       db.prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all() as Array<{ name: string }>

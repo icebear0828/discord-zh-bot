@@ -38,7 +38,7 @@ import { LlmClient } from './services/llmClient.js';
 import { AiPackStore } from './services/aiPackStore.js';
 import { AiService } from './services/aiService.js';
 import { ImageClient } from './services/imageClient.js';
-import { LiteralTranslationPromptProcessor } from './services/imagePromptProcessor.js';
+import { DefaultImagePromptProcessor } from './services/imagePromptProcessor.js';
 import { ImageService } from './services/imageService.js';
 import { CreditLoanService } from './services/creditLoanService.js';
 import { DuelArenaService } from './services/duelArenaService.js';
@@ -77,10 +77,7 @@ function main(): void {
   const imageRepo = new ImageRepo(db);
   const llmClient = new LlmClient(env.llm);
   const imageClient = new ImageClient(env.image);
-  const imagePromptProcessor = new LiteralTranslationPromptProcessor(
-    llmClient,
-    env.llm?.fallbackModel || env.llm?.model,
-  );
+  const imagePromptProcessor = new DefaultImagePromptProcessor();
   const aiPacksDir =
     env.dbPath === ':memory:'
       ? undefined

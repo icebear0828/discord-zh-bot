@@ -1,8 +1,11 @@
 import type Database from 'better-sqlite3';
 import {
+  MAX_IMAGE_BATCH_COUNT,
+  MAX_IMAGE_STEPS,
   VALID_IMAGE_ASPECT_RATIOS,
   type ImageAspectRatio,
 } from '../../config/defaults.js';
+import type { NaiCharCaption, NaiCharCaptionCenter } from '../../services/imageClient.js';
 
 export type ImageGenStatus = 'ok' | 'error';
 
@@ -16,6 +19,8 @@ export interface ImageGenerationRecord {
   rawPrompt: string;
   finalPrompt: string;
   negativePrompt: string;
+  charCaptions: NaiCharCaption[];
+  useCoords: boolean;
   aspectRatio: ImageAspectRatio;
   steps: number;
   scale: number;
@@ -36,6 +41,8 @@ export interface CreateImageGenerationInput {
   rawPrompt: string;
   finalPrompt: string;
   negativePrompt: string;
+  charCaptions?: readonly NaiCharCaption[];
+  useCoords?: boolean;
   aspectRatio: ImageAspectRatio;
   steps: number;
   scale: number;
@@ -62,6 +69,7 @@ export interface ImageUserPrefs {
   aspectRatio: ImageAspectRatio | null;
   steps: number | null;
   scale: number | null;
+  batchCount: number | null;
   negativePrompt: string;
   spoiler: boolean;
   ephemeral: boolean;
@@ -78,6 +86,7 @@ interface ImageUserPrefsRow {
   aspect_ratio: string | null;
   steps: number | null;
   scale: number | null;
+  batch_count: number | null;
   negative_prompt: string;
   spoiler: number;
   ephemeral: number;
@@ -92,6 +101,8 @@ interface ImageGenerationRow {
   raw_prompt: string;
   final_prompt: string;
   negative_prompt: string;
+  char_captions_json?: string;
+  use_coords?: number;
   aspect_ratio: string;
   steps: number;
   scale: number;
@@ -114,6 +125,8 @@ CREATE TABLE IF NOT EXISTS image_generations (
   raw_prompt TEXT NOT NULL,
   final_prompt TEXT NOT NULL,
   negative_prompt TEXT NOT NULL DEFAULT '',
+  char_captions_json TEXT NOT NULL DEFAULT '[]',
+  use_coords INTEGER NOT NULL DEFAULT 0,
   aspect_ratio TEXT NOT NULL,
   steps INTEGER NOT NULL,
   scale REAL NOT NULL,
@@ -139,6 +152,7 @@ CREATE TABLE IF NOT EXISTS image_user_prefs (
   aspect_ratio TEXT,
   steps INTEGER,
   scale REAL,
+  batch_count INTEGER,
   negative_prompt TEXT NOT NULL DEFAULT '',
   spoiler INTEGER NOT NULL DEFAULT 0,
   ephemeral INTEGER NOT NULL DEFAULT 0,
@@ -149,6 +163,63 @@ CREATE TABLE IF NOT EXISTS image_user_prefs (
 
 export function initImageSchema(db: Database.Database): void {
   db.exec(IMAGE_SCHEMA_SQL);
+  const genCols = db.pragma('table_info(image_generations)') as Array<{ name: string }>;
+  if (!genCols.some((col) => col.name === 'char_captions_json')) {
+    db.exec("ALTER TABLE image_generations ADD COLUMN char_captions_json TEXT NOT NULL DEFAULT '[]';");
+  }
+  if (!genCols.some((col) => col.name === 'use_coords')) {
+    db.exec('ALTER TABLE image_generations ADD COLUMN use_coords INTEGER NOT NULL DEFAULT 0;');
+  }
+
+  const cols = db.pragma('table_info(image_user_prefs)') as Array<{ name: string }>;
+  if (!cols.some((col) => col.name === 'batch_count')) {
+    db.exec('ALTER TABLE image_user_prefs ADD COLUMN batch_count INTEGER;');
+  }
+}
+
+function isObjectRecord(val: unknown): val is Record<string, unknown> {
+  return typeof val === 'object' && val !== null && !Array.isArray(val);
+}
+
+function parseCharCaptionsJson(raw: string | undefined): NaiCharCaption[] {
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    const out: NaiCharCaption[] = [];
+    for (const item of parsed) {
+      if (!isObjectRecord(item)) continue;
+      const caption = typeof item['char_caption'] === 'string' ? item['char_caption'].trim() : '';
+      if (!caption) continue;
+      const uc = typeof item['uc'] === 'string' && item['uc'].trim() ? item['uc'].trim() : undefined;
+      let centers: NaiCharCaptionCenter[] | undefined;
+      if (Array.isArray(item['centers'])) {
+        const validCenters: NaiCharCaptionCenter[] = [];
+        for (const c of item['centers']) {
+          if (
+            isObjectRecord(c) &&
+            typeof c['x'] === 'number' &&
+            Number.isFinite(c['x']) &&
+            typeof c['y'] === 'number' &&
+            Number.isFinite(c['y'])
+          ) {
+            validCenters.push({ x: c['x'], y: c['y'] });
+          }
+        }
+        if (validCenters.length > 0) {
+          centers = validCenters;
+        }
+      }
+      out.push({
+        char_caption: caption,
+        ...(uc ? { uc } : {}),
+        ...(centers ? { centers } : {}),
+      });
+    }
+    return out;
+  } catch {
+    return [];
+  }
 }
 
 function normalizeAspectRatio(raw: string): ImageAspectRatio {
@@ -167,6 +238,8 @@ function mapRow(row: ImageGenerationRow): ImageGenerationRecord {
     rawPrompt: row.raw_prompt,
     finalPrompt: row.final_prompt,
     negativePrompt: row.negative_prompt,
+    charCaptions: parseCharCaptionsJson(row.char_captions_json),
+    useCoords: row.use_coords === 1,
     aspectRatio: normalizeAspectRatio(row.aspect_ratio),
     steps: row.steps,
     scale: row.scale,
@@ -192,11 +265,15 @@ function mapUserPrefsRow(row: ImageUserPrefsRow): ImageUserPrefs {
     aspectRatio,
     steps:
       row.steps !== null && Number.isFinite(row.steps)
-        ? Math.max(1, Math.min(50, Math.round(row.steps)))
+        ? Math.max(1, Math.min(MAX_IMAGE_STEPS, Math.round(row.steps)))
         : null,
     scale:
       row.scale !== null && Number.isFinite(row.scale)
         ? Math.max(1.0, Math.min(10.0, Number(row.scale.toFixed(1))))
+        : null,
+    batchCount:
+      row.batch_count !== null && Number.isFinite(row.batch_count)
+        ? Math.max(1, Math.min(MAX_IMAGE_BATCH_COUNT, Math.round(row.batch_count)))
         : null,
     negativePrompt: row.negative_prompt ?? '',
     spoiler: row.spoiler === 1,
@@ -212,14 +289,17 @@ export class ImageRepo {
 
   create(input: CreateImageGenerationInput): ImageGenerationRecord {
     const createdAt = input.createdAt ?? Date.now();
+    const charCaptionsJson = JSON.stringify(input.charCaptions ?? []);
+    const useCoordsInt = input.useCoords ? 1 : 0;
     return this.db.transaction(() => {
       const info = this.db
         .prepare(
           `INSERT INTO image_generations (
             guild_id, channel_id, user_id, raw_prompt, final_prompt, negative_prompt,
+            char_captions_json, use_coords,
             aspect_ratio, steps, scale, seed, spoiler, ephemeral, model, status, error_code,
             latency_ms, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           input.guildId,
@@ -228,6 +308,8 @@ export class ImageRepo {
           input.rawPrompt,
           input.finalPrompt,
           input.negativePrompt,
+          charCaptionsJson,
+          useCoordsInt,
           input.aspectRatio,
           Math.round(input.steps),
           input.scale,
@@ -333,6 +415,7 @@ export class ImageRepo {
       aspectRatio: null,
       steps: null,
       scale: null,
+      batchCount: null,
       negativePrompt: '',
       spoiler: false,
       ephemeral: false,
@@ -352,7 +435,7 @@ export class ImageRepo {
     const nextSteps =
       patch.steps !== undefined
         ? patch.steps !== null && Number.isFinite(patch.steps)
-          ? Math.max(1, Math.min(50, Math.round(patch.steps)))
+          ? Math.max(1, Math.min(MAX_IMAGE_STEPS, Math.round(patch.steps)))
           : null
         : existing.steps;
     const nextScale =
@@ -361,6 +444,12 @@ export class ImageRepo {
           ? Math.max(1.0, Math.min(10.0, Number(patch.scale.toFixed(1))))
           : null
         : existing.scale;
+    const nextBatchCount =
+      patch.batchCount !== undefined
+        ? patch.batchCount !== null && Number.isFinite(patch.batchCount)
+          ? Math.max(1, Math.min(MAX_IMAGE_BATCH_COUNT, Math.round(patch.batchCount)))
+          : null
+        : existing.batchCount;
     const nextNeg =
       patch.negativePrompt !== undefined
         ? patch.negativePrompt.trim().slice(0, 1000)
@@ -372,12 +461,13 @@ export class ImageRepo {
     this.db
       .prepare(
         `INSERT INTO image_user_prefs (
-          guild_id, user_id, aspect_ratio, steps, scale, negative_prompt, spoiler, ephemeral, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          guild_id, user_id, aspect_ratio, steps, scale, batch_count, negative_prompt, spoiler, ephemeral, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(guild_id, user_id) DO UPDATE SET
           aspect_ratio = excluded.aspect_ratio,
           steps = excluded.steps,
           scale = excluded.scale,
+          batch_count = excluded.batch_count,
           negative_prompt = excluded.negative_prompt,
           spoiler = excluded.spoiler,
           ephemeral = excluded.ephemeral,
@@ -389,6 +479,7 @@ export class ImageRepo {
         nextAspect,
         nextSteps,
         nextScale,
+        nextBatchCount,
         nextNeg,
         nextSpoiler ? 1 : 0,
         nextEphemeral ? 1 : 0,
@@ -401,6 +492,7 @@ export class ImageRepo {
       aspectRatio: nextAspect,
       steps: nextSteps,
       scale: nextScale,
+      batchCount: nextBatchCount,
       negativePrompt: nextNeg,
       spoiler: nextSpoiler,
       ephemeral: nextEphemeral,

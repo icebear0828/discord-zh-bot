@@ -906,7 +906,7 @@ describe('menuBuilder Discord component constraints & schema integration', () =>
       undefined,
     );
     assertDiscordMessageLimits(emptyUserImg, 'image:empty');
-    expect(emptyUserImg.components).toHaveLength(3);
+    expect(emptyUserImg.components).toHaveLength(4);
 
     for (let i = 1; i <= 20; i++) {
       ctx.repos.image!.create({
@@ -944,7 +944,7 @@ describe('menuBuilder Discord component constraints & schema integration', () =>
       { type: 'info', text: '提示' },
     );
     assertDiscordMessageLimits(busyUserImg, 'image:busy:user');
-    expect(busyUserImg.components).toHaveLength(4);
+    expect(busyUserImg.components).toHaveLength(5);
 
     const busyAdminImg = buildUserImageMenuView(
       ctx,
@@ -954,7 +954,7 @@ describe('menuBuilder Discord component constraints & schema integration', () =>
       undefined,
     );
     assertDiscordMessageLimits(busyAdminImg, 'image:busy:admin');
-    expect(busyAdminImg.components).toHaveLength(4);
+    expect(busyAdminImg.components).toHaveLength(5);
 
     const adminImgBasic = buildAdminImageView(
       ctx,

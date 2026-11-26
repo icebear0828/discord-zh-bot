@@ -1,4 +1,6 @@
 import {
+  MAX_IMAGE_BATCH_COUNT,
+  MAX_IMAGE_STEPS,
   VALID_IMAGE_ASPECT_RATIOS,
   type GuildConfig,
   type ImageAspectRatio,
@@ -12,9 +14,14 @@ import type {
   ImageUserPrefs,
   ImageUserPrefsPatch,
 } from '../db/repositories/imageRepo.js';
-import { ImageApiError, ImageClient, type ImageErrorCode } from './imageClient.js';
 import {
-  LiteralTranslationPromptProcessor,
+  ImageApiError,
+  ImageClient,
+  type ImageErrorCode,
+  type NaiCharCaption,
+} from './imageClient.js';
+import {
+  DefaultImagePromptProcessor,
   type ImagePromptProcessor,
 } from './imagePromptProcessor.js';
 
@@ -36,18 +43,48 @@ export interface GenerateImageInput {
   negativePrompt?: string;
   steps?: number;
   scale?: number;
+  cfgRescale?: number;
   seed?: number | null;
+  charCaptions?: readonly NaiCharCaption[];
+  rawCharacterPrompt?: string;
+  useCoords?: boolean;
   spoiler?: boolean;
   ephemeral?: boolean;
   isAdmin?: boolean;
 }
+
+export interface GenerateImageBatchInput extends GenerateImageInput {
+  count?: number;
+  onProgress?: (completed: number, total: number) => Promise<void> | void;
+}
+
+export interface ImageBatchItem {
+  buffer: Buffer;
+  record: ImageGenerationRecord;
+  attempts: number;
+}
+
+export type GenerateImageBatchResult =
+  | {
+      ok: true;
+      items: ImageBatchItem[];
+      requestedCount: number;
+      failedCount: number;
+      lastErrorMessage?: string;
+    }
+  | {
+      ok: false;
+      errorCode: ImageServiceErrorCode;
+      errorMessage: string;
+      errorDetail?: string;
+      retryAfterSec?: number;
+    };
 
 export type GenerateImageResult =
   | {
       ok: true;
       buffer: Buffer;
       record: ImageGenerationRecord;
-      translated: boolean;
       attempts: number;
     }
   | {
@@ -63,12 +100,32 @@ export interface ImageQueueSnapshot {
   pending: number;
 }
 
+export interface ImageServiceDeps {
+  sleepFn?: (ms: number) => Promise<void>;
+  randomDelayMsFn?: () => number;
+}
+
 interface QueuedImageJob {
   run: () => Promise<void>;
 }
 
-const MAX_PROMPT_LENGTH = 1500;
+const MAX_PROMPT_LENGTH = 4000;
+const MAX_CHAR_PROMPT_LENGTH = 3000;
 const MAX_NEGATIVE_PROMPT_LENGTH = 1000;
+const MAX_SEED_VALUE = 2_147_483_647;
+const FATAL_ERROR_CODES: ReadonlySet<ImageErrorCode> = new Set([
+  'not_configured',
+  'auth_error',
+  'bad_request',
+]);
+
+function defaultSleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function defaultRandomDelayMs(): number {
+  return 1000 + Math.floor(Math.random() * 2001);
+}
 
 export function isValidImageAspectRatio(value: string): value is ImageAspectRatio {
   return (VALID_IMAGE_ASPECT_RATIOS as readonly string[]).includes(value);
@@ -77,14 +134,20 @@ export function isValidImageAspectRatio(value: string): value is ImageAspectRati
 export class ImageService {
   private readonly userLastRunAt = new Map<string, number>();
   private readonly queue: QueuedImageJob[] = [];
+  private readonly sleepFn: (ms: number) => Promise<void>;
+  private readonly randomDelayMsFn: () => number;
   private activeCount = 0;
 
   constructor(
     private readonly guildConfigRepo: GuildConfigRepo,
     private readonly imageRepo: ImageRepo,
     private readonly imageClient: ImageClient,
-    private promptProcessor: ImagePromptProcessor = new LiteralTranslationPromptProcessor(),
-  ) {}
+    private promptProcessor: ImagePromptProcessor = new DefaultImagePromptProcessor(),
+    deps?: ImageServiceDeps,
+  ) {
+    this.sleepFn = deps?.sleepFn ?? defaultSleep;
+    this.randomDelayMsFn = deps?.randomDelayMsFn ?? defaultRandomDelayMs;
+  }
 
   setPromptProcessor(processor: ImagePromptProcessor): void {
     this.promptProcessor = processor;
@@ -260,7 +323,21 @@ export class ImageService {
     }
   }
 
-  async generateImage(input: GenerateImageInput): Promise<GenerateImageResult> {
+  private rollbackCooldown(
+    cooldownKey: string,
+    runTimestamp: number,
+    prevTimestamp: number | undefined,
+  ): void {
+    if (this.userLastRunAt.get(cooldownKey) === runTimestamp) {
+      if (prevTimestamp !== undefined) {
+        this.userLastRunAt.set(cooldownKey, prevTimestamp);
+      } else {
+        this.userLastRunAt.delete(cooldownKey);
+      }
+    }
+  }
+
+  async generateBatch(input: GenerateImageBatchInput): Promise<GenerateImageBatchResult> {
     if (!this.imageClient.isConfigured()) {
       return {
         ok: false,
@@ -316,27 +393,35 @@ export class ImageService {
     this.userLastRunAt.set(cooldownKey, nowMs);
 
     const userPrefs = this.imageRepo.getUserPrefs(input.guildId, input.userId);
+    const requestedCount = Math.max(
+      1,
+      Math.min(MAX_IMAGE_BATCH_COUNT, Math.round(input.count ?? userPrefs.batchCount ?? 1)),
+    );
     const aspectRatio =
       input.aspectRatio && isValidImageAspectRatio(input.aspectRatio)
         ? input.aspectRatio
         : (userPrefs.aspectRatio ?? imageCfg.defaultAspectRatio);
     const steps = Math.max(
       1,
-      Math.min(50, Math.round(input.steps ?? userPrefs.steps ?? imageCfg.defaultSteps)),
+      Math.min(MAX_IMAGE_STEPS, Math.round(input.steps ?? userPrefs.steps ?? imageCfg.defaultSteps)),
     );
     const scale = Math.max(
       1.0,
       Math.min(10.0, Number((input.scale ?? userPrefs.scale ?? imageCfg.defaultScale).toFixed(1))),
     );
+    const cfgRescale = Math.max(
+      0,
+      Math.min(1.0, Number((input.cfgRescale ?? imageCfg.defaultCfgRescale).toFixed(2))),
+    );
     const rawUserNeg =
       input.negativePrompt !== undefined ? input.negativePrompt : userPrefs.negativePrompt;
     const userNeg = rawUserNeg.trim().slice(0, MAX_NEGATIVE_PROMPT_LENGTH);
-    const seed =
+    const baseSeed =
       input.seed !== undefined &&
       input.seed !== null &&
       Number.isInteger(input.seed) &&
       input.seed >= 0
-        ? input.seed
+        ? Math.min(MAX_SEED_VALUE, input.seed)
         : null;
     const spoiler = Boolean(
       imageCfg.forceSpoiler || (input.spoiler !== undefined ? input.spoiler : userPrefs.spoiler),
@@ -346,12 +431,16 @@ export class ImageService {
     );
     const effectiveModel = imageCfg.modelOverride?.trim() || this.imageClient.getDefaultModel();
 
-    return new Promise<GenerateImageResult>((resolve) => {
+    return new Promise<GenerateImageBatchResult>((resolve) => {
       const execute = async (): Promise<void> => {
-        const startedAt = Date.now();
+        let effectiveRawPrompt = rawPrompt;
         let finalPrompt = rawPrompt;
         let finalNegativePrompt = userNeg;
-        let translated = false;
+        let finalCharCaptions: NaiCharCaption[] = input.charCaptions
+          ? [...input.charCaptions]
+          : [];
+        let finalUseCoords = Boolean(input.useCoords);
+        const rawCharPrompt = input.rawCharacterPrompt?.trim().slice(0, MAX_CHAR_PROMPT_LENGTH);
 
         try {
           const processed = await this.promptProcessor.process({
@@ -359,61 +448,25 @@ export class ImageService {
             userNegativePrompt: userNeg,
             defaultPositivePrompt: imageCfg.defaultPositivePrompt,
             defaultNegativePrompt: imageCfg.defaultNegativePrompt,
-            translateChinese: imageCfg.translateChinese,
-            translatorModel: imageCfg.translatorModel,
+            ...(input.charCaptions && input.charCaptions.length > 0
+              ? { charCaptions: input.charCaptions }
+              : {}),
+            ...(rawCharPrompt ? { rawCharacterPrompt: rawCharPrompt } : {}),
+            ...(input.useCoords !== undefined ? { useCoords: input.useCoords } : {}),
           });
-          finalPrompt = processed.finalPrompt || rawPrompt;
-          finalNegativePrompt = processed.finalNegativePrompt;
-          translated = processed.translated;
-
-          const genRes = await this.imageClient.generate({
-            model: effectiveModel || undefined,
-            prompt: finalPrompt,
-            negativePrompt: finalNegativePrompt || undefined,
-            aspectRatio,
-            steps,
-            scale,
-            seed: seed ?? undefined,
-          });
-
-          const latencyMs = Math.max(0, Date.now() - startedAt);
-          const record = this.imageRepo.create({
-            guildId: input.guildId,
-            channelId: input.channelId,
-            userId: input.userId,
-            rawPrompt,
-            finalPrompt,
-            negativePrompt: finalNegativePrompt,
-            aspectRatio,
-            steps,
-            scale,
-            seed,
-            spoiler,
-            ephemeral,
-            model: genRes.model,
-            status: 'ok',
-            errorCode: null,
-            latencyMs,
-          });
-
-          resolve({
-            ok: true,
-            buffer: genRes.buffer,
-            record,
-            translated,
-            attempts: genRes.attempts,
-          });
-        } catch (err) {
-          // Roll back cooldown if upstream failed so users are not penalized
-          if (this.userLastRunAt.get(cooldownKey) === nowMs) {
-            if (prevTimestamp !== undefined) {
-              this.userLastRunAt.set(cooldownKey, prevTimestamp);
-            } else {
-              this.userLastRunAt.delete(cooldownKey);
-            }
+          if (processed.effectiveRawPrompt?.trim()) {
+            effectiveRawPrompt = processed.effectiveRawPrompt.trim();
           }
-
-          const latencyMs = Math.max(0, Date.now() - startedAt);
+          finalPrompt = processed.finalPrompt || effectiveRawPrompt;
+          finalNegativePrompt = processed.finalNegativePrompt;
+          if (processed.charCaptions !== undefined) {
+            finalCharCaptions = processed.charCaptions;
+          }
+          if (processed.useCoords !== undefined) {
+            finalUseCoords = processed.useCoords;
+          }
+        } catch (err) {
+          this.rollbackCooldown(cooldownKey, nowMs, prevTimestamp);
           const apiErr =
             err instanceof ImageApiError
               ? err
@@ -421,43 +474,177 @@ export class ImageService {
                   code: 'unknown',
                   attempts: 1,
                   message: err instanceof Error ? err.message : String(err),
-                  userMessage: '生图服务发生异常，请稍后重试。',
+                  userMessage: '生图提示词处理异常，请稍后重试。',
                 });
-
-          try {
-            this.imageRepo.create({
-              guildId: input.guildId,
-              channelId: input.channelId,
-              userId: input.userId,
-              rawPrompt,
-              finalPrompt,
-              negativePrompt: finalNegativePrompt,
-              aspectRatio,
-              steps,
-              scale,
-              seed,
-              spoiler,
-              ephemeral,
-              model: effectiveModel || 'unknown',
-              status: 'error',
-              errorCode: apiErr.code,
-              latencyMs,
-            });
-          } catch {
-            // Best-effort logging
-          }
-
           resolve({
             ok: false,
             errorCode: apiErr.code,
             errorMessage: apiErr.userMessage,
             errorDetail: apiErr.message,
           });
+          return;
         }
+
+        const items: ImageBatchItem[] = [];
+        let failedCount = 0;
+        let lastApiErr: ImageApiError | null = null;
+
+        for (let i = 0; i < requestedCount; i++) {
+          if (i > 0) {
+            const delayMs = Math.max(0, Math.round(this.randomDelayMsFn()));
+            await this.sleepFn(delayMs);
+          }
+
+          const itemSeed = baseSeed !== null ? (baseSeed + i) % MAX_SEED_VALUE : null;
+          const itemStart = Date.now();
+
+          try {
+            const genRes = await this.imageClient.generate({
+              model: effectiveModel || undefined,
+              prompt: finalPrompt,
+              negativePrompt: finalNegativePrompt || undefined,
+              aspectRatio,
+              steps,
+              scale,
+              cfgRescale,
+              seed: itemSeed ?? undefined,
+              charCaptions: finalCharCaptions.length > 0 ? finalCharCaptions : undefined,
+              useCoords: finalUseCoords ? true : undefined,
+            });
+
+            const latencyMs = Math.max(0, Date.now() - itemStart);
+            const record = this.imageRepo.create({
+              guildId: input.guildId,
+              channelId: input.channelId,
+              userId: input.userId,
+              rawPrompt: effectiveRawPrompt,
+              finalPrompt,
+              negativePrompt: finalNegativePrompt,
+              charCaptions: finalCharCaptions,
+              useCoords: finalUseCoords,
+              aspectRatio,
+              steps,
+              scale,
+              seed: itemSeed,
+              spoiler,
+              ephemeral,
+              model: genRes.model,
+              status: 'ok',
+              errorCode: null,
+              latencyMs,
+            });
+
+            items.push({
+              buffer: genRes.buffer,
+              record,
+              attempts: genRes.attempts,
+            });
+
+            if (input.onProgress && i + 1 < requestedCount) {
+              try {
+                await input.onProgress(i + 1, requestedCount);
+              } catch {
+                // Do not abort batch generation if transient progress edit fails
+              }
+            }
+          } catch (err) {
+            const latencyMs = Math.max(0, Date.now() - itemStart);
+            const apiErr =
+              err instanceof ImageApiError
+                ? err
+                : new ImageApiError({
+                    code: 'unknown',
+                    attempts: 1,
+                    message: err instanceof Error ? err.message : String(err),
+                    userMessage: '生图服务发生异常，请稍后重试。',
+                  });
+
+            lastApiErr = apiErr;
+            failedCount += 1;
+
+            try {
+              this.imageRepo.create({
+                guildId: input.guildId,
+                channelId: input.channelId,
+                userId: input.userId,
+                rawPrompt: effectiveRawPrompt,
+                finalPrompt,
+                negativePrompt: finalNegativePrompt,
+                charCaptions: finalCharCaptions,
+                useCoords: finalUseCoords,
+                aspectRatio,
+                steps,
+                scale,
+                seed: itemSeed,
+                spoiler,
+                ephemeral,
+                model: effectiveModel || 'unknown',
+                status: 'error',
+                errorCode: apiErr.code,
+                latencyMs,
+              });
+            } catch {
+              // Best-effort logging
+            }
+
+            if (FATAL_ERROR_CODES.has(apiErr.code)) {
+              failedCount = requestedCount - items.length;
+              break;
+            }
+          }
+        }
+
+        if (items.length > 0) {
+          resolve({
+            ok: true,
+            items,
+            requestedCount,
+            failedCount,
+            ...(lastApiErr ? { lastErrorMessage: lastApiErr.userMessage } : {}),
+          });
+          return;
+        }
+
+        this.rollbackCooldown(cooldownKey, nowMs, prevTimestamp);
+        const finalErr =
+          lastApiErr ??
+          new ImageApiError({
+            code: 'unknown',
+            attempts: 1,
+            message: 'Unknown batch image generation failure',
+            userMessage: '生图服务异常，请稍后重试。',
+          });
+        resolve({
+          ok: false,
+          errorCode: finalErr.code,
+          errorMessage: finalErr.userMessage,
+          errorDetail: finalErr.message,
+        });
       };
 
       this.queue.push({ run: execute });
       this.drainQueue(maxConcurrency);
     });
+  }
+
+  async generateImage(input: GenerateImageInput): Promise<GenerateImageResult> {
+    const res = await this.generateBatch({ ...input, count: 1 });
+    if (!res.ok) {
+      return res;
+    }
+    const first = res.items[0];
+    if (!first) {
+      return {
+        ok: false,
+        errorCode: 'unknown',
+        errorMessage: '生图服务返回空结果，请稍后重试。',
+      };
+    }
+    return {
+      ok: true,
+      buffer: first.buffer,
+      record: first.record,
+      attempts: first.attempts,
+    };
   }
 }

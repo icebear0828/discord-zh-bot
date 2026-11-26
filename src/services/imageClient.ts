@@ -34,6 +34,17 @@ export class ImageApiError extends Error {
   }
 }
 
+export interface NaiCharCaptionCenter {
+  x: number;
+  y: number;
+}
+
+export interface NaiCharCaption {
+  char_caption: string;
+  uc?: string;
+  centers?: readonly NaiCharCaptionCenter[];
+}
+
 export interface ImageGenerateRequest {
   model?: string;
   prompt: string;
@@ -41,7 +52,10 @@ export interface ImageGenerateRequest {
   aspectRatio: ImageAspectRatio;
   steps: number;
   scale: number;
+  cfgRescale?: number;
   seed?: number;
+  charCaptions?: readonly NaiCharCaption[];
+  useCoords?: boolean;
   timeoutMs?: number;
 }
 
@@ -216,8 +230,25 @@ export class ImageClient {
     if (neg) {
       payload['negative_prompt'] = neg;
     }
+    if (
+      request.cfgRescale !== undefined &&
+      Number.isFinite(request.cfgRescale) &&
+      request.cfgRescale > 0
+    ) {
+      payload['cfg_rescale'] = Number(Math.max(0, Math.min(1.0, request.cfgRescale)).toFixed(2));
+    }
     if (request.seed !== undefined && Number.isInteger(request.seed) && request.seed >= 0) {
       payload['seed'] = request.seed;
+    }
+    if (request.charCaptions && request.charCaptions.length > 0) {
+      payload['char_captions'] = request.charCaptions.map((item) => ({
+        char_caption: item.char_caption,
+        ...(item.uc?.trim() ? { uc: item.uc.trim() } : {}),
+        ...(item.centers && item.centers.length > 0 ? { centers: item.centers } : {}),
+      }));
+    }
+    if (request.useCoords === true) {
+      payload['use_coords'] = true;
     }
 
     let lastErr: ImageApiError | null = null;

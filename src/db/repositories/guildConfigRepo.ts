@@ -16,6 +16,7 @@ import {
   DEFAULT_RPG_CONFIG,
   DEFAULT_TICKET_CONFIG,
   DEFAULT_WELCOME_CONFIG,
+  MAX_IMAGE_STEPS,
   VALID_IMAGE_ASPECT_RATIOS,
   type AiChannelOverride,
   type AiConfig,
@@ -156,7 +157,7 @@ function sanitizeImageGenConfig(raw: string | undefined): ImageGenConfig {
       obj['defaultSteps'],
       DEFAULT_IMAGE_GEN_CONFIG.defaultSteps,
       1,
-      50,
+      MAX_IMAGE_STEPS,
       true,
     ),
     defaultScale: sanitizeBoundedNumber(
@@ -164,6 +165,14 @@ function sanitizeImageGenConfig(raw: string | undefined): ImageGenConfig {
       DEFAULT_IMAGE_GEN_CONFIG.defaultScale,
       1.0,
       10.0,
+    ),
+    defaultCfgRescale: Number(
+      sanitizeBoundedNumber(
+        obj['defaultCfgRescale'],
+        DEFAULT_IMAGE_GEN_CONFIG.defaultCfgRescale,
+        0,
+        1.0,
+      ).toFixed(2),
     ),
     defaultPositivePrompt:
       typeof obj['defaultPositivePrompt'] === 'string'
@@ -173,11 +182,6 @@ function sanitizeImageGenConfig(raw: string | undefined): ImageGenConfig {
       typeof obj['defaultNegativePrompt'] === 'string'
         ? obj['defaultNegativePrompt'].trim().slice(0, 800)
         : DEFAULT_IMAGE_GEN_CONFIG.defaultNegativePrompt,
-    translateChinese:
-      typeof obj['translateChinese'] === 'boolean'
-        ? obj['translateChinese']
-        : DEFAULT_IMAGE_GEN_CONFIG.translateChinese,
-    translatorModel: sanitizeNullableString(obj['translatorModel']),
     cooldownSec: sanitizeBoundedNumber(
       obj['cooldownSec'],
       DEFAULT_IMAGE_GEN_CONFIG.cooldownSec,
