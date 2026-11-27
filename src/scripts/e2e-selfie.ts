@@ -4,6 +4,7 @@ import { createDatabase } from '../db/database.js';
 import { AiMemoryRepo } from '../db/repositories/aiMemoryRepo.js';
 import { GuildConfigRepo } from '../db/repositories/guildConfigRepo.js';
 import { ImageRepo } from '../db/repositories/imageRepo.js';
+import { listOcOutfits } from '../services/aiOcSelfie.js';
 import { AiPackStore } from '../services/aiPackStore.js';
 import { AiService } from '../services/aiService.js';
 import { ImageClient } from '../services/imageClient.js';
@@ -82,11 +83,9 @@ async function runSelfieE2E(): Promise<void> {
     }
 
     const loadedProfiles = aiService.listOcProfiles();
+    const posesCount = aiService.listOcPoses().length;
     const primaryPresetId = loadedProfiles[0]?.id ?? 'custom';
     const secondaryPreset = loadedProfiles[1];
-    console.log(
-      `[E2E-SELFIE] 已加载本地私有 OC 预设数=${loadedProfiles.length} | 默认=${primaryPresetId}${secondaryPreset ? ` | 次选=${secondaryPreset.id}` : ''}`,
-    );
 
     // Lock /draw to another channel so we verify chat selfie works in general chat with 0s cooldown
     const baseCfg = guildConfigRepo.getOrCreate(GUILD_ID);
@@ -96,16 +95,36 @@ async function runSelfieE2E(): Promise<void> {
     });
     guildConfigRepo.updateAi(GUILD_ID, {
       ...baseCfg.ai,
+      userProfiles: [
+        {
+          userId: '100000000000000003',
+          alias: '专属偏爱主人',
+          relation: 'vip',
+          note: '你最偏爱亲近的心上人，提出亲密拥抱合照请求时会害羞答应配合',
+        },
+      ],
       selfie: {
         ...baseCfg.ai.selfie,
         enabled: true,
         ocPreset: primaryPresetId,
+        outfitMode: 'ootd',
+        ootdOffset: 1,
         cooldownSec: 0,
         allowNsfw: true,
       },
     });
 
-    // E2E #1: Default OC portrait selfie in chat
+    const activeOc = aiService.resolveActiveOcProfile(
+      guildConfigRepo.getOrCreate(GUILD_ID).ai.selfie,
+    );
+    const todayOutfit = aiService.resolveActiveOcOutfit(
+      guildConfigRepo.getOrCreate(GUILD_ID).ai.selfie,
+    );
+    console.log(
+      `[E2E-SELFIE] 已加载 OC=${loadedProfiles.length} | 姿势库=${posesCount} | 当前OC=${activeOc.id}(衣柜${listOcOutfits(activeOc).length}套) | 今日OOTD=${todayOutfit.id}(${todayOutfit.name})`,
+    );
+
+    // E2E #1: Daily OOTD + Pose Preset (招财猫猫爪俯拍)
     const t1 = Date.now();
     const chat1 = await aiService.generateReply(
       {
@@ -115,7 +134,7 @@ async function runSelfieE2E(): Promise<void> {
         userName: '路人甲',
         messageId: 'm-selfie-1',
         messageTimestamp: t1,
-        userContent: '发张你现在的大头自拍照片给我看看',
+        userContent: '对我做个招财猫猫爪手势，从上往下俯拍一张发来看看',
       },
       BOT_ID,
     );
@@ -151,12 +170,12 @@ async function runSelfieE2E(): Promise<void> {
     }
     const dim1 = inspectPng(img1.buffer, 'E2E #1');
     console.log(
-      `[E2E #1/4 默认OC自拍] OK (${Date.now() - t1}ms, ${dim1.width}x${dim1.height}, bytes=${img1.buffer.length}, framing=${chat1.selfiePrompt.framing}) | 文本: ${chat1.replyText.replace(/\s+/g, ' ').slice(0, 100)}`,
+      `[E2E #1/5 今日OOTD(${chat1.selfiePrompt.outfitId})+姿势预设(${chat1.selfiePrompt.poseId})] OK (${Date.now() - t1}ms, ${dim1.width}x${dim1.height}, bytes=${img1.buffer.length}) | 文本: ${chat1.replyText.replace(/\s+/g, ' ').slice(0, 90)}`,
     );
 
     await sleep(1600);
 
-    // E2E #2: Full-body scene with animal (verifies FULL costume tier + anti-chimera ear/tail guard)
+    // E2E #2: Per-shot wardrobe outfit swap (换水手服/学院制服拍张女孩坐全身照) without mutating today's OOTD
     const t2 = Date.now();
     const chat2 = await aiService.generateReply(
       {
@@ -166,7 +185,7 @@ async function runSelfieE2E(): Promise<void> {
         userName: '路人乙',
         messageId: 'm-selfie-2',
         messageTimestamp: t2,
-        userContent: '拍一张你在院子里蹲着摸三花猫的全身照发出来看看',
+        userContent: '换你衣柜里那套水手服校服，用女孩坐的姿势拍张全身照给我看看',
       },
       BOT_ID,
     );
@@ -196,32 +215,22 @@ async function runSelfieE2E(): Promise<void> {
     }
     const dim2 = inspectPng(img2.buffer, 'E2E #2');
     console.log(
-      `[E2E #2/4 默认OC全身撸猫] OK (${Date.now() - t2}ms, ${dim2.width}x${dim2.height}, bytes=${img2.buffer.length}, framing=${chat2.selfiePrompt.framing}) | 文本: ${chat2.replyText.replace(/\s+/g, ' ').slice(0, 100)}`,
+      `[E2E #2/5 临时换装(${chat2.selfiePrompt.outfitId})+女孩坐全身(${chat2.selfiePrompt.poseId})] OK (${Date.now() - t2}ms, ${dim2.width}x${dim2.height}, bytes=${img2.buffer.length}) | 文本: ${chat2.replyText.replace(/\s+/g, ' ').slice(0, 90)}`,
     );
 
     await sleep(1600);
 
-    // E2E #3: Switch OC preset (to secondary loaded preset or custom) + 2x2 chibi sticker pack
-    const cfgBefore3 = guildConfigRepo.getOrCreate(GUILD_ID);
-    const nextPresetId = secondaryPreset?.id ?? 'custom';
-    guildConfigRepo.updateAi(GUILD_ID, {
-      ...cfgBefore3.ai,
-      selfie: {
-        ...cfgBefore3.ai.selfie,
-        ocPreset: nextPresetId,
-      },
-    });
-
+    // E2E #3: Two-person couple hug with VIP (`双人缠绵` duo_hug -> 1girl, 1boy + 2 charCaptions)
     const t3 = Date.now();
     const chat3 = await aiService.generateReply(
       {
         guildId: GUILD_ID,
         channelId: CHAT_CHANNEL_ID,
         userId: '100000000000000003',
-        userName: '路人丙',
+        userName: '专属偏爱主人',
         messageId: 'm-selfie-3',
         messageTimestamp: t3,
-        userContent: '给我发一套你的Q版四格表情包看看',
+        userContent: '过来坐我膝上，拍一张我从背后环抱你的双人合照留念吧',
       },
       BOT_ID,
     );
@@ -231,11 +240,10 @@ async function runSelfieE2E(): Promise<void> {
     if (!chat3.selfiePrompt) {
       throw new Error(`[E2E #3] LLM 未触发 [SELFIE:] 技能，回复为: ${chat3.replyText}`);
     }
-    if (
-      secondaryPreset &&
-      !chat3.selfiePrompt.charCaptions[0]?.char_caption.startsWith(secondaryPreset.appearance)
-    ) {
-      throw new Error(`[E2E #3] 未成功切换至次选 OC 预设 (${secondaryPreset.id})`);
+    if (chat3.selfiePrompt.charCaptions.length !== 2) {
+      throw new Error(
+        `[E2E #3] 双人缠绵未生成双角色 charCaptions (实际=${chat3.selfiePrompt.charCaptions.length})`,
+      );
     }
     const img3 = await imageService.generateOcSelfie({
       guildId: GUILD_ID,
@@ -257,10 +265,24 @@ async function runSelfieE2E(): Promise<void> {
     }
     const dim3 = inspectPng(img3.buffer, 'E2E #3');
     console.log(
-      `[E2E #3/4 切换自设(${nextPresetId})+Q版表情包] OK (${Date.now() - t3}ms, ${dim3.width}x${dim3.height}, bytes=${img3.buffer.length}, framing=${chat3.selfiePrompt.framing}) | 文本: ${chat3.replyText.replace(/\s+/g, ' ').slice(0, 100)}`,
+      `[E2E #3/5 双人缠绵多角色(${chat3.selfiePrompt.poseId}, chars=${chat3.selfiePrompt.charCaptions.length})] OK (${Date.now() - t3}ms, ${dim3.width}x${dim3.height}, bytes=${img3.buffer.length}) | 文本: ${chat3.replyText.replace(/\s+/g, ' ').slice(0, 90)}`,
     );
 
-    // E2E #4: Ordinary non-image chat must NOT trigger selfie generation
+    await sleep(1600);
+
+    // E2E #4: Switch OC preset (to secondary loaded preset or custom) + 2x2 chibi sticker pack
+    const cfgBefore4 = guildConfigRepo.getOrCreate(GUILD_ID);
+    const nextPresetId = secondaryPreset?.id ?? 'custom';
+    guildConfigRepo.updateAi(GUILD_ID, {
+      ...cfgBefore4.ai,
+      selfie: {
+        ...cfgBefore4.ai.selfie,
+        ocPreset: nextPresetId,
+        outfitMode: 'ootd',
+        ootdOffset: 2,
+      },
+    });
+
     const t4 = Date.now();
     const chat4 = await aiService.generateReply(
       {
@@ -268,25 +290,68 @@ async function runSelfieE2E(): Promise<void> {
         channelId: CHAT_CHANNEL_ID,
         userId: '100000000000000004',
         userName: '路人丁',
-        messageId: 'm-chat-4',
+        messageId: 'm-selfie-4',
         messageTimestamp: t4,
-        userContent: '刚才二十一点连续爆牌三把，气死我了',
+        userContent: '给我发一套你的Q版四格表情包看看',
       },
       BOT_ID,
     );
     if (!chat4.ok) {
       throw new Error(`[E2E #4 LLM] 失败 (${chat4.errorCode}): ${chat4.errorMessage}`);
     }
-    if (chat4.selfiePrompt) {
-      throw new Error(`[E2E #4] 普通闲聊误触发了自设生图: ${JSON.stringify(chat4.selfiePrompt)}`);
+    if (!chat4.selfiePrompt) {
+      throw new Error(`[E2E #4] LLM 未触发 [SELFIE:] 技能，回复为: ${chat4.replyText}`);
+    }
+    const img4 = await imageService.generateOcSelfie({
+      guildId: GUILD_ID,
+      channelId: CHAT_CHANNEL_ID,
+      userId: '100000000000000004',
+      prompt: chat4.selfiePrompt.prompt,
+      negativePrompt: chat4.selfiePrompt.negativePrompt,
+      charCaptions: chat4.selfiePrompt.charCaptions,
+      aspectRatio: chat4.selfiePrompt.aspectRatio,
+      steps: chat4.selfiePrompt.steps,
+      scale: chat4.selfiePrompt.scale,
+      cfgRescale: chat4.selfiePrompt.cfgRescale,
+      spoiler: chat4.selfiePrompt.spoiler,
+    });
+    if (!img4.ok) {
+      throw new Error(
+        `[E2E #4 Image] 失败 (${img4.errorCode}): ${img4.errorMessage} ${img4.errorDetail ?? ''}`,
+      );
+    }
+    const dim4 = inspectPng(img4.buffer, 'E2E #4');
+    console.log(
+      `[E2E #4/5 切换自设(${nextPresetId})+OOTD(${chat4.selfiePrompt.outfitId})+Q版表情包] OK (${Date.now() - t4}ms, ${dim4.width}x${dim4.height}, bytes=${img4.buffer.length}) | 文本: ${chat4.replyText.replace(/\s+/g, ' ').slice(0, 90)}`,
+    );
+
+    // E2E #5: Ordinary non-image chat must NOT trigger selfie generation
+    const t5 = Date.now();
+    const chat5 = await aiService.generateReply(
+      {
+        guildId: GUILD_ID,
+        channelId: CHAT_CHANNEL_ID,
+        userId: '100000000000000005',
+        userName: '路人戊',
+        messageId: 'm-chat-5',
+        messageTimestamp: t5,
+        userContent: '刚才二十一点连续爆牌三把，气死我了，顺便问一句你今天穿什么衣服呀？（口头说说就行不用拍照）',
+      },
+      BOT_ID,
+    );
+    if (!chat5.ok) {
+      throw new Error(`[E2E #5 LLM] 失败 (${chat5.errorCode}): ${chat5.errorMessage}`);
+    }
+    if (chat5.selfiePrompt) {
+      throw new Error(`[E2E #5] 普通闲聊误触发了自设生图: ${JSON.stringify(chat5.selfiePrompt)}`);
     }
     console.log(
-      `[E2E #4/4 普通闲聊不误触生图] OK (${Date.now() - t4}ms) | 文本: ${chat4.replyText.replace(/\s+/g, ' ').slice(0, 100)}`,
+      `[E2E #5/5 普通闲聊知晓OOTD且不误触生图] OK (${Date.now() - t5}ms) | 文本: ${chat5.replyText.replace(/\s+/g, ' ').slice(0, 120)}`,
     );
 
     const summary = imageRepo.getUsageSummary(GUILD_ID, 0);
     console.log(
-      `[E2E-SELFIE 汇总] 连续 3 次真实 LLM+NAI V5 自设出图 + 1 次防误触校验全部通过！imageCalls=${summary.okCalls}/${summary.totalCalls} avgLatency=${summary.avgLatencyMs}ms`,
+      `[E2E-SELFIE 汇总] 连续 4 次真实 LLM+NAI V5 自设出图（含姿势库俯拍/衣柜换装/双人缠绵多角色/切换自设四格）+ 1 次 OOTD 口头问答防误触全部通过！imageCalls=${summary.okCalls}/${summary.totalCalls} avgLatency=${summary.avgLatencyMs}ms`,
     );
   } finally {
     db.close();

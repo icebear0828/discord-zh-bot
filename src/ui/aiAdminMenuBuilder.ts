@@ -10,6 +10,10 @@ import {
 } from 'discord.js';
 import { AI_PERSONA_PRESETS } from '../config/defaults.js';
 import {
+  composeOcAppearanceForOutfit,
+  listOcOutfits,
+} from '../services/aiOcSelfie.js';
+import {
   formatAiRelationBadge,
   MAX_AI_USER_PROFILES,
 } from '../services/aiProfiles.js';
@@ -63,34 +67,46 @@ export function buildAdminAiView(
   const usage24h = ctx.services.ai.getUsageSummary(guildId, 24);
   const externalOcProfiles = ctx.services.ai.listOcProfiles();
   const activeOc = ctx.services.ai.resolveActiveOcProfile(ai.selfie);
+  const activeOutfit = ctx.services.ai.resolveActiveOcOutfit(ai.selfie);
+  const wardrobeOutfits = listOcOutfits(activeOc);
+  const poseCatalogCount = ctx.services.ai.listOcPoses().length;
   const imageConfigured = Boolean(ctx.services.image?.isConfigured());
 
   if (tab === 'selfie') {
     const selfie = ai.selfie;
+    const outfitMode = selfie.outfitMode?.trim() || 'ootd';
+    const isLockedOutfit =
+      outfitMode !== 'ootd' && wardrobeOutfits.some((o) => o.id === outfitMode);
+    const ootdCount = wardrobeOutfits.filter((o) => o.ootdEligible !== false).length;
+    const hiddenCount = wardrobeOutfits.length - ootdCount;
+    const effectiveAppearance = composeOcAppearanceForOutfit(activeOc, activeOutfit);
+
     const description = [
       `📸 **聊天自设生图开关**：${selfie.enabled ? '✅ 已开启' : '⛔ 已关闭'} ｜ **生图网关**：${imageConfigured ? '✅ 已就绪' : '⚠️ 未配置 IMAGE_BASE_URL / IMAGE_API_KEY'}`,
       `🎭 **当前生效自设（OC）**：**${activeOc.name}**（\`${activeOc.id}\`）`,
+      `👗 **今日生效穿搭**：**${activeOutfit.name}**（\`${activeOutfit.id}\` · ${isLockedOutfit ? '📌 后台手动锁定' : '📅 每日 OOTD 自动轮换'}）`,
+      `🧥 **角色衣柜与姿势库**：共 **${wardrobeOutfits.length}** 套穿搭（日常轮换 ${ootdCount} 套${hiddenCount > 0 ? ` / 🔒隐藏点名款 ${hiddenCount} 套` : ''}） ｜ **${poseCatalogCount}** 组 4 档分级姿势 × 5 视角`,
       `⏱️ **单人拍照冷却**：**${selfie.cooldownSec}s**（管理员免冷却，与 \`/画图\` 频道白名单解耦）`,
       `🔞 **分级与遮罩策略**：${selfie.allowNsfw ? '日常默认 SFW；群友明确索要 R18/涩图时启用无码词并**自动打模糊遮罩**' : '🔒 严格 SFW（始终拦截裸露色情标签）'}`,
       ...(externalOcProfiles.length > 0
         ? [`📦 **本地私有自设库**：已加载 **${externalOcProfiles.length}** 套私有 OC 预设`]
         : ['📦 **本地私有自设库**：未检测到 `data/ai-packs/oc-presets.json`，当前使用自定义自设']),
       '',
-      `> **外貌锚点（Line 1 固定不变）**：\n> \`${truncateText(activeOc.appearance, 220)}\``,
-      `> **特写服饰（PORTRAIT）**：\`${truncateText(activeOc.costumePortrait, 140)}\``,
-      `> **半身服饰（UPPER）**：\`${truncateText(activeOc.costumeUpper, 140)}\``,
-      `> **全身服饰（FULL）**：\`${truncateText(activeOc.costumeFull, 140)}\``,
-      ...(activeOc.silhouetteGuard
-        ? [`> **防漂移负权重守卫**：\`${truncateText(activeOc.silhouetteGuard, 120)}\``]
+      `> **当前生效外貌（含本套头饰微调）**：\n> \`${truncateText(effectiveAppearance, 200)}\``,
+      `> **特写服饰（PORTRAIT）**：\`${truncateText(activeOutfit.costumePortrait, 130)}\``,
+      `> **半身服饰（UPPER）**：\`${truncateText(activeOutfit.costumeUpper, 130)}\``,
+      `> **全身服饰（FULL）**：\`${truncateText(activeOutfit.costumeFull, 130)}\``,
+      ...(activeOutfit.silhouetteGuard
+        ? [`> **防漂移负权重守卫**：\`${truncateText(activeOutfit.silhouetteGuard, 120)}\``]
         : []),
     ].join('\n');
 
     const embed = new EmbedBuilder()
       .setColor(resolveColor(COLORS.FUN, feedback))
       .setAuthor({ name: `${actor.displayName} · AI 聊天自设生图配置`, iconURL: actor.avatarUrl })
-      .setTitle('📸 AI 聊天自设（OC）与 NovelAI V5 流水线配置')
+      .setTitle('📸 AI 聊天自设（OC）· 每日穿搭（OOTD）与分级姿势库')
       .setDescription(withFeedback(truncateText(description, 4000), feedback))
-      .setFooter({ text: '🔒 群友在聊天频道让 Bot 发自拍/看穿搭/发表情包时将自动按景别调用此自设生图' })
+      .setFooter({ text: '🔒 默认按日轮换日常 OOTD 并同步进对话人设；群友点名换装仅当次拍照生效' })
       .setTimestamp();
 
     const ocOptions = [
@@ -115,8 +131,41 @@ export function buildAdminAiView(
         .addOptions(ocOptions),
     );
 
+    const outfitOptions = [
+      new StringSelectMenuOptionBuilder()
+        .setLabel(
+          truncateText(
+            `📅 自动每日穿搭 OOTD（今日：${activeOutfit.name}）`,
+            100,
+          ),
+        )
+        .setValue('mode:ootd')
+        .setDescription('按日期每天自动轮换 1 套日常衣柜（不含隐藏款），也可点下方按钮立即换一套')
+        .setDefault(!isLockedOutfit),
+      ...wardrobeOutfits.slice(0, 24).map((outfit) =>
+        new StringSelectMenuOptionBuilder()
+          .setLabel(
+            truncateText(
+              `${outfit.ootdEligible === false ? '🔒 ' : '👗 '}${outfit.name}`,
+              100,
+            ),
+          )
+          .setValue(`outfit:${outfit.id}`)
+          .setDescription(truncateText(outfit.summaryZh, 100))
+          .setDefault(isLockedOutfit && activeOutfit.id === outfit.id),
+      ),
+    ];
+
+    const outfitSelect = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId('menu:admin_ai_selfie_outfit')
+        .setPlaceholder('👗 切换每日 OOTD 自动轮换或手动锁定指定穿搭...')
+        .addOptions(outfitOptions),
+    );
+
     const components: MenuComponentRow[] = [
       ocSelect,
+      outfitSelect,
       buttonRow(
         makeButton(
           'menu:admin:ai_toggle_selfie',
@@ -127,6 +176,12 @@ export function buildAdminAiView(
           'menu:admin:ai_toggle_selfie_nsfw',
           `🔞 R18遮罩: ${selfie.allowNsfw ? '允许' : '禁止'}`,
           selfie.allowNsfw ? ButtonStyle.Danger : ButtonStyle.Secondary,
+        ),
+        makeButton(
+          'menu:admin:ai_reroll_selfie_ootd',
+          '🎲 换一套今日穿搭',
+          ButtonStyle.Secondary,
+          wardrobeOutfits.length <= 1,
         ),
         makeButton('menu:modal:admin_ai_selfie_appearance', '✍️ 编辑外貌与冷却', ButtonStyle.Primary),
         makeButton('menu:modal:admin_ai_selfie_costume', '👗 编辑三级服饰', ButtonStyle.Primary),
@@ -432,7 +487,7 @@ export function buildAdminAiView(
     `🔓 **破限预设**：**${resolvedBinding.preset.name}**（\`${resolvedBinding.preset.id}@v${resolvedBinding.preset.version}\`）${channelOverrideCount > 0 ? ` ｜ 🧪 频道沙盒覆盖：**${channelOverrideCount}** 个` : ''}`,
     `🤖 **当前模型**：\`${effectiveModel}\`${ai.modelOverride ? '（后台覆盖）' : '（默认）'} ｜ 🛡️ 兜底：\`${resolvedBinding.effectiveFallbackModel || '无'}\` ｜ 温度 **${ai.temperature}** ｜ MaxTokens **${ai.maxTokens}**`,
     `💬 **上下文与记忆**：滑窗 **${ai.contextWindowMessages}** 条 ｜ 记忆抽取 ${ai.memoryEnabled ? `✅ 开（每域上限 ${ai.maxMemoriesPerScope} 条）` : '⛔ 关'} ｜ 图片识图 ${ai.visionEnabled ? '✅ 开' : '⛔ 关'}`,
-    `📸 **聊天自设生图**：${ai.selfie.enabled ? `✅ 开（**${truncateText(activeOc.name, 26)}** ｜ 冷却 ${ai.selfie.cooldownSec}s ｜ R18遮罩 ${ai.selfie.allowNsfw ? '允许' : '关'}）` : '⛔ 已关闭'}`,
+    `📸 **聊天自设生图**：${ai.selfie.enabled ? `✅ 开（**${truncateText(activeOc.name, 18)}** · **${truncateText(activeOutfit.name, 18)}** ｜ 冷却 ${ai.selfie.cooldownSec}s）` : '⛔ 已关闭'}`,
     `🔧 **正则替换与反八股**：启用 **${enabledRegexCount}/${ai.regexRules.length}** 条规则 ｜ 反八股提示词 ${ai.antiClichePromptEnabled ? '✅ 开' : '⛔ 关'}`,
     `👤 **人物关系档案**：已绑定 **${ai.userProfiles.length}/${MAX_AI_USER_PROFILES}** 人`,
     `📊 **近 24h 用量**：**${usage24h.totalCalls}** 次（失败 ${usage24h.errorCalls}） ｜ **${usage24h.totalTokens.toLocaleString('en-US')}** Tokens ｜ 估算 **${formatUsd(usage24h.estimatedCostUsd)}**`,

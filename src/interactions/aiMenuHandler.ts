@@ -20,6 +20,7 @@ import {
   type AiUserProfile,
 } from '../config/defaults.js';
 import {
+  listOcOutfits,
   normalizeOcAppearance,
   normalizeOcCostumeTier,
 } from '../services/aiOcSelfie.js';
@@ -415,6 +416,7 @@ export async function tryHandleAiMenuButton(
       'ai_toggle_vision',
       'ai_toggle_selfie',
       'ai_toggle_selfie_nsfw',
+      'ai_reroll_selfie_ootd',
       'ai_toggle_allowed_here',
       'ai_clear_allowed',
       'ai_reset_config',
@@ -503,6 +505,33 @@ export async function tryHandleAiMenuButton(
             text: next
               ? '已开启 **🔞 R18 遮罩模式**：日常默认 SFW，群友明确索要 R18 时启用无码词并自动打模糊遮罩。'
               : '已切换为 **🔒 严格 SFW 模式**：聊天自设生图一律禁止裸露色情标签。',
+          },
+        ),
+      );
+      return true;
+    }
+
+    if (action === 'ai_reroll_selfie_ootd') {
+      const nextOffset = ((cfg.ai.selfie.ootdOffset ?? 0) + 1) % 10_000;
+      const nextSelfie = {
+        ...cfg.ai.selfie,
+        outfitMode: 'ootd',
+        ootdOffset: nextOffset,
+      };
+      ctx.repos.guildConfig.updateAi(guildId, {
+        ...cfg.ai,
+        selfie: nextSelfie,
+      });
+      const nextOutfit = ctx.services.ai.resolveActiveOcOutfit(nextSelfie);
+      await interaction.update(
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'admin_ai', tab: 'selfie' },
+          {
+            type: 'success',
+            text: `已换上新的今日穿搭（OOTD）：**${nextOutfit.name}**（明天将继续自动按日轮换）。`,
           },
         ),
       );
@@ -787,6 +816,7 @@ export async function tryHandleAiMenuStringSelect(
             ...cfg.ai.selfie,
             enabled: true,
             ocPreset: nextPreset,
+            outfitMode: 'ootd',
           },
         });
         const label = matchedExternal
@@ -815,6 +845,80 @@ export async function tryHandleAiMenuStringSelect(
         actor,
         { page: 'admin_ai', tab: 'selfie' },
         { type: 'error', text: '无效的自设预设选项。' },
+      ),
+    );
+    return true;
+  }
+
+  if (parts[1] === 'admin_ai_selfie_outfit') {
+    if (!actor.isAdmin) {
+      await interaction.update(
+        buildMenuMessage(ctx, guildId, actor, { page: 'home' }, ADMIN_DENIED_FEEDBACK),
+      );
+      return true;
+    }
+
+    const cfg = ctx.repos.guildConfig.getOrCreate(guildId);
+    const activeOc = ctx.services.ai.resolveActiveOcProfile(cfg.ai.selfie);
+    const outfits = listOcOutfits(activeOc);
+    const chosen = interaction.values[0] ?? '';
+
+    if (chosen === 'mode:ootd') {
+      const nextSelfie = {
+        ...cfg.ai.selfie,
+        outfitMode: 'ootd',
+      };
+      ctx.repos.guildConfig.updateAi(guildId, { ...cfg.ai, selfie: nextSelfie });
+      const todayOutfit = ctx.services.ai.resolveActiveOcOutfit(nextSelfie);
+      await interaction.update(
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'admin_ai', tab: 'selfie' },
+          {
+            type: 'success',
+            text: `已恢复为 **📅 每日 OOTD 自动轮换**（今日穿搭：**${todayOutfit.name}**）。`,
+          },
+        ),
+      );
+      return true;
+    }
+
+    if (chosen.startsWith('outfit:')) {
+      const targetOutfitId = chosen.slice('outfit:'.length).trim();
+      const matchedOutfit = outfits.find((o) => o.id === targetOutfitId);
+      if (matchedOutfit) {
+        ctx.repos.guildConfig.updateAi(guildId, {
+          ...cfg.ai,
+          selfie: {
+            ...cfg.ai.selfie,
+            outfitMode: matchedOutfit.id,
+          },
+        });
+        await interaction.update(
+          buildMenuMessage(
+            ctx,
+            guildId,
+            actor,
+            { page: 'admin_ai', tab: 'selfie' },
+            {
+              type: 'success',
+              text: `已锁定当前默认穿搭为：**${matchedOutfit.name}**（选回“自动每日穿搭”即可恢复按日轮换）。`,
+            },
+          ),
+        );
+        return true;
+      }
+    }
+
+    await interaction.update(
+      buildMenuMessage(
+        ctx,
+        guildId,
+        actor,
+        { page: 'admin_ai', tab: 'selfie' },
+        { type: 'error', text: '无效的穿搭选项。' },
       ),
     );
     return true;

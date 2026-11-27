@@ -23,10 +23,15 @@ import { WorldEventRepo } from '../../src/db/repositories/worldEventRepo.js';
 import { handleMessageCreate, resetAiRuntimeGuards } from '../../src/events/messageCreate.js';
 import {
   AiOcPresetStore,
+  buildOcSelfieSkillPrompt,
   compileOcSelfiePrompt,
   DEFAULT_AI_SELFIE_CONFIG,
   extractSelfieSkillTag,
+  hasExplicitDuoIntent,
   hasExplicitUserNsfwIntent,
+  listBuiltinOcPoses,
+  resetPoseRotationState,
+  resolveActiveOcOutfit,
   resolveActiveOcProfile,
   stripSelfieSkillTags,
   V5_GRAPHIC_UC,
@@ -34,6 +39,7 @@ import {
   V5_STICKER_UC,
   V5_WATERCOLOR_UC,
   type AiOcProfile,
+  type OcOutfitPreset,
 } from '../../src/services/aiOcSelfie.js';
 import { AiPackStore } from '../../src/services/aiPackStore.js';
 import { AiService, cleanAiOutput } from '../../src/services/aiService.js';
@@ -211,6 +217,7 @@ describe('OC Selfie Library & NovelAI V5 Pipeline SOP Compiler', () => {
 
   beforeEach(() => {
     resetAiRuntimeGuards();
+    resetPoseRotationState();
   });
 
   afterEach(() => {
@@ -674,4 +681,307 @@ describe('OC Selfie Library & NovelAI V5 Pipeline SOP Compiler', () => {
 
     ctx.db.close();
   });
+
+  it('provides full 288-pose catalog across 4 safety tiers, 5 camera angles, Chinese keyword hits, and anti-repeat rotation', () => {
+    const poses = listBuiltinOcPoses();
+    expect(poses.length).toBeGreaterThanOrEqual(288);
+
+    const tiers = new Set(poses.map((p) => p.tier));
+    expect(tiers.has('sfw')).toBe(true);
+    expect(tiers.has('spicy')).toBe(true);
+    expect(tiers.has('nsfw')).toBe(true);
+    expect(tiers.has('duo_hug')).toBe(true);
+    expect(tiers.has('duo_nsfw')).toBe(true);
+
+    const duoCount = poses.filter((p) => p.tier === 'duo_hug' || p.tier === 'duo_nsfw').length;
+    expect(duoCount).toBe(55);
+    const sfwCount = poses.filter((p) => p.tier === 'sfw').length;
+    expect(sfwCount).toBeGreaterThanOrEqual(98);
+
+    // Every pose must have clean non-empty actionTags and sentence
+    for (const p of poses) {
+      expect(p.id).toMatch(/^[a-z0-9_]+$/);
+      expect(p.actionTags.trim().length).toBeGreaterThan(3);
+      expect(p.sentence.trim().length).toBeGreaterThan(8);
+    }
+
+    // Exact Chinese keyword match ("招财猫" -> paw pose) + camera angle ("high" -> from above)
+    const pawShot = compileOcSelfiePrompt({
+      oc: SAMPLE_OC_ALPHA,
+      spec: {
+        framing: 'upper',
+        pose: 'cute_playful',
+        angle: 'high',
+        scene: 'cozy cafe table',
+      },
+      userContent: '对我做个招财猫猫爪手势俯拍一张',
+      allowNsfw: true,
+    });
+    expect(pawShot.prompt).toContain('from above');
+    expect(pawShot.prompt.toLowerCase()).toMatch(/paw|beckoning|cat pose/);
+
+    // Anti-repeat rotation: consecutive shots in same cluster pick distinct pose IDs
+    const seenPoseIds = new Set<string>();
+    for (let i = 0; i < 4; i++) {
+      const shot = compileOcSelfiePrompt({
+        oc: SAMPLE_OC_ALPHA,
+        spec: {
+          framing: 'upper',
+          pose: 'cute_heart',
+          angle: 'three_quarter',
+        },
+        userContent: '发张比心自拍',
+        allowNsfw: true,
+        rotationScopeKey: 'g1:c1',
+      });
+      if (shot.poseId) {
+        seenPoseIds.add(shot.poseId);
+      }
+    }
+    expect(seenPoseIds.size).toBeGreaterThanOrEqual(3);
+  });
+
+  it('strictly gates spicy, solo NSFW, duo_hug, and duo_nsfw poses and compiles NAI V5 2-character captions cleanly', () => {
+    expect(hasExplicitDuoIntent('发张你的日常自拍')).toBe(false);
+    expect(hasExplicitDuoIntent('拍一张从背后抱着你坐腿上的双人照')).toBe(true);
+
+    // 1. Innocent daily request MUST reject hallucinated duo or nsfw pose IDs
+    const blockedDuoOnSolo = compileOcSelfiePrompt({
+      oc: SAMPLE_OC_ALPHA,
+      spec: {
+        framing: 'full',
+        pose: 'duo_p003',
+        nsfw: true,
+      },
+      userContent: '发张你站在窗边的全身照',
+      allowNsfw: true,
+    });
+    expect(blockedDuoOnSolo.nsfw).toBe(false);
+    expect(blockedDuoOnSolo.charCaptions).toHaveLength(1);
+    expect(blockedDuoOnSolo.prompt.startsWith('1girl, solo,')).toBe(true);
+    expect(blockedDuoOnSolo.negativePrompt).toContain('extra characters');
+
+    // 1b. Persona refusal gate: user asks for couple hug, but Bot refuses in-character and picks a solo pose -> stays solo!
+    const refusedDuoByPersona = compileOcSelfiePrompt({
+      oc: SAMPLE_OC_ALPHA,
+      spec: {
+        framing: 'full',
+        pose: 'stand_casual',
+        nsfw: false,
+      },
+      userContent: '拍一张我从背后环抱你坐在膝上的双人合照',
+      allowNsfw: true,
+    });
+    expect(refusedDuoByPersona.charCaptions).toHaveLength(1);
+    expect(refusedDuoByPersona.prompt.startsWith('1girl, solo,')).toBe(true);
+    expect(refusedDuoByPersona.negativePrompt).toContain('extra characters');
+
+    // 2. Explicit non-R18 couple cuddle request -> unlocks duo_hug, faceless male Character 2, strips extra characters from UC
+    const cuddleDuo = compileOcSelfiePrompt({
+      oc: SAMPLE_OC_ALPHA,
+      spec: {
+        framing: 'full',
+        pose: 'duo_cuddle',
+        angle: 'three_quarter',
+        scene: 'warm living room sofa, evening lamp light',
+        nsfw: false,
+      },
+      userContent: '拍一张我从背后环抱你坐在膝上的合照',
+      allowNsfw: true,
+    });
+    expect(cuddleDuo.nsfw).toBe(false);
+    expect(cuddleDuo.charCaptions).toHaveLength(2);
+    expect(cuddleDuo.charCaptions[0]?.char_caption).toContain(SAMPLE_OC_ALPHA.appearance);
+    expect(cuddleDuo.charCaptions[1]?.char_caption).toContain('boy, faceless male');
+    expect(cuddleDuo.prompt.startsWith('1girl, 1boy,')).toBe(true);
+    expect(cuddleDuo.prompt).not.toMatch(/\bsolo\b/);
+    expect(cuddleDuo.prompt).toContain('Character 1: girl,');
+    expect(cuddleDuo.prompt).toContain('Character 2: boy,');
+    expect(cuddleDuo.negativePrompt).not.toContain('extra characters');
+
+    // 3. Explicit yuri/2girls couple cuddle -> switches partner to 2girls
+    const yuriDuo = compileOcSelfiePrompt({
+      oc: SAMPLE_OC_ALPHA,
+      spec: {
+        framing: 'full',
+        pose: 'duo_cuddle',
+      },
+      userContent: '来一张双女主百合贴贴背后抱的合照',
+      allowNsfw: true,
+    });
+    expect(yuriDuo.prompt.startsWith('2girls,')).toBe(true);
+    expect(yuriDuo.charCaptions).toHaveLength(2);
+    expect(yuriDuo.charCaptions[1]?.char_caption.startsWith('girl,')).toBe(true);
+
+    // 4. Explicit Duo R18 request -> unlocks duo_nsfw + R18 prefix + spoiler + anti-censor UC without extra characters
+    const nsfwDuo = compileOcSelfiePrompt({
+      oc: SAMPLE_OC_ALPHA,
+      spec: {
+        framing: 'full',
+        pose: 'duo_intimate',
+        scene: 'dim bedroom, messy sheets',
+        nsfw: true,
+      },
+      userContent: '来张和我一起骑乘位的双人R18涩图',
+      allowNsfw: true,
+    });
+    expect(nsfwDuo.nsfw).toBe(true);
+    expect(nsfwDuo.spoiler).toBe(true);
+    expect(nsfwDuo.prompt.startsWith('nsfw, rating:explicit, uncensored, 1girl, 1boy,')).toBe(true);
+    expect(nsfwDuo.charCaptions).toHaveLength(2);
+    expect(nsfwDuo.negativePrompt).not.toContain('extra characters');
+    expect(nsfwDuo.negativePrompt).toContain('mosaic censoring');
+  });
+
+  it('rotates daily OOTD deterministically, excludes hidden spicy outfits from auto OOTD, decouples hair accessories, and keeps chat outfit changes per-shot only', () => {
+    const wardrobeOutfits: OcOutfitPreset[] = [
+      {
+        id: 'sig_kimono',
+        name: '🌺 招牌和风振袖',
+        summaryZh: '黑金樱花露肩挂脖上衣与白色宽振袖百褶裙',
+        ootdEligible: true,
+        costumePortrait: 'black halter top, white detached sleeves,',
+        costumeUpper: 'black halter top, white detached sleeves, pleated mini skirt,',
+        costumeFull: 'black halter top, white detached sleeves, pleated mini skirt, platform sandals,',
+        silhouetteGuard: '-1.2::kimono lapels covering shoulders::,',
+      },
+      {
+        id: 'urban_beret',
+        name: '🏙️ 都市针织贝雷私服',
+        summaryZh: '酒红斜戴羊毛贝雷帽、米白露肩绞花毛衣与黑色高腰皮裙',
+        ootdEligible: true,
+        hairAccessory: 'loose wavy hair down, burgundy wool beret tilted on head, small gold hairpin,',
+        costumePortrait: 'cream off-shoulder cable-knit sweater, thin black velvet choker,',
+        costumeUpper: 'cream off-shoulder cable-knit sweater, high-waisted black leather mini skirt,',
+        costumeFull: 'cream off-shoulder cable-knit sweater, high-waisted black leather mini skirt, black ankle boots,',
+        silhouetteGuard: '-1.2::detached sleeves, kimono::,',
+        keywordsZh: ['贝雷帽', '都市私服', '毛衣'],
+      },
+      {
+        id: 'cozy_lounge',
+        name: '🛋️ 居家慵懒开衫',
+        summaryZh: '松散长发配软糯米杏宽松针织开衫与丝质吊带短裤',
+        ootdEligible: true,
+        hairAccessory: 'loose messy-soft hair down over shoulders, simple crimson ribbon hairclip,',
+        costumePortrait: 'crimson silk camisole straps, oversized cream knit cardigan slipping off one shoulder,',
+        costumeUpper: 'crimson silk camisole, oversized cream knit cardigan, matching silk lounge shorts,',
+        costumeFull: 'crimson silk camisole, oversized cream knit cardigan, matching silk lounge shorts, bare feet,',
+        silhouetteGuard: '-1.2::shoes, boots, formal dress::,',
+        keywordsZh: ['居家', '睡衣', '开衫'],
+      },
+      {
+        id: 'secret_bunny',
+        name: '🐇 绯红丝绒兔女郎（隐藏款）',
+        summaryZh: '黑红丝绒兔耳发箍与紧身兔女郎连体衣黑丝高跟',
+        ootdEligible: false,
+        hairAccessory: 'high ponytail, black-and-crimson velvet bunny ears headband,',
+        costumePortrait: 'white wing collar with crimson bowtie, strapless black velvet sweetheart bodice,',
+        costumeUpper: 'white wing collar with crimson bowtie, strapless black velvet bunny leotard, sheer black pantyhose,',
+        costumeFull: 'white wing collar with crimson bowtie, strapless black velvet bunny leotard, fluffy white tail, sheer black pantyhose, crimson stiletto heels,',
+        silhouetteGuard: '-1.2::skirt, sleeves::,',
+        keywordsZh: ['兔女郎'],
+      },
+    ];
+
+    const richOc: AiOcProfile = {
+      ...SAMPLE_OC_ALPHA,
+      id: 'crimson_test',
+      baseAppearanceZh: '银白微粉长卷发、赤红眼眸、左眼泪痣',
+      baseAppearance:
+        'girl, very long silver-white hair, parted bangs, crimson eyes, mole under left eye, fair skin, slender figure,',
+      defaultHairAccessory:
+        'half updo with large black ribbon bow, heavy crimson camellia gold suzu bell hair ornament,',
+      appearance:
+        'girl, very long silver-white hair, parted bangs, half updo with large black ribbon bow, heavy crimson camellia gold suzu bell hair ornament, crimson eyes, mole under left eye, fair skin, slender figure,',
+      outfits: wardrobeOutfits,
+    };
+
+    // Check 30 consecutive days in Asia/Shanghai: hidden outfit MUST NEVER be selected in auto OOTD,
+    // and consecutive days MUST NOT wear the same outfit!
+    let prevId = '';
+    for (let dayOffset = 0; dayOffset < 14; dayOffset++) {
+      const ts = Date.UTC(2026, 10, 1 + dayOffset, 4, 0, 0); // 12:00 Asia/Shanghai
+      const resolved = resolveActiveOcOutfit({
+        oc: richOc,
+        selfieCfg: DEFAULT_AI_SELFIE_CONFIG,
+        nowMs: ts,
+        timezone: 'Asia/Shanghai',
+      });
+      expect(resolved.id).not.toBe('secret_bunny');
+      expect(resolved.id).not.toBe(prevId);
+      prevId = resolved.id;
+    }
+
+    // Manual reroll offset shifts today's OOTD immediately
+    const fixedTs = Date.UTC(2026, 10, 26, 4, 0, 0);
+    const ootd0 = resolveActiveOcOutfit({
+      oc: richOc,
+      selfieCfg: { ...DEFAULT_AI_SELFIE_CONFIG, outfitMode: 'ootd', ootdOffset: 0 },
+      nowMs: fixedTs,
+      timezone: 'Asia/Shanghai',
+    });
+    const ootd1 = resolveActiveOcOutfit({
+      oc: richOc,
+      selfieCfg: { ...DEFAULT_AI_SELFIE_CONFIG, outfitMode: 'ootd', ootdOffset: 1 },
+      nowMs: fixedTs,
+      timezone: 'Asia/Shanghai',
+    });
+    expect(ootd1.id).not.toBe(ootd0.id);
+
+    // Admin locking hidden outfit works
+    const lockedBunny = resolveActiveOcOutfit({
+      oc: richOc,
+      selfieCfg: { ...DEFAULT_AI_SELFIE_CONFIG, outfitMode: 'secret_bunny' },
+      nowMs: fixedTs,
+      timezone: 'Asia/Shanghai',
+    });
+    expect(lockedBunny.id).toBe('secret_bunny');
+
+    // System prompt reflects today's active OOTD summary & compact pose/outfit protocol
+    const skillPrompt = buildOcSelfieSkillPrompt({
+      oc: richOc,
+      activeOutfit: ootd0,
+      allowNsfw: true,
+    });
+    expect(skillPrompt).toContain(ootd0.summaryZh);
+    expect(skillPrompt).toContain('secret_bunny');
+    expect(skillPrompt.length).toBeLessThan(2600);
+
+    // Per-shot chat request for urban_beret swaps hairAccessory (drops gold suzu bell!) & uses urban_beret guard,
+    // without mutating richOc or guild OOTD!
+    const beretShot = compileOcSelfiePrompt({
+      oc: richOc,
+      activeOutfit: sigOrOther(wardrobeOutfits, 'sig_kimono'),
+      spec: {
+        framing: 'full',
+        outfitId: 'urban_beret',
+        pose: 'stand_casual',
+      },
+      userContent: '换那套贝雷帽都市私服拍张全身照看看',
+      allowNsfw: true,
+    });
+    expect(beretShot.outfitId).toBe('urban_beret');
+    expect(beretShot.charCaptions[0]?.char_caption).toContain('burgundy wool beret');
+    expect(beretShot.charCaptions[0]?.char_caption).not.toContain('gold suzu bell');
+    expect(beretShot.charCaptions[0]?.char_caption).toContain('black ankle boots');
+    expect(beretShot.prompt).toContain('detached sleeves, kimono');
+
+    // Subsequent normal shot without outfitId still wears the active daily OOTD (sig_kimono) with default suzu bell!
+    const nextDefaultShot = compileOcSelfiePrompt({
+      oc: richOc,
+      activeOutfit: sigOrOther(wardrobeOutfits, 'sig_kimono'),
+      spec: {
+        framing: 'portrait',
+        pose: 'cute_face',
+      },
+      userContent: '再来张大头自拍',
+      allowNsfw: true,
+    });
+    expect(nextDefaultShot.outfitId).toBe('sig_kimono');
+    expect(nextDefaultShot.charCaptions[0]?.char_caption).toContain('gold suzu bell');
+  });
 });
+
+function sigOrOther(list: readonly OcOutfitPreset[], id: string): OcOutfitPreset {
+  return list.find((o) => o.id === id) ?? list[0]!;
+}

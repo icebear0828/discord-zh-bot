@@ -3036,6 +3036,25 @@ describe('menu router & multiplayer interaction flows', () => {
     expect(ctx.repos.guildConfig.getOrCreate('g1').rpg.dailyStamina).toBe(5);
     expect(ctx.repos.guildConfig.getOrCreate('g1').creditLoan.garnishRate).toBe(0.5);
 
+    // 6. Admin OC Selfie OOTD outfit selector & reroll button
+    const navSelfie = createStringSelectMock({
+      customId: 'menu:admin_ai_selfie_preset',
+      userId: 'admin1',
+      values: ['nav:selfie'],
+    });
+    await routeInteraction(navSelfie.interaction, ctx);
+    const selfiePanel = navSelfie.update.mock.calls[0]![0];
+    expect(selfiePanel.components?.length).toBeLessThanOrEqual(5);
+    expect(selfiePanel.embeds?.[0]?.toJSON().description).toContain('穿搭');
+
+    const rerollOotd = createButtonMock({
+      customId: 'menu:admin:ai_reroll_selfie_ootd',
+      userId: 'admin1',
+    });
+    await routeInteraction(rerollOotd.interaction, ctx);
+    expect(ctx.repos.guildConfig.getOrCreate('g1').ai.selfie.ootdOffset).toBe(1);
+    expect(ctx.repos.guildConfig.getOrCreate('g1').ai.selfie.outfitMode).toBe('ootd');
+
     ctx.db.close();
   });
 });

@@ -34,11 +34,15 @@ import {
   buildOcSelfieSkillPrompt,
   compileOcSelfiePrompt,
   extractSelfieSkillTag,
+  listBuiltinOcPoses,
+  resolveActiveOcOutfit,
   resolveActiveOcProfile,
   stripSelfieSkillTags,
   type AiOcProfile,
   type AiSelfieConfig,
   type CompiledOcSelfiePrompt,
+  type OcOutfitPreset,
+  type OcPosePreset,
 } from './aiOcSelfie.js';
 import {
   formatAiRelationLabel,
@@ -1178,8 +1182,22 @@ export class AiService {
     return this.ocPresetStore?.listProfiles() ?? [];
   }
 
+  listOcPoses(): readonly OcPosePreset[] {
+    return this.ocPresetStore?.listPoses() ?? listBuiltinOcPoses();
+  }
+
   resolveActiveOcProfile(selfieCfg?: AiSelfieConfig): AiOcProfile {
     return resolveActiveOcProfile(selfieCfg, this.listOcProfiles());
+  }
+
+  resolveActiveOcOutfit(selfieCfg?: AiSelfieConfig, nowMs = Date.now()): OcOutfitPreset {
+    const oc = this.resolveActiveOcProfile(selfieCfg);
+    return resolveActiveOcOutfit({
+      oc,
+      selfieCfg,
+      nowMs,
+      timezone: this.timezone,
+    });
   }
 
   isSelfieSkillAvailable(guildId: string): boolean {
@@ -1655,9 +1673,13 @@ export class AiService {
     const currentTurnLine = `${previewTs ? `[${previewTs}] ` : ''}[${speakerLabel}]: ${normalizedUserText}`;
 
     const selfieSkillEnabled = Boolean(aiCfg.selfie?.enabled && this.isImageGenAvailable?.());
+    const previewNowMs = input.messageTimestamp ?? Date.now();
+    const previewOc = this.resolveActiveOcProfile(aiCfg.selfie);
+    const previewOutfit = this.resolveActiveOcOutfit(aiCfg.selfie, previewNowMs);
     const selfieSkillPrompt = selfieSkillEnabled
       ? buildOcSelfieSkillPrompt({
-          oc: this.resolveActiveOcProfile(aiCfg.selfie),
+          oc: previewOc,
+          activeOutfit: previewOutfit,
           allowNsfw: aiCfg.selfie.allowNsfw,
         })
       : null;
@@ -2236,10 +2258,13 @@ export class AiService {
         : formattedText;
 
     const selfieSkillEnabled = Boolean(aiCfg.selfie?.enabled && this.isImageGenAvailable?.());
+    const turnNowMs = input.messageTimestamp ?? Date.now();
     const activeOc = this.resolveActiveOcProfile(aiCfg.selfie);
+    const activeOutfit = this.resolveActiveOcOutfit(aiCfg.selfie, turnNowMs);
     const selfieSkillPrompt = selfieSkillEnabled
       ? buildOcSelfieSkillPrompt({
           oc: activeOc,
+          activeOutfit,
           allowNsfw: aiCfg.selfie.allowNsfw,
         })
       : null;
@@ -2372,10 +2397,13 @@ export class AiService {
       const compiledSelfiePrompt = selfieSpec
         ? compileOcSelfiePrompt({
             oc: activeOc,
+            activeOutfit,
+            poses: this.listOcPoses(),
             spec: selfieSpec,
             userContent: rawUserText,
             allowNsfw: aiCfg.selfie.allowNsfw,
             forceSpoiler: cfg.imageGen.forceSpoiler,
+            rotationScopeKey: `${input.guildId}:${input.channelId}`,
           })
         : undefined;
 
