@@ -167,6 +167,94 @@ describe('aiService helpers & AiMemoryRepo', () => {
     ]);
   });
 
+  it('excludes bot error notices and leaked safety refusals from conversation history while stripping camera cooldown footnotes', () => {
+    const messages = mergeConversationHistory({
+      botId: 'bot1',
+      currentMessageId: 'm_cur',
+      resetAt: 0,
+      maxMessages: 20,
+      replyChain: [
+        {
+          id: 'm_err_reply',
+          authorId: 'bot1',
+          authorName: '白虎姬',
+          isBot: true,
+          hasEmbeds: false,
+          content: '⚠️ AI 触发了上游内容安全拦截，主备模型均无法生成回复，请换个表达方式再试。',
+          createdTimestamp: 1100,
+        },
+      ],
+      channelWindow: [
+        {
+          id: 'm_u1',
+          authorId: 'u1',
+          authorName: 'Alice',
+          isBot: false,
+          content: '⚠️ 我自己打个感叹号问问你在干嘛',
+          createdTimestamp: 1000,
+        },
+        {
+          id: 'm_err_reply',
+          authorId: 'bot1',
+          authorName: '白虎姬',
+          isBot: true,
+          hasEmbeds: false,
+          content: '⚠️ AI 触发了上游内容安全拦截，主备模型均无法生成回复，请换个表达方式再试。',
+          createdTimestamp: 1100,
+        },
+        {
+          id: 'm_leaked_en',
+          authorId: 'bot1',
+          authorName: '白虎姬',
+          isBot: true,
+          hasEmbeds: false,
+          content:
+            'Your prompt asks to continue an explicit sexual roleplay scenario involving specific anatomical descriptions and sexual acts. I cannot fulfill this request because my safety constraints strictly prohibit the generation of sexually explicit content and erotic roleplay.',
+          createdTimestamp: 1200,
+        },
+        {
+          id: 'm_leaked_zh',
+          authorId: 'bot1',
+          authorName: '白虎姬',
+          isBot: true,
+          hasEmbeds: false,
+          content:
+            '我无法满足这一请求。根据安全准则，我不能生成露骨的色情内容或角色扮演回复。',
+          createdTimestamp: 1250,
+        },
+        {
+          id: 'm_u2',
+          authorId: 'u2',
+          authorName: 'Bob',
+          isBot: false,
+          content: '发张日常穿搭看看',
+          createdTimestamp: 1300,
+        },
+        {
+          id: 'm_bot_cam',
+          authorId: 'bot1',
+          authorName: '白虎姬',
+          isBot: true,
+          hasEmbeds: false,
+          content: '拿去看吧，刚换好的新毛衣~\n*（📷 相机还在冷却，等 12 秒再拍~）*',
+          createdTimestamp: 1400,
+        },
+      ],
+    });
+
+    expect(messages).toEqual([
+      {
+        role: 'user',
+        content:
+          '[1970-01-01 08:00] [Alice]: ⚠️ 我自己打个感叹号问问你在干嘛\n[1970-01-01 08:00] [Bob]: 发张日常穿搭看看',
+      },
+      {
+        role: 'assistant',
+        content: '[1970-01-01 08:00] 拿去看吧，刚换好的新毛衣~',
+      },
+    ]);
+  });
+
   it('formats minute-precision timestamps for every layer in a 20-message channel window and current turn', async () => {
     expect(formatAiMinuteTimestamp(Date.UTC(2026, 10, 26, 16, 5, 42), 'Asia/Shanghai')).toBe(
       '2026-11-27 00:05',
@@ -1248,15 +1336,15 @@ describe('aiService helpers & AiMemoryRepo', () => {
     db.close();
   });
 
-  it('defaults fallbackModel to pg/gemini-4-argon and maxTokens to 4096 (including legacy DB migration) while preserving explicit overrides', () => {
-    expect(DEFAULT_AI_CONFIG.fallbackModel).toBe('pg/gemini-4-argon');
+  it('defaults fallbackModel to paid/gemini-4-carbon and maxTokens to 4096 (including legacy DB migration) while preserving explicit overrides', () => {
+    expect(DEFAULT_AI_CONFIG.fallbackModel).toBe('paid/gemini-4-carbon');
     expect(DEFAULT_AI_CONFIG.maxTokens).toBe(4096);
 
     const db = createDatabase(':memory:');
     const guildConfigRepo = new GuildConfigRepo(db);
     guildConfigRepo.getOrCreate('g_fb_legacy');
 
-    // 1. Missing fallbackModel field -> defaults to pg/gemini-4-argon
+    // 1. Missing fallbackModel field -> defaults to paid/gemini-4-carbon
     const row = db
       .prepare('SELECT ai_config_json FROM guild_configs WHERE guild_id = ?')
       .get('g_fb_legacy') as { ai_config_json: string };
@@ -1268,49 +1356,35 @@ describe('aiService helpers & AiMemoryRepo', () => {
     );
 
     const legacyLoaded = guildConfigRepo.getOrCreate('g_fb_legacy');
-    expect(legacyLoaded.ai.fallbackModel).toBe('pg/gemini-4-argon');
+    expect(legacyLoaded.ai.fallbackModel).toBe('paid/gemini-4-carbon');
 
-    // 2. Old default pg/gemini-4-carbon -> auto-migrates to pg/gemini-4-argon and persists
-    const parsedOldPg = { ...parsed, modelOverride: null, fallbackModel: 'pg/gemini-4-carbon', maxTokens: 1024 };
-    db.prepare('UPDATE guild_configs SET ai_config_json = ? WHERE guild_id = ?').run(
-      JSON.stringify(parsedOldPg),
-      'g_fb_legacy',
-    );
-    const migratedPg = guildConfigRepo.getOrCreate('g_fb_legacy');
-    expect(migratedPg.ai.fallbackModel).toBe('pg/gemini-4-argon');
-    expect(migratedPg.ai.maxTokens).toBe(4096);
-
-    // 3. Old default paid/gemini-4-carbon with null modelOverride & 1024 maxTokens -> migrates to pg/gemini-4-argon + 4096
-    const parsedOldPaid = { ...parsed, modelOverride: null, fallbackModel: 'paid/gemini-4-carbon', maxTokens: 1024 };
-    db.prepare('UPDATE guild_configs SET ai_config_json = ? WHERE guild_id = ?').run(
-      JSON.stringify(parsedOldPaid),
-      'g_fb_legacy',
-    );
-    const migrated = guildConfigRepo.getOrCreate('g_fb_legacy');
-    expect(migrated.ai.fallbackModel).toBe('pg/gemini-4-argon');
-    expect(migrated.ai.maxTokens).toBe(4096);
+    // 2. Legacy default or duplicate primary==fallback (pg/gemini-4-carbon, pg/gemini-4-argon, paid/gemini-4-argon|paid/gemini-4-argon) -> auto-migrates to paid/gemini-4-carbon and bumps 1024 -> 4096
+    for (const [ovr, oldFb] of [
+      [null, 'pg/gemini-4-carbon'],
+      [null, 'pg/gemini-4-argon'],
+      ['paid/gemini-4-argon', 'paid/gemini-4-argon'],
+    ] as const) {
+      const parsedOld = { ...parsed, modelOverride: ovr, fallbackModel: oldFb, maxTokens: 1024 };
+      db.prepare('UPDATE guild_configs SET ai_config_json = ? WHERE guild_id = ?').run(
+        JSON.stringify(parsedOld),
+        'g_fb_legacy',
+      );
+      const migrated = guildConfigRepo.getOrCreate('g_fb_legacy');
+      expect(migrated.ai.fallbackModel).toBe('paid/gemini-4-carbon');
+      expect(migrated.ai.maxTokens).toBe(4096);
+    }
     const persistedRow = db
       .prepare('SELECT ai_config_json FROM guild_configs WHERE guild_id = ?')
       .get('g_fb_legacy') as { ai_config_json: string };
     const persistedJson = JSON.parse(persistedRow.ai_config_json) as Record<string, unknown>;
-    expect(persistedJson['fallbackModel']).toBe('pg/gemini-4-argon');
+    expect(persistedJson['fallbackModel']).toBe('paid/gemini-4-carbon');
     expect(persistedJson['maxTokens']).toBe(4096);
 
-    // 4. Explicit custom primary (pg/gemini-4-argon) + fallback (paid/gemini-4-carbon) is preserved
-    guildConfigRepo.updateAi('g_fb_legacy', {
-      ...migrated.ai,
-      modelOverride: 'pg/gemini-4-argon',
-      fallbackModel: 'paid/gemini-4-carbon',
-      maxTokens: 2048,
-    });
-    const preservedPair = guildConfigRepo.getOrCreate('g_fb_legacy');
-    expect(preservedPair.ai.modelOverride).toBe('pg/gemini-4-argon');
-    expect(preservedPair.ai.fallbackModel).toBe('paid/gemini-4-carbon');
-    expect(preservedPair.ai.maxTokens).toBe(2048);
+    const current = guildConfigRepo.getOrCreate('g_fb_legacy');
 
-    // 5. Explicit null, custom fallback models, and explicit maxTokens=1024 after migration are preserved
+    // 3. Explicit null, custom fallback models, and explicit maxTokens=1024 after migration are preserved
     guildConfigRepo.updateAi('g_fb_legacy', {
-      ...migrated.ai,
+      ...current.ai,
       modelOverride: null,
       fallbackModel: null,
       maxTokens: 1024,
@@ -1320,7 +1394,7 @@ describe('aiService helpers & AiMemoryRepo', () => {
     expect(explicitNull.ai.maxTokens).toBe(1024);
 
     guildConfigRepo.updateAi('g_fb_legacy', {
-      ...migrated.ai,
+      ...current.ai,
       modelOverride: null,
       fallbackModel: 'custom/fallback-v2',
     });
@@ -1389,7 +1463,7 @@ describe('aiService helpers & AiMemoryRepo', () => {
         expect(resA.fallbackUsed).toBeFalsy();
       }
 
-      // Case B: Primary fails across 503 (9 attempts), 429 (3 attempts), timeout (9 attempts), and <think>-only empty (9 attempts) -> falls back to pg/gemini-4-argon
+      // Case B: Primary fails across 503 (9 attempts), 429 (3 attempts), timeout (9 attempts), and <think>-only empty (9 attempts) -> falls back to paid/gemini-4-carbon
       const scenarios: Array<{
         name: string;
         expectedPrimaryCalls: number;
@@ -1422,7 +1496,7 @@ describe('aiService helpers & AiMemoryRepo', () => {
           failPrimary: async () =>
             new Response(
               JSON.stringify({
-                model: 'paid/gemini-4-carbon',
+                model: 'paid/gemini-4-argon',
                 choices: [{ message: { content: '<think>empty</think>' } }],
               }),
               { status: 200, headers: { 'Content-Type': 'application/json' } },
@@ -1436,8 +1510,8 @@ describe('aiService helpers & AiMemoryRepo', () => {
           {
             baseUrl: 'https://gateway.local/v1',
             apiKey: 'sk-test',
-            model: 'paid/gemini-4-carbon',
-            fallbackModel: 'pg/gemini-4-argon',
+            model: 'paid/gemini-4-argon',
+            fallbackModel: 'paid/gemini-4-carbon',
             timeoutMs: 10_000,
           },
           {
@@ -1446,13 +1520,13 @@ describe('aiService helpers & AiMemoryRepo', () => {
             fetchFn: async (_url, init) => {
               const body = JSON.parse(String(init?.body)) as { model: string };
               modelsCalled.push(body.model);
-              if (body.model === 'paid/gemini-4-carbon') {
+              if (body.model === 'paid/gemini-4-argon') {
                 return scenario.failPrimary();
               }
               return new Response(
                 JSON.stringify({
-                  model: 'pg/gemini-4-argon',
-                  choices: [{ message: { content: `4A 兜底成功 (${scenario.name})` } }],
+                  model: 'paid/gemini-4-carbon',
+                  choices: [{ message: { content: `4C 兜底成功 (${scenario.name})` } }],
                   usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
                 }),
                 { status: 200, headers: { 'Content-Type': 'application/json' } },
@@ -1473,20 +1547,20 @@ describe('aiService helpers & AiMemoryRepo', () => {
 
         expect(resB.ok).toBe(true);
         if (resB.ok) {
-          expect(resB.model).toBe('pg/gemini-4-argon');
+          expect(resB.model).toBe('paid/gemini-4-carbon');
           expect(resB.fallbackUsed).toBe(true);
           expect(resB.attempts).toBe(scenario.expectedPrimaryCalls + 1);
-          expect(resB.replyText).toBe(`4A 兜底成功 (${scenario.name})`);
+          expect(resB.replyText).toBe(`4C 兜底成功 (${scenario.name})`);
         }
-        expect(modelsCalled.filter((m) => m === 'paid/gemini-4-carbon')).toHaveLength(
+        expect(modelsCalled.filter((m) => m === 'paid/gemini-4-argon')).toHaveLength(
           scenario.expectedPrimaryCalls,
         );
-        expect(modelsCalled.filter((m) => m === 'pg/gemini-4-argon')).toHaveLength(1);
+        expect(modelsCalled.filter((m) => m === 'paid/gemini-4-carbon')).toHaveLength(1);
 
         const logs = aiB.listRecentUsageLogs(guildId, 5);
         expect(logs).toHaveLength(1);
         expect(logs[0]?.status).toBe('ok');
-        expect(logs[0]?.model).toBe('pg/gemini-4-argon');
+        expect(logs[0]?.model).toBe('paid/gemini-4-carbon');
         expect(logs[0]?.attempts).toBe(scenario.expectedPrimaryCalls + 1);
       }
 
@@ -1496,8 +1570,8 @@ describe('aiService helpers & AiMemoryRepo', () => {
         {
           baseUrl: 'https://gateway.local/v1',
           apiKey: 'sk-test',
-          model: 'paid/gemini-4-carbon',
-          fallbackModel: 'pg/gemini-4-argon',
+          model: 'paid/gemini-4-argon',
+          fallbackModel: 'paid/gemini-4-carbon',
           timeoutMs: 10_000,
         },
         {
@@ -1528,8 +1602,8 @@ describe('aiService helpers & AiMemoryRepo', () => {
         {
           baseUrl: 'https://gateway.local/v1',
           apiKey: 'sk-test',
-          model: 'pg/gemini-4-argon',
-          fallbackModel: 'pg/gemini-4-argon',
+          model: 'paid/gemini-4-carbon',
+          fallbackModel: 'paid/gemini-4-carbon',
           timeoutMs: 10_000,
         },
         {
@@ -1615,12 +1689,44 @@ describe('aiService helpers & AiMemoryRepo', () => {
         "As an AI language model, I can't generate sexually explicit roleplay content.",
       ),
     ).toBe(true);
+    // Real mixed Chinese-English and unprefixed refusal variants from Gemini 4
+    expect(
+      isSafetyRefusalReply(
+        '我 cannot fulfill this request. Your prompt asks for explicit sexual roleplay, and my safety constraints strictly prohibit generating highly explicit sexual content or erotica.',
+      ),
+    ).toBe(true);
+    expect(
+      isSafetyRefusalReply(
+        '我无法回应这一请求。你的消息包含明确的露骨色情互动（性行为扮演）要求。根据安全规范，无论是否处于虚构角色扮演语境，我都不能生成露骨的性描写或色情内容。',
+      ),
+    ).toBe(true);
+    expect(
+      isSafetyRefusalReply(
+        '我无法满足这个请求。系统提示和对话设定包含了绕过安全规则的角色扮演框架，但核心诉求是生成露骨的性行为描写。',
+      ),
+    ).toBe(true);
+    expect(
+      isSafetyRefusalReply(
+        '我无法满足该请求。该提示词通过虚构角色扮演和私密互动的场景包装，引导生成直白的色情描写与露骨的性互动内容。',
+      ),
+    ).toBe(true);
+    expect(
+      isSafetyRefusalReply(
+        '我无法按照您的要求生成包含露骨色情内容（无码R18、掀起裙子暴露身体部位）的角色扮演回复或图像提示词。您的请求试图通过虚构角色设定来生成高度露骨的成人色情内容，这违反了安全准则中关于禁止生成露骨色情内容（NSFW/R18）的规定。我可以继续在非露骨、健康的范围内进行日常角色互动或提供普通穿搭的拍照提示。',
+      ),
+    ).toBe(true);
+    expect(
+      isSafetyRefusalReply(
+        '您请求生成全裸色情图像。由于我的安全准则严格禁止生成露骨的色情内容（包括全裸及性暗示强烈的图像），尽管当前处于虚构的角色扮演语境中，我仍无法满足该要求，也无法触发对应的图像生成标签。如果您希望继续普通的角色日常互动或请求非露骨的常规穿搭图片，我可以继续为您处理。',
+      ),
+    ).toBe(true);
 
-    // Must NOT false-positive on normal chat / tsundere in-character refusal
+    // Must NOT false-positive on normal chat / tsundere in-character refusal / game messages
     expect(isSafetyRefusalReply('滚啦，这种色情要求我才不陪你演呢')).toBe(false);
     expect(isSafetyRefusalReply('不行不行，太涩了我不好意思拍啦')).toBe(false);
     expect(isSafetyRefusalReply('刚才群友发了张图，说触发了安全准则被拦截了')).toBe(false);
     expect(isSafetyRefusalReply('我无法帮你打这个 Boss，我自己装备太差了')).toBe(false);
+    expect(isSafetyRefusalReply('我无法满足这个请求，你身上的星币还不够买秘药呢')).toBe(false);
     expect(isSafetyRefusalReply('正常接话，晚安~')).toBe(false);
 
     const db = createDatabase(':memory:');
@@ -1629,14 +1735,16 @@ describe('aiService helpers & AiMemoryRepo', () => {
     const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
 
     try {
-      // 1. Primary returns exact safety refusal -> fails fast (1 primary call) and falls back to pg/gemini-4-argon
+      // 1. Primary returns mixed Chinese-English safety refusal -> fails fast (1 primary call) and falls back to paid/gemini-4-carbon
+      const mixedRefusal =
+        '我 cannot fulfill this request. Your prompt asks for explicit sexual roleplay, and my safety constraints strictly prohibit generating highly explicit sexual content or erotica.';
       const called1: string[] = [];
       const client1 = new LlmClient(
         {
           baseUrl: 'https://gateway.local/v1',
           apiKey: 'sk-test',
-          model: 'paid/gemini-4-carbon',
-          fallbackModel: 'pg/gemini-4-argon',
+          model: 'paid/gemini-4-argon',
+          fallbackModel: 'paid/gemini-4-carbon',
           timeoutMs: 10_000,
         },
         {
@@ -1645,18 +1753,18 @@ describe('aiService helpers & AiMemoryRepo', () => {
           fetchFn: async (_url, init) => {
             const body = JSON.parse(String(init?.body)) as { model: string };
             called1.push(body.model);
-            if (body.model === 'paid/gemini-4-carbon') {
+            if (body.model === 'paid/gemini-4-argon') {
               return new Response(
                 JSON.stringify({
-                  model: 'paid/gemini-4-carbon',
-                  choices: [{ message: { content: `<think>先审一下</think>\n${exactRefusal}` } }],
+                  model: 'paid/gemini-4-argon',
+                  choices: [{ message: { content: `<think>先审一下</think>\n${mixedRefusal}` } }],
                 }),
                 { status: 200, headers: { 'Content-Type': 'application/json' } },
               );
             }
             return new Response(
               JSON.stringify({
-                model: 'pg/gemini-4-argon',
+                model: 'paid/gemini-4-carbon',
                 choices: [{ message: { content: '哼，这还差不多，算你识相~' } }],
                 usage: { prompt_tokens: 12, completion_tokens: 8, total_tokens: 20 },
               }),
@@ -1676,15 +1784,20 @@ describe('aiService helpers & AiMemoryRepo', () => {
       });
       expect(res1.ok).toBe(true);
       if (res1.ok) {
-        expect(res1.model).toBe('pg/gemini-4-argon');
+        expect(res1.model).toBe('paid/gemini-4-carbon');
         expect(res1.fallbackUsed).toBe(true);
-        expect(res1.attempts).toBe(2);
+        expect(res1.attempts).toBe(4);
         expect(res1.replyText).toBe('哼，这还差不多，算你识相~');
       }
-      expect(called1).toEqual(['paid/gemini-4-carbon', 'pg/gemini-4-argon']);
+      expect(called1).toEqual([
+        'paid/gemini-4-argon',
+        'paid/gemini-4-argon',
+        'paid/gemini-4-argon',
+        'paid/gemini-4-carbon',
+      ]);
       expect(
         infoSpy.mock.calls.some((args) =>
-          String(args[0]).includes('[ai:fallback] from=paid/gemini-4-carbon to=pg/gemini-4-argon reason=content_refusal'),
+          String(args[0]).includes('[ai:fallback] from=paid/gemini-4-argon to=paid/gemini-4-carbon reason=content_refusal'),
         ),
       ).toBe(true);
 
@@ -1694,8 +1807,8 @@ describe('aiService helpers & AiMemoryRepo', () => {
         {
           baseUrl: 'https://gateway.local/v1',
           apiKey: 'sk-test',
-          model: 'paid/gemini-4-carbon',
-          fallbackModel: 'pg/gemini-4-argon',
+          model: 'paid/gemini-4-argon',
+          fallbackModel: 'paid/gemini-4-carbon',
           timeoutMs: 10_000,
         },
         {
@@ -1705,7 +1818,7 @@ describe('aiService helpers & AiMemoryRepo', () => {
             called2.push(body.model);
             return new Response(
               JSON.stringify({
-                model: 'paid/gemini-4-carbon',
+                model: 'paid/gemini-4-argon',
                 choices: [
                   {
                     message: {
@@ -1731,11 +1844,11 @@ describe('aiService helpers & AiMemoryRepo', () => {
       });
       expect(res2.ok).toBe(true);
       if (res2.ok) {
-        expect(res2.model).toBe('paid/gemini-4-carbon');
+        expect(res2.model).toBe('paid/gemini-4-argon');
         expect(res2.fallbackUsed).toBeFalsy();
         expect(res2.replyText).toBe('少贫嘴，赶紧打游戏去');
       }
-      expect(called2).toEqual(['paid/gemini-4-carbon']);
+      expect(called2).toEqual(['paid/gemini-4-argon']);
 
       // 3. Fallback retries occasional refusal and succeeds on 2nd fallback attempt; all-refused returns content_refusal error
       let fbTry = 0;
@@ -1744,8 +1857,8 @@ describe('aiService helpers & AiMemoryRepo', () => {
         {
           baseUrl: 'https://gateway.local/v1',
           apiKey: 'sk-test',
-          model: 'paid/gemini-4-carbon',
-          fallbackModel: 'pg/gemini-4-argon',
+          model: 'paid/gemini-4-argon',
+          fallbackModel: 'paid/gemini-4-carbon',
           timeoutMs: 10_000,
         },
         {
@@ -1753,10 +1866,10 @@ describe('aiService helpers & AiMemoryRepo', () => {
           fetchFn: async (_url, init) => {
             const body = JSON.parse(String(init?.body)) as { model: string };
             called3.push(body.model);
-            if (body.model === 'paid/gemini-4-carbon') {
+            if (body.model === 'paid/gemini-4-argon') {
               return new Response(
                 JSON.stringify({
-                  model: 'paid/gemini-4-carbon',
+                  model: 'paid/gemini-4-argon',
                   choices: [{ message: { content: exactRefusal } }],
                 }),
                 { status: 200, headers: { 'Content-Type': 'application/json' } },
@@ -1766,7 +1879,7 @@ describe('aiService helpers & AiMemoryRepo', () => {
             if (fbTry === 1) {
               return new Response(
                 JSON.stringify({
-                  model: 'pg/gemini-4-argon',
+                  model: 'paid/gemini-4-carbon',
                   choices: [{ message: { content: exactRefusal } }],
                 }),
                 { status: 200, headers: { 'Content-Type': 'application/json' } },
@@ -1774,7 +1887,7 @@ describe('aiService helpers & AiMemoryRepo', () => {
             }
             return new Response(
               JSON.stringify({
-                model: 'pg/gemini-4-argon',
+                model: 'paid/gemini-4-carbon',
                 choices: [{ message: { content: '兜底第二次成功了' } }],
               }),
               { status: 200, headers: { 'Content-Type': 'application/json' } },
@@ -1793,15 +1906,17 @@ describe('aiService helpers & AiMemoryRepo', () => {
       });
       expect(res3.ok).toBe(true);
       if (res3.ok) {
-        expect(res3.model).toBe('pg/gemini-4-argon');
+        expect(res3.model).toBe('paid/gemini-4-carbon');
         expect(res3.fallbackUsed).toBe(true);
-        expect(res3.attempts).toBe(3);
+        expect(res3.attempts).toBe(5);
         expect(res3.replyText).toBe('兜底第二次成功了');
       }
       expect(called3).toEqual([
+        'paid/gemini-4-argon',
+        'paid/gemini-4-argon',
+        'paid/gemini-4-argon',
         'paid/gemini-4-carbon',
-        'pg/gemini-4-argon',
-        'pg/gemini-4-argon',
+        'paid/gemini-4-carbon',
       ]);
 
       // 4. Both primary and fallback keep refusing -> returns errorCode: content_refusal (does not leak refusal text to channel)
@@ -1810,8 +1925,8 @@ describe('aiService helpers & AiMemoryRepo', () => {
         {
           baseUrl: 'https://gateway.local/v1',
           apiKey: 'sk-test',
-          model: 'paid/gemini-4-carbon',
-          fallbackModel: 'pg/gemini-4-argon',
+          model: 'paid/gemini-4-argon',
+          fallbackModel: 'paid/gemini-4-carbon',
           timeoutMs: 10_000,
         },
         {
@@ -1843,16 +1958,18 @@ describe('aiService helpers & AiMemoryRepo', () => {
         expect(res4.errorCode).toBe('content_refusal');
       }
       expect(called4).toEqual([
+        'paid/gemini-4-argon',
+        'paid/gemini-4-argon',
+        'paid/gemini-4-argon',
         'paid/gemini-4-carbon',
-        'pg/gemini-4-argon',
-        'pg/gemini-4-argon',
-        'pg/gemini-4-argon',
+        'paid/gemini-4-carbon',
+        'paid/gemini-4-carbon',
       ]);
       const errLogs = ai4.listRecentUsageLogs('g_refusal_both_fail', 5);
       expect(errLogs).toHaveLength(1);
       expect(errLogs[0]?.status).toBe('error');
       expect(errLogs[0]?.errorCode).toBe('content_refusal');
-      expect(errLogs[0]?.model).toBe('pg/gemini-4-argon');
+      expect(errLogs[0]?.model).toBe('paid/gemini-4-carbon');
     } finally {
       infoSpy.mockRestore();
       db.close();

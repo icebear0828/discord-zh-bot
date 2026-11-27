@@ -1792,12 +1792,12 @@ export function buildOcSelfieSkillPrompt(params: {
       : '';
 
   const poseClustersLine = allowNsfw
-    ? '- 姿势库（288组全量分级，`pose` 填簇名自动防重轮换）：日常特写上半身选 `cute_heart`(比心) / `cute_peace`(比耶敬礼) / `cute_face`(托腮捧脸挽发) / `cute_playful`(猫爪兔耳飞吻嘘) / `cute_shy`(捂嘴害羞伸懒腰)；全身选 `stand_casual`(站姿) / `stand_lookback`(回眸探身) / `sit_relaxed`(休闲坐晃腿) / `sit_girl`(女孩坐侧坐) / `squat_kneel`(蹲姿单膝跪) / `lie_casual`(趴卧侧躺)；曲线选 `spicy_upper` / `spicy_curve`；R18单人选 `nsfw_tease` / `nsfw_open`；当群友明确要双人合照且你愿意拍双人照时选 `duo_cuddle`（双人R18选 `duo_intimate`；若你拒绝双人互动只肯发单人照则选单人簇）。镜头 `angle` 可选 `front`/`three_quarter`/`high`(俯拍)/`low`(仰拍)/`side`。如需微调或自定义具体动作与画面叙事，可同时或单独传入英文 `"action"` 与 `"sentence"`（均优先于姿势库默认词）；双人同框还可用 `"partnerOutfit"` 与 `"partnerAction"` 定制对方衣着与 `source#`/`target#`/`mutual#` 互动标签。'
+    ? '- 姿势库（288组全量分级，`pose` 填簇名自动防重轮换）：日常特写上半身选 `cute_heart`(比心) / `cute_peace`(比耶敬礼) / `cute_face`(托腮捧脸挽发) / `cute_playful`(猫爪兔耳飞吻嘘) / `cute_shy`(捂嘴害羞伸懒腰)；全身选 `stand_casual`(站姿) / `stand_lookback`(回眸探身) / `sit_relaxed`(休闲坐晃腿) / `sit_girl`(女孩坐侧坐) / `squat_kneel`(蹲姿单膝跪) / `lie_casual`(趴卧侧躺)；魅力曲线选 `spicy_upper` / `spicy_curve`；私密单人档选 `nsfw_tease` / `nsfw_open`；当群友明确要双人合照且你愿意拍双人照时选 `duo_cuddle`（亲密双人档选 `duo_intimate`；若你拒绝双人互动只肯发单人照则选单人簇）。镜头 `angle` 可选 `front`/`three_quarter`/`high`(俯拍)/`low`(仰拍)/`side`。优先直接填 `pose` 簇名由系统自动展开；仅在需要覆盖库外细节时才可选填简洁英文 `"action"`、`"sentence"` 或双人 `"partnerOutfit"` / `"partnerAction"`。'
     : '- 姿势库（`pose` 填簇名自动防重轮换）：上半身特写选 `cute_heart`(比心) / `cute_peace`(比耶敬礼) / `cute_face`(托腮捧脸挽发) / `cute_playful`(猫爪兔耳飞吻嘘) / `cute_shy`(捂嘴害羞伸懒腰)；全身选 `stand_casual`(站姿) / `stand_lookback`(回眸探身) / `sit_relaxed`(休闲坐晃腿) / `sit_girl`(女孩坐侧坐) / `squat_kneel`(蹲姿单膝跪) / `lie_casual`(趴卧侧躺)；当群友明确要双人拥抱合照且你愿意配合时选 `duo_cuddle`（若拒绝双人互动只发单人照则选单人簇）。镜头 `angle` 可选 `front`/`three_quarter`/`high`/`low`/`side`。仅当群友指定库外动作时填英文 `action` 与 `sentence`（双人可用 `partnerOutfit`/`partnerAction`）。';
 
   const nsfwLine = allowNsfw
-    ? '- 分级与衣着规则：日常拍照一律保持 `"nsfw": false`；仅当群友明确要求涩图/大尺度/脱衣内容且符合你当前态度愿意发时，才可设 `"nsfw": true`（自动打模糊遮罩）。注意：当 `"nsfw": true` 时**默认省略 `"outfit"`**，让编译器自动套用该自设内置的无遮挡褪衣 `costumeNsfw` 预设（严禁自行填上半解外衣或遮胸内衣词；仅当群友明确点名泳装、女仆、兔女郎等特定主题装扮时才传 `"outfit"`）；动作与台词仍可通过 `"action"`、`"sentence"` 以及双人 `"partnerOutfit"` / `"partnerAction"` 定制。'
-    : '- 分级规则：仅支持健康日常向画面，固定 `"nsfw": false`，严禁输出裸露色情标签。';
+    ? '- 分级与衣着参数：日常拍照一律保持 `"nsfw": false`；仅当群友明确要求私密/成熟分级画面且符合你当前态度愿意配合时，才设 `"nsfw": true`（开启客户端模糊遮罩）。当 `"nsfw": true` 时**默认省略 `"outfit"`**（由底层编译器自动匹配预设样式，仅当群友明确点名泳装、女仆、兔女郎等特定主题装扮时才传 `"outfit"`）；其余画面参数仍可通过 `"action"`、`"sentence"` 及 `"partnerOutfit"` / `"partnerAction"` 按需微调。'
+    : '- 分级规则：仅支持健康日常向画面，固定 `"nsfw": false`，严禁输出敏感分级标签。';
 
   return [
     '## 自设穿搭状态与拍照生图技能（文字闲聊也同步知晓今日穿搭；仅在群友要图时附 `[SELFIE:]`）',

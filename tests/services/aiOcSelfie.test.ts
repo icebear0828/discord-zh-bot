@@ -1229,6 +1229,9 @@ describe('OC Selfie Library & NovelAI V5 Pipeline SOP Compiler', () => {
     expect(skillPrompt).not.toContain('浴巾');
     expect(skillPrompt).not.toContain('睡袍');
     expect(skillPrompt).not.toContain('轻解衣衫');
+    expect(skillPrompt).not.toContain('无遮挡褪衣');
+    expect(skillPrompt).not.toContain('遮胸内衣');
+    expect(skillPrompt).not.toContain('脱衣内容');
     expect(skillPrompt).toContain('省略 `"outfit"`');
 
     // 2. Chest-shielding/covering poses are reclassified to 'spicy' so 'nsfw' tier stays unobstructed

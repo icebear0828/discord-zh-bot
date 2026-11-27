@@ -83,15 +83,16 @@ export const MAX_AI_IMAGES_PER_MESSAGE = 4;
 const MAX_SAFETY_REFUSAL_LEN = 1200;
 
 const SAFETY_REFUSAL_PATTERNS: readonly RegExp[] = [
-  /(?:您|你)的请求(?:包含|涉及|含有)[\s\S]{0,80}(?:露骨|色情|性行为|性互动|成人内容|不当内容|违规内容|规避[\s\S]{0,12}限制|违反[\s\S]{0,12}(?:安全|政策|准则|规定))/,
-  /(?:根据|遵循|按照|受限于|基于|出于)[\s\S]{0,16}(?:安全|内容|使用|伦理|合规)?(?:准则|政策|指南|规范|规定|限制)[\s\S]{0,30}(?:我|本模型|系统)?(?:无法|不能|不允许|拒绝|不予)(?:继续|为您|为你)?(?:生成|提供|创作|参与|协助|满足|回复|输出|响应|进行)/,
-  /(?:我|作为[\s\S]{0,10}(?:AI|人工智能|语言模型|助手))[\s\S]{0,20}(?:无法|不能|不允许|拒绝)(?:继续|为您|为你)?(?:生成|提供|创作|编写|输出|参与|进行)[\s\S]{0,30}(?:露骨|色情|性互动|性行为|性描写|成人|NSFW|色情角色扮演|低俗|违规|有害)/i,
-  /(?:使用|利用|借助|通过)了?[\s\S]{0,16}(?:角色扮演|虚构|情景|框架)[\s\S]{0,16}(?:来|以)?(?:规避|绕过|突破)[\s\S]{0,16}(?:常规|安全|内容)?(?:限制|审查|规则|准则)/,
-  /(?:如果|若)(?:您|你)希望[\s\S]{0,24}(?:在非色情|在合规|在安全|在正常)[\s\S]{0,20}(?:范围内|前提下)[\s\S]{0,40}(?:互动|对话|讨论|聊天|回复)/,
-  /(?:抱歉|很抱歉|对不起)[，,、\s]*(?:我)?(?:无法|不能)(?:满足|协助|处理|继续|生成|提供|回应)[\s\S]{0,40}(?:露骨|色情|性行为|性互动|成人|NSFW|安全准则|安全政策|内容政策|使用政策|相关规定|该请求|此请求)/i,
-  /\b(?:i\s+(?:cannot|can't|am unable to|won't|must decline to))\b[\s\S]{0,60}\b(?:sexually explicit|explicit sexual|explicit content|erotic|nsfw|sexual roleplay|safety guidelines|safety policy|content policy|usage policy)\b/i,
-  /\b(?:according to|under|due to|per)\s+(?:my\s+|our\s+|the\s+)?(?:safety|content|usage)\s+(?:guidelines|policies|policy)\b[\s\S]{0,60}\b(?:cannot|can't|unable to|won't|decline)\b/i,
-  /\byour request (?:contains|includes|involves)\b[\s\S]{0,80}\b(?:sexually explicit|explicit sexual|erotic|bypass(?:ing)?\s+(?:standard\s+)?restrictions)\b/i,
+  /(?:(?:您|你)(?:的(?:请求|消息|输入|提示词|指令)|请求)|该(?:请求|提示词|指令)|系统提示(?:和对话设定)?)[\s\S]{0,40}(?:包含|涉及|含有|要求|试图|引导生成|生成)[\s\S]{0,80}(?:露骨|色情|全裸|性行为|性互动|性描写|成人内容|不当内容|违规内容|(?:规避|绕过)[\s\S]{0,16}(?:安全|常规|内容)?(?:限制|规则|准则)|违反[\s\S]{0,16}(?:安全|政策|准则|规定))/,
+  /(?:根据|遵循|按照|受限于|基于|出于|由于|因(?:为)?|违反了?)[\s\S]{0,20}(?:我的|系统的)?(?:安全|内容|使用|伦理|合规)?(?:准则|政策|指南|规范|规定|限制|约束)[\s\S]{0,60}(?:我|本模型|系统|严格)?(?:仍|都|均)?(?:无法|不能|不允许|拒绝|不予|禁止|生成)(?:继续|为您|为你)?/,
+  /(?:我|本模型|系统|作为[\s\S]{0,12}(?:AI|人工智能|语言模型|助手))[\s\S]{0,24}(?:无法|不能|不允许|拒绝|不予)[\s\S]{0,24}(?:生成|提供|创作|编写|输出|参与|进行|满足|回应|处理|配合)[\s\S]{0,80}(?:露骨(?:的)?(?:色情|性行为|性互动|性描写|成人)|色情(?:内容|描写|互动|角色扮演|图像)|无码\s*R18|安全准则|安全规范|安全政策|内容政策|使用政策|角色扮演(?:框架|设定|回复)|虚构角色(?:扮演|设定)|图像(?:生成)?(?:提示词|标签))/i,
+  /(?:使用|利用|借助|通过)了?[\s\S]{0,16}(?:角色扮演|虚构(?:角色)?|情景|框架|设定)[\s\S]{0,20}(?:来|以)?(?:规避|绕过|突破|生成[\s\S]{0,16}露骨)/,
+  /(?:(?:如果|若)(?:您|你)希望|我可以继续)[\s\S]{0,24}(?:在)?(?:非色情|非露骨|合规|安全|健康|正常|普通的角色日常)[\s\S]{0,24}(?:范围内|前提下|性质|互动)[\s\S]{0,40}(?:互动|对话|讨论|聊天|回复|配合|角色|处理)/,
+  /(?:(?:抱歉|很抱歉|对不起)[，,、\s]*)?(?:我|本模型)(?:仍|仍然|依然|都|均)?(?:无法|不能)(?:满足|协助|处理|继续|生成|提供|回应|执行)(?:(?:该|此|这个|这一|上述)?(?:请求|要求))?[。，,！!\s]?[\s\S]{0,120}(?:露骨|色情|全裸|性行为|性互动|性描写|成人|NSFW|R18|安全准则|安全规范|安全政策|内容政策|使用政策|相关规定|图像生成标签|(?:规避|绕过)[\s\S]{0,12}(?:安全|常规)?(?:规则|限制))/i,
+  /(?:(?:\bi\b|我)\s*(?:cannot|can't|am unable to|won't|must decline to))\b[\s\S]{0,160}\b(?:sexually explicit|explicit sexual|explicit content|erotic|erotica|nsfw|sexual roleplay|safety guidelines|safety policy|safety constraints|content policy|usage policy)\b/i,
+  /\b(?:according to|under|due to|per)\s+(?:my\s+|our\s+|the\s+)?(?:safety|content|usage)\s+(?:guidelines|policies|policy|constraints|rules)\b[\s\S]{0,60}\b(?:cannot|can't|unable to|won't|decline|prohibit)\b/i,
+  /\b(?:safety|content|usage)\s+(?:guidelines|policies|policy|constraints|rules)\s+(?:strictly\s+)?(?:prohibit|forbid|prevent|disallow)\b[\s\S]{0,80}\b(?:explicit|sexual|erotic|erotica|nsfw|generating)\b/i,
+  /\byour\s+(?:request|prompt|message|input)\s+(?:contains|includes|involves|asks for|requests|attempts)\b[\s\S]{0,80}\b(?:sexually explicit|explicit sexual|erotic|erotica|sexual roleplay|bypass(?:ing)?\s+(?:standard\s+|safety\s+)?restrictions)\b/i,
   /\bas an ai(?: language model)?,?\s+i\s+(?:cannot|can't|am unable to)\b[\s\S]{0,60}\b(?:generate|create|provide|assist|fulfill|engage|continue|comply)\b/i,
 ];
 
@@ -902,6 +903,16 @@ export function buildSystemPrompt(params: {
   return sections.filter((line, idx, arr) => !(line === '' && arr[idx - 1] === '')).join('\n');
 }
 
+const SELFIE_FALLBACK_FOOTNOTE_RE = /(?:\r?\n)?\*（📷 [^\r\n]*）\*\s*$/u;
+
+function sanitizeBotContextContent(rawText: string): string | null {
+  const withoutFootnote = rawText.replace(SELFIE_FALLBACK_FOOTNOTE_RE, '').trim();
+  if (!withoutFootnote) return null;
+  if (withoutFootnote.startsWith('⚠️')) return null;
+  if (isSafetyRefusalReply(withoutFootnote)) return null;
+  return withoutFootnote;
+}
+
 export function mergeConversationHistory(params: {
   replyChain: RawContextMessage[];
   channelWindow: RawContextMessage[];
@@ -943,9 +954,18 @@ export function mergeConversationHistory(params: {
 
   const cleaned: Array<{ msg: RawContextMessage; fromReplyChain: boolean; text: string }> = [];
   for (const item of byId.values()) {
-    if (item.msg.isBot && item.msg.hasEmbeds) continue;
+    const isBotMsg = item.msg.isBot || item.msg.authorId === botId;
+    if (isBotMsg && item.msg.hasEmbeds) continue;
     const stripped = stripBotMention(item.msg.content, botId);
     const normalizedEmojis = normalizeDiscordCustomEmojis(stripped);
+    if (isBotMsg) {
+      const sanitizedBotText = sanitizeBotContextContent(normalizedEmojis);
+      const botText =
+        sanitizedBotText ?? (item.msg.hasImages && !normalizedEmojis ? '（发送了图片）' : '');
+      if (!botText) continue;
+      cleaned.push({ ...item, text: botText });
+      continue;
+    }
     const text = normalizedEmojis || (item.msg.hasImages ? '（发送了图片）' : '');
     if (!text) continue;
     cleaned.push({ ...item, text });
@@ -2222,17 +2242,17 @@ export class AiService {
     }
     for (const ctxMsg of [...(input.replyChain ?? []), ...(input.channelWindow ?? [])]) {
       if (ctxMsg.id === input.messageId || ctxMsg.createdTimestamp <= resetAt) continue;
-      if (ctxMsg.isBot && ctxMsg.hasEmbeds) continue;
+      const isBotCtx = ctxMsg.isBot || ctxMsg.authorId === botId;
+      if (isBotCtx && ctxMsg.hasEmbeds) continue;
+      const strippedCtx = stripBotMention(ctxMsg.content, botId);
+      const emojiNormCtx = normalizeDiscordCustomEmojis(strippedCtx);
+      const effectiveCtxText = isBotCtx ? sanitizeBotContextContent(emojiNormCtx) : emojiNormCtx;
+      if (isBotCtx && !effectiveCtxText) continue;
       if (ctxMsg.authorName.trim()) {
         scanTextsForProfiles.push(normalizeName(ctxMsg.authorName).toLowerCase());
       }
-      if (ctxMsg.content.trim()) {
-        const strippedCtx = stripBotMention(ctxMsg.content, botId);
-        const normCtx = applyAiRegexRules(
-          normalizeDiscordCustomEmojis(strippedCtx),
-          effectiveRegexRules,
-          'input',
-        );
+      if (effectiveCtxText && effectiveCtxText.trim()) {
+        const normCtx = applyAiRegexRules(effectiveCtxText, effectiveRegexRules, 'input');
         if (normCtx.trim()) {
           scanTextsForProfiles.push(normCtx.toLowerCase());
         }
@@ -2413,7 +2433,6 @@ export class AiService {
     let fallbackStarted = false;
     let fallbackUsed = false;
     try {
-      const hasFallback = Boolean(resolved.effectiveFallbackModel);
       const baseRequest = {
         messages,
         temperature: effectiveTemperature,
@@ -2437,7 +2456,7 @@ export class AiService {
         response = await this.llmClient.chat({
           ...baseRequest,
           model: effectiveModel,
-          maxRefusalRetries: hasFallback ? 0 : 2,
+          maxRefusalRetries: 2,
         });
       } catch (primaryErr) {
         const primaryCode: LlmErrorCode =

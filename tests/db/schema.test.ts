@@ -50,7 +50,7 @@ describe('env & database schema', () => {
       apiKey: 'sk-test',
       model: 'gemini-test',
       timeoutMs: 45_000,
-      fallbackModel: 'pg/gemini-4-argon',
+      fallbackModel: 'paid/gemini-4-carbon',
       maxRetries: 8,
       rateLimitMaxRetries: 2,
     });

@@ -414,7 +414,7 @@ export const DEFAULT_AI_CONFIG: AiConfig = {
   activeCardId: null,
   channelOverrides: {},
   modelOverride: null,
-  fallbackModel: 'pg/gemini-4-argon',
+  fallbackModel: 'paid/gemini-4-carbon',
   temperature: 0.85,
   maxTokens: 4096,
   contextWindowMessages: 20,

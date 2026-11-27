@@ -72,8 +72,11 @@ function parseRecord<T extends object>(raw: string, defaults: T): T {
   return { ...defaults, ...obj } as T;
 }
 
-const LEGACY_DEFAULT_LLM_FALLBACK_MODEL = 'pg/gemini-4-carbon';
-const PREV_DEFAULT_LLM_FALLBACK_MODEL = 'paid/gemini-4-carbon';
+const LEGACY_DEFAULT_LLM_FALLBACK_MODELS = new Set([
+  'pg/gemini-4-carbon',
+  'pg/gemini-4-argon',
+  'paid/gemini-4-argon',
+]);
 const LEGACY_DEFAULT_MAX_TOKENS = 1024;
 
 function normalizeFallbackModelValue(
@@ -90,9 +93,8 @@ function normalizeFallbackModelValue(
     }
     const normalizedOverride = typeof modelOverride === 'string' ? modelOverride.trim() : '';
     if (
-      trimmed === LEGACY_DEFAULT_LLM_FALLBACK_MODEL ||
-      (trimmed === PREV_DEFAULT_LLM_FALLBACK_MODEL &&
-        (!normalizedOverride || normalizedOverride === PREV_DEFAULT_LLM_FALLBACK_MODEL))
+      LEGACY_DEFAULT_LLM_FALLBACK_MODELS.has(trimmed) &&
+      (!normalizedOverride || normalizedOverride === trimmed)
     ) {
       return { value: DEFAULT_AI_CONFIG.fallbackModel, migrated: true };
     }
