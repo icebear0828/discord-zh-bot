@@ -129,9 +129,21 @@ const ANTI_CENSOR_UC_TAGS =
 
 const ANTI_CENSOR_NEG15_TERMS = 'censored, mosaic censoring, bar censor';
 
+const NSFW_UNDRESS_NEG15_TERMS =
+  'bra, bikini, lingerie covering breasts, camisole, shirt, halter top, qipao, dress, skirt, panties';
+
 const R18_POSITIVE_PREFIX = 'nsfw';
 
 const DEFAULT_NSFW_BODY_ANCHORS = 'smooth dewy skin, slender waist, curvy,';
+
+const DEFAULT_COSTUME_NSFW =
+  'completely nude, topless, bare breasts, nipples, no bra, no panties,';
+
+const EXPLICIT_NUDITY_OUTFIT_TAG_RE =
+  /\b(?:nude|naked|topless|bare\s+breasts?|nipples?)\b/i;
+
+const USER_UNDRESS_INTENT_RE =
+  /(?:脱|全裸|裸|果体|不穿|一丝不挂|光着|露胸|露点|露奶|色图|涩图|瑟瑟|r18|nsfw|nude|naked|topless)/i;
 
 const VALID_OC_PRESET_ID_RE = /^[a-z0-9][a-z0-9_-]{0,47}$/i;
 
@@ -1365,7 +1377,14 @@ export function compileOcSelfiePrompt(params: {
     requestedOutfitId: spec.outfitId,
     userContent,
   });
-  const sanitizedCustomOutfit = sanitizeFieldTags(spec.outfit, stripExplicit);
+  const rawSanitizedCustomOutfit = sanitizeFieldTags(spec.outfit, stripExplicit);
+  const ignoreModestCustomOutfit = Boolean(
+    effectiveNsfw &&
+      rawSanitizedCustomOutfit &&
+      !EXPLICIT_NUDITY_OUTFIT_TAG_RE.test(rawSanitizedCustomOutfit) &&
+      USER_UNDRESS_INTENT_RE.test(effectiveIntentText),
+  );
+  const sanitizedCustomOutfit = ignoreModestCustomOutfit ? '' : rawSanitizedCustomOutfit;
   const usingCustomOutfit = Boolean(sanitizedCustomOutfit);
   const sanitizedExplicitAction = sanitizeFieldTags(spec.action, stripExplicit);
   const sanitizedPartnerOutfit = sanitizeFieldTags(spec.partnerOutfit, stripExplicit);
@@ -1441,18 +1460,22 @@ export function compileOcSelfiePrompt(params: {
   const aspectRatio: ImageAspectRatio =
     framing === 'sticker_pack' ? '1:1' : (spec.aspect ?? defaultAspectByFraming[framing]);
 
-  // Select framing-matched Costume Tier (prefer costumeNsfw in NSFW mode when custom outfit is omitted)
+  // Select framing-matched Costume Tier (prefer costumeNsfw / DEFAULT_COSTUME_NSFW in NSFW mode when custom outfit is omitted)
   const nsfwPresetCostume = effectiveNsfw
-    ? normalizeOcCostumeTier(selectedPresetOutfit.costumeNsfw || oc.costumeNsfw || '')
+    ? normalizeOcCostumeTier(selectedPresetOutfit.costumeNsfw || oc.costumeNsfw || '') ||
+      DEFAULT_COSTUME_NSFW
     : '';
   const selectedCostumeLine = usingCustomOutfit
     ? ensureTrailingComma(sanitizedCustomOutfit)
-    : nsfwPresetCostume ||
-      (framing === 'portrait'
+    : effectiveNsfw
+      ? nsfwPresetCostume
+      : framing === 'portrait'
         ? selectedPresetOutfit.costumePortrait
         : framing === 'full' || framing === 'chibi'
           ? selectedPresetOutfit.costumeFull
-          : selectedPresetOutfit.costumeUpper);
+          : selectedPresetOutfit.costumeUpper;
+  const hasExplicitToplessCue =
+    effectiveNsfw && /\b(?:topless|bare\s+breasts?)\b/i.test(selectedCostumeLine);
 
   const primaryCharCaption = `${effectiveAppearance}\n${selectedCostumeLine}`.trim();
   const charCaptions: NaiCharCaption[] = [{ char_caption: primaryCharCaption }];
@@ -1543,6 +1566,9 @@ export function compileOcSelfiePrompt(params: {
   };
 
   // Per NAI V5 multi-character SOP: in 2-person shots, individual pose/expression tags go in Character N: lines!
+  const soloEffectiveAction = hasExplicitToplessCue
+    ? `topless, bare breasts, nipples, ${sanitizedAction}`
+    : sanitizedAction;
   const line2 =
     framing === 'sticker_pack'
       ? `${framingTagsMap.sticker_pack},`
@@ -1550,7 +1576,7 @@ export function compileOcSelfiePrompt(params: {
         ? `${sanitizedAction}, ${framingTagsMap.chibi},`
         : isDuo
           ? `${framingTagsMap[framing]}, ${styleTagsMap[style]},`
-          : `${sanitizedAction}, ${framingTagsMap[framing]}, ${styleTagsMap[style]},`;
+          : `${soloEffectiveAction}, ${framingTagsMap[framing]}, ${styleTagsMap[style]},`;
 
   // Part 3: Natural-language binding sentence(s)
   let rawSentence = (spec.sentence ?? '').trim();
@@ -1585,14 +1611,8 @@ export function compileOcSelfiePrompt(params: {
   const neg15Terms: string[] = [];
   const neg12Terms: string[] = [];
 
-  const usingProfileCostumeNsfw = Boolean(
-    effectiveNsfw && !usingCustomOutfit && !selectedPresetOutfit.costumeNsfw && oc.costumeNsfw,
-  );
-  const activeGuard = usingCustomOutfit
-    ? ''
-    : usingProfileCostumeNsfw
-      ? oc.silhouetteGuard
-      : selectedPresetOutfit.silhouetteGuard;
+  // In NSFW mode or custom outfit mode, omit daywear silhouetteGuard (which may forbid bare shoulders/legs)
+  const activeGuard = effectiveNsfw || usingCustomOutfit ? '' : selectedPresetOutfit.silhouetteGuard;
   if (activeGuard) {
     for (const block of extractGuardInnerTerms(activeGuard)) {
       if (block.weight === '-1.5') {
@@ -1630,6 +1650,9 @@ export function compileOcSelfiePrompt(params: {
     }
     neg15Terms.push(`animal ears on ${subjectGender}`, `tail on ${subjectGender}`);
   }
+  if (effectiveNsfw && !usingCustomOutfit) {
+    neg15Terms.push(NSFW_UNDRESS_NEG15_TERMS);
+  }
   if (effectiveNsfw) {
     neg15Terms.push(ANTI_CENSOR_NEG15_TERMS);
   }
@@ -1661,7 +1684,10 @@ export function compileOcSelfiePrompt(params: {
   if (isDuo && selectedPose) {
     const primaryPrefix =
       subjectGender === 'boy' ? 'boy' : subjectGender === 'character' ? 'other' : 'girl';
-    const primaryActions = sanitizedExplicitAction || selectedPose.actionTags;
+    const rawPrimaryActions = sanitizedExplicitAction || selectedPose.actionTags;
+    const primaryActions = hasExplicitToplessCue
+      ? `topless, bare breasts, nipples, ${rawPrimaryActions}`
+      : rawPrimaryActions;
     const partnerPrefix = isYuriDuo ? 'girl' : 'boy, faceless male';
     const partnerActions =
       sanitizedPartnerAction || selectedPose.partnerActionTags || 'holding girl gently, mutual#hug';
@@ -1725,7 +1751,7 @@ export function buildOcSelfieSkillPrompt(params: {
     : '- 姿势库（`pose` 填簇名自动防重轮换）：上半身特写选 `cute_heart`(比心) / `cute_peace`(比耶敬礼) / `cute_face`(托腮捧脸挽发) / `cute_playful`(猫爪兔耳飞吻嘘) / `cute_shy`(捂嘴害羞伸懒腰)；全身选 `stand_casual`(站姿) / `stand_lookback`(回眸探身) / `sit_relaxed`(休闲坐晃腿) / `sit_girl`(女孩坐侧坐) / `squat_kneel`(蹲姿单膝跪) / `lie_casual`(趴卧侧躺)；当群友明确要双人拥抱合照且你愿意配合时选 `duo_cuddle`（若拒绝双人互动只发单人照则选单人簇）。镜头 `angle` 可选 `front`/`three_quarter`/`high`/`low`/`side`。仅当群友指定库外动作时填英文 `action` 与 `sentence`（双人可用 `partnerOutfit`/`partnerAction`）。';
 
   const nsfwLine = allowNsfw
-    ? '- 分级与衣着覆盖：日常拍照一律保持 `"nsfw": false`；仅当群友明确要求涩图/大尺度/私房内容且符合你当前态度愿意发时，才可设 `"nsfw": true`（自动打模糊遮罩），此时支持在 `[SELFIE: {...}]` 中配合 `"outfit"`（例如浴巾、睡袍、轻解衣衫或褪下外衣的英文服装状态，替代默认日常 OOTD 外衣）、`"action"`、`"sentence"` 以及双人 `"partnerOutfit"` / `"partnerAction"` 定制符合语境的衣着与互动细节。'
+    ? '- 分级与衣着规则：日常拍照一律保持 `"nsfw": false`；仅当群友明确要求涩图/大尺度/脱衣内容且符合你当前态度愿意发时，才可设 `"nsfw": true`（自动打模糊遮罩）。注意：当 `"nsfw": true` 时**默认省略 `"outfit"`**，让编译器自动套用该自设内置的无遮挡褪衣 `costumeNsfw` 预设（严禁自行填上半解外衣或遮胸内衣词；仅当群友明确点名泳装、女仆、兔女郎等特定主题装扮时才传 `"outfit"`）；动作与台词仍可通过 `"action"`、`"sentence"` 以及双人 `"partnerOutfit"` / `"partnerAction"` 定制。'
     : '- 分级规则：仅支持健康日常向画面，固定 `"nsfw": false`，严禁输出裸露色情标签。';
 
   return [

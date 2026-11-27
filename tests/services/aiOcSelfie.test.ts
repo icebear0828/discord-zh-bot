@@ -1219,6 +1219,86 @@ describe('OC Selfie Library & NovelAI V5 Pipeline SOP Compiler', () => {
     // Must NOT lock onto '招财猫' (upper_p008) from turn 1 when turn 2 userContent is '换个角度再来一张'
     expect(followUpShot.poseId).not.toBe('upper_p008');
   });
+
+  it('overrides modest chat-LLM outfit cover-ups on explicit undress requests, provides DEFAULT_COSTUME_NSFW fallback, injects anti-clothing negative guards, and excludes chest-covering poses from nsfw tier', () => {
+    // 1. Skill prompt instructs omitting "outfit" when nsfw:true rather than suggesting bathrobes/towels
+    const skillPrompt = buildOcSelfieSkillPrompt({
+      oc: SAMPLE_OC_ALPHA,
+      allowNsfw: true,
+    });
+    expect(skillPrompt).not.toContain('浴巾');
+    expect(skillPrompt).not.toContain('睡袍');
+    expect(skillPrompt).not.toContain('轻解衣衫');
+    expect(skillPrompt).toContain('省略 `"outfit"`');
+
+    // 2. Chest-shielding/covering poses are reclassified to 'spicy' so 'nsfw' tier stays unobstructed
+    const poses = listBuiltinOcPoses();
+    const chestCoveringIds = [
+      'upper_p052',
+      'upper_p053',
+      'upper_p054',
+      'upper_p061',
+      'upper_p073',
+      'upper_p078',
+      'full_sexy_p062',
+    ];
+    for (const id of chestCoveringIds) {
+      const found = poses.find((p) => p.id === id);
+      expect(found, `missing pose ${id}`).toBeDefined();
+      expect(found?.tier, `pose ${id} should be spicy`).toBe('spicy');
+    }
+
+    // 3. Custom OC WITHOUT costumeNsfw still undresses via DEFAULT_COSTUME_NSFW + anti-garment negative weights,
+    // even when chat LLM tries to pass a modest clothed/lingerie cover-up in spec.outfit (id=164 regression)
+    const customUndress = compileOcSelfiePrompt({
+      oc: {
+        ...SAMPLE_OC_ALPHA,
+        silhouetteGuard: '-1.2::bare shoulders, bare legs::,',
+      },
+      spec: {
+        framing: 'upper',
+        pose: 'nsfw_tease',
+        outfit: 'unbuttoned black gold sakura halter qipao top slipping off, cleavage, sensual lingerie underneath',
+        nsfw: true,
+      },
+      userContent: '脱掉衣服发张色图',
+      allowNsfw: true,
+    });
+    expect(customUndress.nsfw).toBe(true);
+    const customCap = customUndress.charCaptions[0]?.char_caption ?? '';
+    expect(customCap).not.toContain('halter qipao top');
+    expect(customCap).not.toContain('sensual lingerie underneath');
+    expect(customCap).toContain('completely nude');
+    expect(customCap).toContain('topless, bare breasts, nipples');
+    expect(customUndress.prompt).toContain('topless, bare breasts, nipples');
+    expect(customUndress.prompt).toContain(
+      'bra, bikini, lingerie covering breasts, camisole, shirt, halter top, qipao, dress, skirt, panties',
+    );
+    // Conflicting daywear silhouetteGuard ('bare shoulders, bare legs') must NOT be injected in NSFW undressed mode
+    expect(customUndress.prompt).not.toContain('bare shoulders, bare legs');
+
+    // 4. OC WITH costumeNsfw uses its signature undressed costumeNsfw instead of chat-LLM modest cover-up
+    const presetUndress = compileOcSelfiePrompt({
+      oc: {
+        ...SAMPLE_OC_ALPHA,
+        costumeNsfw:
+          'five-petal gold blossom clasp at throat, detached white sleeves around wrists only, completely nude torso and hips, topless, bare breasts, pink nipples, no bra, no panties,',
+      },
+      spec: {
+        framing: 'full',
+        pose: 'nsfw_open',
+        outfit: 'unbuttoned halter qipao top slipping off, cleavage, sensual lingerie underneath',
+        nsfw: true,
+      },
+      userContent: '脱掉衣服发张色图',
+      allowNsfw: true,
+    });
+    const presetCap = presetUndress.charCaptions[0]?.char_caption ?? '';
+    expect(presetCap).toContain('five-petal gold blossom clasp at throat');
+    expect(presetCap).toContain('completely nude torso and hips');
+    expect(presetCap).not.toContain('sensual lingerie underneath');
+    expect(presetUndress.prompt).toContain('halter top, qipao, dress, skirt, panties');
+  });
 });
 
 function sigOrOther(list: readonly OcOutfitPreset[], id: string): OcOutfitPreset {
