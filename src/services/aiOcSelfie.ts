@@ -922,9 +922,11 @@ function scanSelfieTagSpans(raw: string): TagSpan[] {
   return spans;
 }
 
-function normalizeFraming(raw: unknown): OcSelfieFraming {
-  if (typeof raw !== 'string') return 'portrait';
-  const v = raw.trim().toLowerCase().replace(/[\s-]+/g, '_');
+function parseOptionalFraming(raw: unknown): OcSelfieFraming | undefined {
+  if (typeof raw !== 'string') return undefined;
+  const trimmed = raw.trim();
+  if (!trimmed) return undefined;
+  const v = trimmed.toLowerCase().replace(/[\s-]+/g, '_');
   if (v === 'portrait' || v === 'close_up' || v === 'closeup' || v === 'avatar' || v === 'headshot') {
     return 'portrait';
   }
@@ -997,7 +999,7 @@ export function extractSelfieSkillTag(raw: string): SelfieSkillSpec | null {
     try {
       const parsed: unknown = JSON.parse(jsonCandidate);
       if (!isRecord(parsed)) return null;
-      const framing = normalizeFraming(parsed['framing']);
+      const framing = parseOptionalFraming(parsed['framing']);
       const aspect = normalizeAspect(parsed['aspect'] ?? parsed['aspect_ratio']);
       const style = normalizeStyle(parsed['style']);
       const pose = cleanOptionalTextField(parsed['pose'], 80);
@@ -1020,7 +1022,7 @@ export function extractSelfieSkillTag(raw: string): SelfieSkillSpec | null {
       const nsfw = Boolean(parsed['nsfw']);
 
       return {
-        framing,
+        ...(framing ? { framing } : {}),
         ...(aspect ? { aspect } : {}),
         style,
         ...(pose ? { pose } : {}),
@@ -1202,19 +1204,28 @@ function findKeywordMatchedPoses(
   return matches;
 }
 
+type PoseMatchKind = 'id' | 'keyword' | 'cluster' | 'default';
+
+interface SelectedCatalogPose {
+  pose: OcPosePreset;
+  matchKind: PoseMatchKind;
+}
+
 function selectCatalogPose(params: {
   poses: readonly OcPosePreset[];
   framing: 'portrait' | 'upper' | 'full';
+  hasExplicitFraming: boolean;
   requestedPose?: string;
   userContent: string;
   effectiveNsfw: boolean;
   allowDuo: boolean;
   allowSpicy: boolean;
   scopeKey: string;
-}): OcPosePreset | undefined {
+}): SelectedCatalogPose | undefined {
   const {
     poses,
     framing,
+    hasExplicitFraming,
     requestedPose,
     userContent,
     effectiveNsfw,
@@ -1247,32 +1258,42 @@ function selectCatalogPose(params: {
   // 1. Exact pose ID match (only if within allowed safety tier!)
   if (trimmedReq) {
     const exactId = allowedPool.find((p) => p.id.toLowerCase() === trimmedReq);
-    if (exactId) return exactId;
+    if (exactId) return { pose: exactId, matchKind: 'id' };
   }
 
   // 2. Direct Chinese keyword match in userContent (with LRU rotation when multiple poses share a keyword)
   const keywordHits = findKeywordMatchedPoses(allowedPool, userContent);
   if (keywordHits.length === 1) {
-    return keywordHits[0]!;
+    return { pose: keywordHits[0]!, matchKind: 'keyword' };
   }
   if (keywordHits.length > 1) {
-    return recordAndPickPoseWithLru(keywordHits, `${scopeKey}:kw:${framing}`);
+    return {
+      pose: recordAndPickPoseWithLru(keywordHits, `${scopeKey}:kw:${framing}`),
+      matchKind: 'keyword',
+    };
   }
 
   // 3. Semantic cluster match + framing preference + LRU anti-repeat rotation
   if (trimmedReq) {
     const inCluster = allowedPool.filter((p) => p.cluster === trimmedReq);
     if (inCluster.length > 0) {
-      const framingMatched = inCluster.filter(
-        (p) =>
-          p.framing === framing ||
-          (framing === 'portrait' && p.framing === 'upper') ||
-          (framing === 'upper' && p.framing === 'portrait'),
-      );
-      return recordAndPickPoseWithLru(
-        framingMatched.length > 0 ? framingMatched : inCluster,
-        `${scopeKey}:${trimmedReq}`,
-      );
+      const allowMixedFullAndUpper =
+        effectiveNsfw && !allowDuo && trimmedReq === 'nsfw_open' && framing !== 'full';
+      const framingMatched = allowMixedFullAndUpper
+        ? inCluster
+        : inCluster.filter(
+            (p) =>
+              p.framing === framing ||
+              (framing === 'portrait' && p.framing === 'upper') ||
+              (framing === 'upper' && p.framing === 'portrait'),
+          );
+      return {
+        pose: recordAndPickPoseWithLru(
+          framingMatched.length > 0 ? framingMatched : inCluster,
+          `${scopeKey}:${trimmedReq}`,
+        ),
+        matchKind: 'cluster',
+      };
     }
   }
 
@@ -1288,16 +1309,23 @@ function selectCatalogPose(params: {
         : allowedPool.filter((p) => p.tier === (allowDuo ? 'duo_hug' : 'sfw'));
 
   const baseCandidates = preferredTierPool.length > 0 ? preferredTierPool : allowedPool;
-  const framingMatched = baseCandidates.filter(
-    (p) =>
-      p.framing === framing ||
-      (framing === 'portrait' && p.framing === 'upper') ||
-      (framing === 'upper' && p.framing === 'portrait'),
-  );
-  return recordAndPickPoseWithLru(
-    framingMatched.length > 0 ? framingMatched : baseCandidates,
-    `${scopeKey}:default:${framing}`,
-  );
+  const allowMixedDefaultPool =
+    effectiveNsfw && !allowDuo && (!hasExplicitFraming || framing !== 'full');
+  const framingMatched = allowMixedDefaultPool
+    ? baseCandidates
+    : baseCandidates.filter(
+        (p) =>
+          p.framing === framing ||
+          (framing === 'portrait' && p.framing === 'upper') ||
+          (framing === 'upper' && p.framing === 'portrait'),
+      );
+  return {
+    pose: recordAndPickPoseWithLru(
+      framingMatched.length > 0 ? framingMatched : baseCandidates,
+      `${scopeKey}:default:${effectiveNsfw && !allowDuo ? 'nsfw_any' : framing}`,
+    ),
+    matchKind: 'default',
+  };
 }
 
 function findShotOutfitPreset(params: {
@@ -1358,6 +1386,7 @@ export function compileOcSelfiePrompt(params: {
     rotationScopeKey = 'default',
   } = params;
   const effectiveIntentText = intentText ?? userContent;
+  const hasExplicitFraming = spec.framing !== undefined;
   const requestedFraming: OcSelfieFraming = spec.framing ?? 'portrait';
 
   // Dual-gate NSFW check: requires config allowNsfw + LLM nsfw:true + explicit user NSFW intent
@@ -1408,12 +1437,13 @@ export function compileOcSelfiePrompt(params: {
 
   // Resolve catalog pose when `spec.pose` is specified, `allowDuo` is active, or free-form `spec.action` is omitted
   const hasFreeformActionOnly = Boolean(sanitizedExplicitAction && !spec.pose?.trim() && !allowDuo);
-  const selectedPose =
+  const selectedPoseResult =
     requestedFraming === 'chibi' || requestedFraming === 'sticker_pack' || hasFreeformActionOnly
       ? undefined
       : selectCatalogPose({
           poses,
           framing: requestedFraming,
+          hasExplicitFraming,
           requestedPose: spec.pose,
           userContent,
           effectiveNsfw,
@@ -1421,15 +1451,24 @@ export function compileOcSelfiePrompt(params: {
           allowSpicy,
           scopeKey: rotationScopeKey,
         });
+  const selectedPose = selectedPoseResult?.pose;
+  const poseMatchKind = selectedPoseResult?.matchKind;
 
   const isDuo = Boolean(
     selectedPose && (selectedPose.tier === 'duo_hug' || selectedPose.tier === 'duo_nsfw'),
   );
 
-  const framing: OcSelfieFraming =
-    isDuo && requestedFraming === 'portrait' && selectedPose?.framing === 'full'
-      ? 'full'
-      : requestedFraming;
+  const shouldUpgradeToFullFraming = Boolean(
+    requestedFraming !== 'chibi' &&
+      requestedFraming !== 'sticker_pack' &&
+      selectedPose?.framing === 'full' &&
+      (!hasExplicitFraming ||
+        poseMatchKind === 'id' ||
+        poseMatchKind === 'keyword' ||
+        isDuo ||
+        effectiveNsfw),
+  );
+  const framing: OcSelfieFraming = shouldUpgradeToFullFraming ? 'full' : requestedFraming;
   const style: OcSelfieStyle =
     framing === 'chibi' || framing === 'sticker_pack' ? 'anime' : (spec.style ?? 'anime');
 
@@ -1458,7 +1497,11 @@ export function compileOcSelfiePrompt(params: {
     sticker_pack: '1:1',
   };
   const aspectRatio: ImageAspectRatio =
-    framing === 'sticker_pack' ? '1:1' : (spec.aspect ?? defaultAspectByFraming[framing]);
+    framing === 'sticker_pack'
+      ? '1:1'
+      : shouldUpgradeToFullFraming && requestedFraming === 'portrait' && spec.aspect === '1:1'
+        ? '2:3'
+        : (spec.aspect ?? defaultAspectByFraming[framing]);
 
   // Select framing-matched Costume Tier (prefer costumeNsfw / DEFAULT_COSTUME_NSFW in NSFW mode when custom outfit is omitted)
   const nsfwPresetCostume = effectiveNsfw
@@ -1495,7 +1538,9 @@ export function compileOcSelfiePrompt(params: {
       const partnerBoyCostume = sanitizedPartnerOutfit
         ? ensureTrailingComma(sanitizedPartnerOutfit)
         : effectiveNsfw
-          ? 'unbuttoned open dark shirt, muscular shoulders,'
+          ? selectedPose?.tier === 'duo_nsfw'
+            ? 'unbuttoned open dark shirt, muscular shoulders, nude lower body,'
+            : 'unbuttoned open dark shirt, muscular shoulders,'
           : 'casual dark button-up shirt with rolled sleeves, dark trousers,';
       charCaptions.push({
         char_caption: `boy, faceless male, hair shadowing eyes, face out of frame, tall build,\n${partnerBoyCostume}`,
@@ -1765,8 +1810,8 @@ export function buildOcSelfieSkillPrompt(params: {
       : []),
     '- 触发条件：仅当群友明确让你发自拍、拍张照、看看你在干嘛、看你的穿搭、发Q版表情包，或画一张你的图时调用；普通文字闲聊、问答时**严禁**输出 `[SELFIE:]`。',
     '- 调用方式：先用符合人设的中文自然回复 1~3 句（严禁念出英文提示词），在回复**最末尾另起一行**附上单行 JSON 标签：',
-    '  `[SELFIE: {"framing":"portrait","aspect":"1:1","style":"anime","pose":"cute_face","angle":"three_quarter","scene":"英文环境背景与光影tag","nsfw":false}]`',
-    '- 取景与画风：`framing` 选 `portrait`(特写,1:1) / `upper`(半身,3:2或2:3) / `full`(全身穿搭,2:3) / `chibi`(单张Q版,1:1) / `sticker_pack`(2x2四格表情包,1:1)；`style` 默认 `anime`（可选 `watercolor`/`graphic`/`impasto`/`nihonga`）；有动物同框加 `"animal":"英文动物词"`。',
+    '  `[SELFIE: {"framing":"full","aspect":"2:3","style":"anime","pose":"stand_casual","angle":"three_quarter","scene":"英文环境背景与光影tag","nsfw":false}]`',
+    '- 取景与画风：`framing` 选 `full`(全身与大动态姿势,2:3；凡选 `stand_casual`/`stand_lookback`/`sit_relaxed`/`sit_girl`/`squat_kneel`/`lie_casual`/`spicy_curve`/`nsfw_open`/`duo_cuddle`/`duo_intimate` 等全身簇时优先用 `"framing":"full","aspect":"2:3"`) / `upper`(半身,3:2或2:3) / `portrait`(大头特写,1:1) / `chibi`(单张Q版,1:1) / `sticker_pack`(2x2四格表情包,1:1)；`style` 默认 `anime`（可选 `watercolor`/`graphic`/`impasto`/`nihonga`）；有动物同框加 `"animal":"英文动物词"`。',
     poseClustersLine,
     nsfwLine,
   ].join('\n');

@@ -1299,6 +1299,70 @@ describe('OC Selfie Library & NovelAI V5 Pipeline SOP Compiler', () => {
     expect(presetCap).not.toContain('sensual lingerie underneath');
     expect(presetUndress.prompt).toContain('halter top, qipao, dress, skirt, panties');
   });
+
+  it('upgrades framing to full (2:3) whenever full-body catalog poses match by ID, keyword, duo, or NSFW rotation without cropping legs', () => {
+    // 1. Omitted framing in [SELFIE: {...}] preserves undefined spec.framing and upgrades to full (2:3) on full-body pose ID
+    const parsedOmittedFraming = extractSelfieSkillTag(
+      '看好了\n[SELFIE: {"pose":"full_sexy_p018","nsfw":true}]',
+    );
+    expect(parsedOmittedFraming).not.toBeNull();
+    const mLegShot = compileOcSelfiePrompt({
+      oc: SAMPLE_OC_ALPHA,
+      spec: parsedOmittedFraming!,
+      userContent: '脱掉衣服来张M字开腿色图',
+      allowNsfw: true,
+    });
+    expect(mLegShot.poseId).toBe('full_sexy_p018');
+    expect(mLegShot.framing).toBe('full');
+    expect(mLegShot.aspectRatio).toBe('2:3');
+    expect(mLegShot.prompt).toContain('full body,');
+    expect(mLegShot.prompt).not.toContain('portrait, close-up');
+    expect(mLegShot.prompt).toContain('cropped feet');
+
+    // 2. Even if LLM passed framing:'portrait' or 'upper', exact full-body pose IDs (including spicy p075 in NSFW mode) or Chinese keywords upgrade to full
+    const splitShot = compileOcSelfiePrompt({
+      oc: SAMPLE_OC_ALPHA,
+      spec: {
+        framing: 'portrait',
+        pose: 'full_sexy_p075',
+        nsfw: true,
+      },
+      userContent: '来张横叉一字马大尺度色图',
+      allowNsfw: true,
+    });
+    expect(splitShot.poseId).toBe('full_sexy_p075');
+    expect(splitShot.framing).toBe('full');
+    expect(splitShot.aspectRatio).toBe('2:3');
+    expect(splitShot.prompt).toContain('middle split');
+    expect(splitShot.prompt).toContain('full body,');
+    expect(splitShot.prompt).not.toContain('portrait, close-up');
+
+    // 3. Default NSFW solo rotation (when framing is omitted or nsfw_open is requested) includes full_sexy_* poses instead of locking out all full-body poses
+    resetPoseRotationState();
+    const rotatedFramings = new Set<string>();
+    const rotatedPoseIds: string[] = [];
+    for (let i = 0; i < 12; i++) {
+      const shot = compileOcSelfiePrompt({
+        oc: SAMPLE_OC_ALPHA,
+        spec: { pose: 'nsfw_open', nsfw: true },
+        userContent: '发张脱掉衣服的色图',
+        allowNsfw: true,
+        rotationScopeKey: 'nsfw-full-rotation',
+      });
+      rotatedFramings.add(shot.framing);
+      if (shot.poseId) rotatedPoseIds.push(shot.poseId);
+    }
+    expect(rotatedFramings.has('full')).toBe(true);
+    expect(rotatedPoseIds.some((id) => id.startsWith('full_sexy_'))).toBe(true);
+
+    // 4. Skill prompt guides LLM to pair full-body clusters (nsfw_open, spicy_curve, duo_intimate, sit_girl, squat_kneel, lie_casual) with framing:"full"
+    const skillPrompt = buildOcSelfieSkillPrompt({
+      oc: SAMPLE_OC_ALPHA,
+      allowNsfw: true,
+    });
+    expect(skillPrompt).toContain('"framing":"full"');
+    expect(skillPrompt).toContain('nsfw_open');
+  });
 });
 
 function sigOrOther(list: readonly OcOutfitPreset[], id: string): OcOutfitPreset {
