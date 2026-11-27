@@ -31,9 +31,11 @@ import {
 } from './aiPackStore.js';
 import {
   AiOcPresetStore,
-  buildOcSelfieSkillPrompt,
+  buildOcChatStatusPrompt,
   compileOcSelfiePrompt,
   extractSelfieSkillTag,
+  hasExplicitSelfieRequest,
+  inferOcSelfieSpecFromTurn,
   listBuiltinOcPoses,
   resolveActiveOcOutfit,
   resolveActiveOcProfile,
@@ -1769,11 +1771,15 @@ export class AiService {
     const previewNowMs = input.messageTimestamp ?? Date.now();
     const previewOc = this.resolveActiveOcProfile(aiCfg.selfie);
     const previewOutfit = this.resolveActiveOcOutfit(aiCfg.selfie, previewNowMs);
+    const previewPhotoRequested =
+      selfieSkillEnabled &&
+      !containsPromptInjectionMemoryTag(rawUserText) &&
+      hasExplicitSelfieRequest(rawUserText);
     const selfieSkillPrompt = selfieSkillEnabled
-      ? buildOcSelfieSkillPrompt({
+      ? buildOcChatStatusPrompt({
           oc: previewOc,
           activeOutfit: previewOutfit,
-          allowNsfw: aiCfg.selfie.allowNsfw,
+          photoRequested: previewPhotoRequested,
         })
       : null;
 
@@ -2351,14 +2357,30 @@ export class AiService {
         : formattedText;
 
     const selfieSkillEnabled = Boolean(aiCfg.selfie?.enabled && this.isImageGenAvailable?.());
+    const hasPromptInjectionTag = containsPromptInjectionMemoryTag(rawUserText);
+    const prevSameUserTurn =
+      selfieSkillEnabled && !hasPromptInjectionTag
+        ? resolvePreviousSameUserTurnText({
+            userId: input.userId,
+            currentMessageId: input.messageId,
+            botId,
+            resetAt,
+            replyChain: input.replyChain,
+            channelWindow: input.channelWindow,
+          })
+        : '';
+    const photoRequested =
+      selfieSkillEnabled &&
+      !hasPromptInjectionTag &&
+      hasExplicitSelfieRequest(rawUserText, prevSameUserTurn);
     const turnNowMs = input.messageTimestamp ?? Date.now();
     const activeOc = this.resolveActiveOcProfile(aiCfg.selfie);
     const activeOutfit = this.resolveActiveOcOutfit(aiCfg.selfie, turnNowMs);
     const selfieSkillPrompt = selfieSkillEnabled
-      ? buildOcSelfieSkillPrompt({
+      ? buildOcChatStatusPrompt({
           oc: activeOc,
           activeOutfit,
-          allowNsfw: aiCfg.selfie.allowNsfw,
+          photoRequested,
         })
       : null;
 
@@ -2491,25 +2513,28 @@ export class AiService {
       const { cotStripped, tags, selfieSpec, cleanedText } = extractCleanedCompletion(
         response.content,
       );
-      const prevSameUserTurn = selfieSpec
-        ? resolvePreviousSameUserTurnText({
-            userId: input.userId,
-            currentMessageId: input.messageId,
-            botId,
-            resetAt,
-            replyChain: input.replyChain,
-            channelWindow: input.channelWindow,
-          })
-        : '';
+      const effectiveSelfieSpec =
+        selfieSpec ??
+        (selfieSkillEnabled && !hasPromptInjectionTag
+          ? inferOcSelfieSpecFromTurn({
+              oc: activeOc,
+              activeOutfit,
+              poses: this.listOcPoses(),
+              userContent: rawUserText,
+              previousSameUserTurn: prevSameUserTurn,
+              assistantReply: cleanedText,
+              allowNsfw: aiCfg.selfie.allowNsfw,
+            })
+          : null);
       const selfieIntentText = prevSameUserTurn
         ? `${prevSameUserTurn}\n${rawUserText}`
         : rawUserText;
-      const compiledSelfiePrompt = selfieSpec
+      const compiledSelfiePrompt = effectiveSelfieSpec
         ? compileOcSelfiePrompt({
             oc: activeOc,
             activeOutfit,
             poses: this.listOcPoses(),
-            spec: selfieSpec,
+            spec: effectiveSelfieSpec,
             userContent: rawUserText,
             intentText: selfieIntentText,
             allowNsfw: aiCfg.selfie.allowNsfw,

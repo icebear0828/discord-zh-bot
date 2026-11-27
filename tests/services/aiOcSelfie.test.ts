@@ -23,12 +23,15 @@ import { WorldEventRepo } from '../../src/db/repositories/worldEventRepo.js';
 import { handleMessageCreate, resetAiRuntimeGuards } from '../../src/events/messageCreate.js';
 import {
   AiOcPresetStore,
+  buildOcChatStatusPrompt,
   buildOcSelfieSkillPrompt,
   compileOcSelfiePrompt,
   DEFAULT_AI_SELFIE_CONFIG,
   extractSelfieSkillTag,
   hasExplicitDuoIntent,
+  hasExplicitSelfieRequest,
   hasExplicitUserNsfwIntent,
+  inferOcSelfieSpecFromTurn,
   listBuiltinOcPoses,
   resetPoseRotationState,
   resolveActiveOcOutfit,
@@ -1365,6 +1368,258 @@ describe('OC Selfie Library & NovelAI V5 Pipeline SOP Compiler', () => {
     });
     expect(skillPrompt).toContain('"framing":"full"');
     expect(skillPrompt).toContain('nsfw_open');
+  });
+
+  it('decouples chat prompt from image tags (聊图分离) and deterministically compiles OC selfies without [SELFIE:] LLM output', async () => {
+    const richOc: AiOcProfile = {
+      ...SAMPLE_OC_ALPHA,
+      outfits: [
+        {
+          id: 'cozy_home',
+          name: '🛋️ 暖杏慵懒居家服',
+          summaryZh: '暖杏色针织开衫配居家短裤',
+          keywordsZh: ['居家服', '开衫'],
+          ootdEligible: true,
+          costumePortrait: 'cream knit cardigan, camisole,',
+          costumeUpper: 'cream knit cardigan, camisole, lounge shorts,',
+          costumeFull: 'cream knit cardigan, camisole, lounge shorts, bare feet,',
+          silhouetteGuard: '',
+        },
+        {
+          id: 'jk_sailor',
+          name: '🎀 定制水手服',
+          summaryZh: '白底绀领水手服配百褶短裙',
+          keywordsZh: ['水手服', '校服'],
+          ootdEligible: true,
+          costumePortrait: 'white sailor collar, navy neckerchief,',
+          costumeUpper: 'white sailor shirt, navy neckerchief, pleated skirt,',
+          costumeFull: 'white sailor shirt, navy neckerchief, pleated skirt, loafers,',
+          silhouetteGuard: '',
+        },
+        {
+          id: 'secret_bunny',
+          name: '🐇 丝绒兔女郎',
+          summaryZh: '黑丝绒兔耳连体衣',
+          keywordsZh: ['兔女郎'],
+          ootdEligible: false,
+          hairAccessory: 'black bunny ears headband,',
+          costumePortrait: 'strapless velvet bunny leotard, bowtie,',
+          costumeUpper: 'strapless velvet bunny leotard, bowtie, wrist cuffs,',
+          costumeFull: 'strapless velvet bunny leotard, bowtie, fishnet pantyhose,',
+          costumeNsfw: 'micro bunny leotard pulled down, topless, bare breasts, nipples,',
+          silhouetteGuard: '',
+        },
+      ],
+    };
+    const activeOutfit = richOc.outfits![0]!;
+
+    // 1. Pure conversational status prompt has ZERO [SELFIE:] JSON schema, pose clusters, or nsfw flags
+    for (const photoRequested of [false, true]) {
+      const chatPrompt = buildOcChatStatusPrompt({
+        oc: richOc,
+        activeOutfit,
+        photoRequested,
+      });
+      expect(chatPrompt).toContain(activeOutfit.summaryZh);
+      expect(chatPrompt).not.toContain('[SELFIE:');
+      expect(chatPrompt).not.toContain('"nsfw"');
+      expect(chatPrompt).not.toContain('"pose"');
+      expect(chatPrompt).not.toContain('"partnerAction"');
+      expect(chatPrompt).not.toContain('nsfw_open');
+    }
+
+    // 2. Intent detector accurately separates ordinary chat / negations / user-shared screenshots from real selfie requests
+    const nonPhotoInputs = [
+      '小姬我想你了',
+      '申请瑟瑟',
+      '我想干你了宝宝',
+      '我要开操了',
+      '顺便问一句你今天穿什么衣服呀？',
+      '刚才二十一点连续爆牌三把，气死我了，顺便问一句你今天穿什么衣服呀？（口头说说就行不用拍照）',
+      '按照你的规则去做',
+      '这个地图怎么走',
+      '我发张截图给你看',
+      '换个角度再来一张', // without prior photo turn!
+    ];
+    for (const txt of nonPhotoInputs) {
+      expect(hasExplicitSelfieRequest(txt), `must NOT trigger on: ${txt}`).toBe(false);
+    }
+
+    expect(hasExplicitSelfieRequest('换个角度再来一张', '今天吃什么')).toBe(false);
+    expect(hasExplicitSelfieRequest('换个角度再来一张', '发张私房照看看')).toBe(true);
+    expect(
+      hasExplicitSelfieRequest('对我做个招财猫猫爪手势，从上往下俯拍一张发来看看'),
+    ).toBe(true);
+    expect(hasExplicitSelfieRequest('换你衣柜里那套水手服校服，用女孩坐的姿势拍张全身照给我看看')).toBe(
+      true,
+    );
+    expect(hasExplicitSelfieRequest('过来坐我膝上，拍一张我从背后环抱你的双人合照留念吧')).toBe(
+      true,
+    );
+    expect(hasExplicitSelfieRequest('给我发一套你的Q版四格表情包看看')).toBe(true);
+
+    // 3. Deterministic turn inference respects full refusal, duo refusal downgrade, wardrobe match, and theme fallback
+    expect(
+      inferOcSelfieSpecFromTurn({
+        oc: richOc,
+        activeOutfit,
+        userContent: '发张自拍给我看看',
+        assistantReply: '想得美，才不拍给你看呢，滚去睡觉！',
+        allowNsfw: true,
+      }),
+    ).toBeNull();
+
+    const duoAcceptedSpec = inferOcSelfieSpecFromTurn({
+      oc: richOc,
+      activeOutfit,
+      userContent: '过来坐我膝上，拍一张我从背后环抱你的双人合照留念吧',
+      assistantReply: '来就来嘛，你可抱紧点别松手。',
+      allowNsfw: true,
+    });
+    expect(duoAcceptedSpec?.duo).toBe(true);
+    const duoCompiled = compileOcSelfiePrompt({
+      oc: richOc,
+      activeOutfit,
+      spec: duoAcceptedSpec!,
+      userContent: '过来坐我膝上，拍一张我从背后环抱你的双人合照留念吧',
+      allowNsfw: true,
+    });
+    expect(duoCompiled.charCaptions).toHaveLength(2);
+    expect(duoCompiled.poseId).toBe('duo_p053');
+
+    const duoRejectedSpec = inferOcSelfieSpecFromTurn({
+      oc: richOc,
+      activeOutfit,
+      userContent: '过来坐我膝上，拍一张我从背后环抱你的双人合照留念吧',
+      assistantReply: '滚啦，谁要跟你拍双人照，单人照赏你一张！',
+      allowNsfw: true,
+    });
+    expect(duoRejectedSpec).not.toBeNull();
+    expect(duoRejectedSpec?.duo).toBeUndefined();
+    const soloFallbackCompiled = compileOcSelfiePrompt({
+      oc: richOc,
+      activeOutfit,
+      spec: duoRejectedSpec!,
+      userContent: '过来坐我膝上，拍一张我从背后环抱你的双人合照留念吧',
+      allowNsfw: true,
+    });
+    expect(soloFallbackCompiled.charCaptions).toHaveLength(1);
+
+    // Wardrobe bunny preset preserved (spec.outfit omitted so richOc secret_bunny costumeNsfw applies)
+    const bunnyWardrobeSpec = inferOcSelfieSpecFromTurn({
+      oc: richOc,
+      activeOutfit,
+      userContent: '换上兔女郎拍张大尺度R18涩图自拍发我',
+      assistantReply: '真是拿你没办法，偷偷看一眼不许外传。',
+      allowNsfw: true,
+    });
+    expect(bunnyWardrobeSpec?.nsfw).toBe(true);
+    expect(bunnyWardrobeSpec?.outfit).toBeUndefined();
+    const bunnyCompiled = compileOcSelfiePrompt({
+      oc: richOc,
+      activeOutfit,
+      spec: bunnyWardrobeSpec!,
+      userContent: '换上兔女郎拍张大尺度R18涩图自拍发我',
+      allowNsfw: true,
+    });
+    expect(bunnyCompiled.outfitId).toBe('secret_bunny');
+    expect(bunnyCompiled.charCaptions[0]?.char_caption).toContain('micro bunny leotard pulled down');
+
+    // Theme costume fallback when wardrobe has NO maid preset
+    const maidFallbackSpec = inferOcSelfieSpecFromTurn({
+      oc: richOc,
+      activeOutfit,
+      userContent: '换上女仆装拍张全身照看看',
+      assistantReply: '换好了，看一眼吧。',
+      allowNsfw: true,
+    });
+    expect(maidFallbackSpec?.framing).toBe('full');
+    expect(maidFallbackSpec?.outfit).toContain('maid');
+
+    // 4. End-to-end AiService.generateReply sends ZERO [SELFIE:] instructions to LLM and still produces selfiePrompt from pure Chinese chat!
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-decoupled-selfie-'));
+    tempDirs.push(tmpDir);
+    const packStore = new AiPackStore(tmpDir);
+    packStore.ensureInitialized();
+    fs.writeFileSync(
+      path.join(tmpDir, 'oc-presets.json'),
+      JSON.stringify({ schemaVersion: 1, profiles: [richOc] }),
+      'utf8',
+    );
+
+    const capturedSystemPrompts: string[] = [];
+    let mockChineseReply = '大晚上的拿我当招财猫拜呢，看在今天心情还行的份上赏你一张。';
+    const db = createDatabase(':memory:');
+    const gRepo = new GuildConfigRepo(db);
+    const mRepo = new AiMemoryRepo(db);
+    const llmClient = new LlmClient(
+      { baseUrl: 'https://llm.local/v1', apiKey: 'sk-test', model: 'demo-llm', timeoutMs: 5000 },
+      {
+        fetchFn: async (_url, init) => {
+          const body = JSON.parse(String(init?.body)) as {
+            messages: Array<{ role: string; content: string }>;
+          };
+          const sys = body.messages
+            .filter((m) => m.role === 'system')
+            .map((m) => m.content)
+            .join('\n');
+          capturedSystemPrompts.push(sys);
+          return new Response(
+            JSON.stringify({
+              model: 'demo-llm',
+              choices: [{ message: { content: mockChineseReply } }],
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          );
+        },
+      },
+    );
+    const aiSvc = new AiService(gRepo, mRepo, llmClient, fetch, packStore, () => true);
+
+    // Photo turn: pure Chinese LLM output -> deterministic selfiePrompt compiled!
+    const photoRes = await aiSvc.generateReply(
+      {
+        guildId: 'g_dec',
+        channelId: 'c_dec',
+        userId: 'u1',
+        userName: '路人甲',
+        messageId: 'm_dec_1',
+        userContent: '对我做个招财猫猫爪手势，从上往下俯拍一张发来看看',
+      },
+      'bot1',
+    );
+    expect(photoRes.ok).toBe(true);
+    if (photoRes.ok) {
+      expect(photoRes.selfiePrompt).toBeDefined();
+      expect(photoRes.selfiePrompt?.poseId).toBe('upper_p008');
+      expect(photoRes.selfiePrompt?.nsfw).toBe(false);
+      expect(photoRes.selfiePrompt?.prompt).toContain('from above, high angle');
+    }
+    expect(capturedSystemPrompts[0]).not.toContain('[SELFIE:');
+    expect(capturedSystemPrompts[0]).not.toContain('"nsfw"');
+
+    // Ordinary chat turn: zero [SELFIE:] in system prompt, zero selfiePrompt emitted
+    const resolvedTodayOutfit = aiSvc.resolveActiveOcOutfit(gRepo.getOrCreate('g_dec').ai.selfie);
+    mockChineseReply = `我今天穿的${resolvedTodayOutfit.summaryZh}呀。`;
+    const chatOnlyRes = await aiSvc.generateReply(
+      {
+        guildId: 'g_dec',
+        channelId: 'c_dec',
+        userId: 'u1',
+        userName: '路人甲',
+        messageId: 'm_dec_2',
+        userContent: '顺便问一句你今天穿什么衣服呀？（口头说说就行不用拍照）',
+      },
+      'bot1',
+    );
+    expect(chatOnlyRes.ok).toBe(true);
+    if (chatOnlyRes.ok) {
+      expect(chatOnlyRes.selfiePrompt).toBeUndefined();
+    }
+    expect(capturedSystemPrompts[1]).toContain(resolvedTodayOutfit.summaryZh);
+    expect(capturedSystemPrompts[1]).not.toContain('[SELFIE:');
+
+    db.close();
   });
 });
 
