@@ -104,7 +104,7 @@ function buildAiParamsModal(
     .setPlaceholder(
       defaultModel
         ? `默认: ${truncateText(defaultModel, 40)} | 兜底: ${truncateText(fallbackValue || '无', 30)}`
-        : '例如：pg/gemini-4-argon | pg/gemini-4-carbon',
+        : '例如：pg/gemini-4-argon | paid/gemini-4-carbon',
     )
     .setRequired(false);
   const leftPrefill = ai.modelOverride?.trim() ?? '';

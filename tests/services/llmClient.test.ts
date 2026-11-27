@@ -545,4 +545,67 @@ describe('LlmClient', () => {
     ).rejects.toMatchObject({ code: 'service_unavailable', status: 503, attempts: 9 });
     expect(fastCalls).toBe(9);
   });
+
+  it('fails fast on isRefusalContent when maxRefusalRetries=0 and retries when maxRefusalRetries>0', async () => {
+    const refusalText =
+      '您的请求包含针对露骨色情内容及引导性性行为描写的指令，并且使用了角色扮演框架来规避常规限制。根据安全准则，我无法继续生成露骨的性互动或色情角色扮演内容。';
+
+    let fastCalls = 0;
+    const fastClient = new LlmClient(
+      {
+        baseUrl: 'https://gateway.local/v1',
+        apiKey: 'sk-test',
+        model: 'pg/gemini-4-argon',
+        timeoutMs: 10_000,
+      },
+      {
+        sleepFn: async () => undefined,
+        fetchFn: async () => {
+          fastCalls++;
+          return makeJsonResponse({ choices: [{ message: { content: refusalText } }] });
+        },
+      },
+    );
+
+    await expect(
+      fastClient.chat({
+        messages: [{ role: 'user', content: 'hi' }],
+        isRefusalContent: (raw) => raw.includes('根据安全准则'),
+        maxRefusalRetries: 0,
+      }),
+    ).rejects.toMatchObject({ code: 'content_refusal', attempts: 1 });
+    expect(fastCalls).toBe(1);
+
+    let retryCalls = 0;
+    const retrySleeps: number[] = [];
+    const retryClient = new LlmClient(
+      {
+        baseUrl: 'https://gateway.local/v1',
+        apiKey: 'sk-test',
+        model: 'paid/gemini-4-carbon',
+        timeoutMs: 10_000,
+      },
+      {
+        sleepFn: async (ms) => {
+          retrySleeps.push(ms);
+        },
+        fetchFn: async () => {
+          retryCalls++;
+          if (retryCalls <= 2) {
+            return makeJsonResponse({ choices: [{ message: { content: refusalText } }] });
+          }
+          return makeJsonResponse({ choices: [{ message: { content: '重试后正常回复' } }] });
+        },
+      },
+    );
+
+    const retryRes = await retryClient.chat({
+      messages: [{ role: 'user', content: 'hi' }],
+      isRefusalContent: (raw) => raw.includes('根据安全准则'),
+      maxRefusalRetries: 2,
+    });
+    expect(retryRes.content).toBe('重试后正常回复');
+    expect(retryRes.attempts).toBe(3);
+    expect(retrySleeps).toEqual([1200, 2500]);
+  });
 });

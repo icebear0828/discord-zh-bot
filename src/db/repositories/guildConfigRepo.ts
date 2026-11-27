@@ -72,11 +72,37 @@ function parseRecord<T extends object>(raw: string, defaults: T): T {
   return { ...defaults, ...obj } as T;
 }
 
-function sanitizeChannelOverrides(raw: unknown): Record<string, AiChannelOverride> {
+const LEGACY_DEFAULT_LLM_FALLBACK_MODEL = 'pg/gemini-4-carbon';
+
+function normalizeFallbackModelValue(raw: unknown): {
+  value: string | null | undefined;
+  migrated: boolean;
+} {
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim();
+    if (/^(none|off|false|-)$/i.test(trimmed)) {
+      return { value: null, migrated: false };
+    }
+    if (trimmed === LEGACY_DEFAULT_LLM_FALLBACK_MODEL) {
+      return { value: DEFAULT_AI_CONFIG.fallbackModel, migrated: true };
+    }
+    return { value: trimmed || undefined, migrated: false };
+  }
+  if (raw === null) {
+    return { value: null, migrated: false };
+  }
+  return { value: undefined, migrated: false };
+}
+
+function sanitizeChannelOverrides(raw: unknown): {
+  overrides: Record<string, AiChannelOverride>;
+  migrated: boolean;
+} {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
-    return {};
+    return { overrides: {}, migrated: false };
   }
   const result: Record<string, AiChannelOverride> = {};
+  let migrated = false;
   for (const [channelId, val] of Object.entries(raw as Record<string, unknown>)) {
     if (!channelId.trim() || typeof val !== 'object' || val === null || Array.isArray(val)) {
       continue;
@@ -97,15 +123,14 @@ function sanitizeChannelOverrides(raw: unknown): Record<string, AiChannelOverrid
           ? null
           : undefined;
     const rawFallback = item['fallbackModel'];
+    const parsedFallback = normalizeFallbackModelValue(rawFallback);
+    if (parsedFallback.migrated) {
+      migrated = true;
+    }
     const fallbackModel =
-      typeof rawFallback === 'string'
-        ? (() => {
-            const trimmed = rawFallback.trim();
-            return !trimmed || /^(none|off|false|-)$/i.test(trimmed) ? null : trimmed;
-          })()
-        : rawFallback === null
-          ? null
-          : undefined;
+      typeof rawFallback === 'string' && !rawFallback.trim()
+        ? null
+        : parsedFallback.value;
 
     if (
       presetId ||
@@ -121,7 +146,7 @@ function sanitizeChannelOverrides(raw: unknown): Record<string, AiChannelOverrid
       };
     }
   }
-  return result;
+  return { overrides: result, migrated };
 }
 
 function sanitizeBoundedNumber(
@@ -299,16 +324,26 @@ export class GuildConfigRepo {
           const rawActivePresetId = rawAiObj['activePresetId'];
           const rawActiveCardId = rawAiObj['activeCardId'];
           const rawFallbackModel = rawAiObj['fallbackModel'];
+          const parsedFallback = normalizeFallbackModelValue(rawFallbackModel);
           const fallbackModel =
-            typeof rawFallbackModel === 'string'
-              ? (() => {
-                  const trimmed = rawFallbackModel.trim();
-                  if (/^(none|off|false|-)$/i.test(trimmed)) return null;
-                  return trimmed || DEFAULT_AI_CONFIG.fallbackModel;
-                })()
-              : rawFallbackModel === null
-                ? null
-                : DEFAULT_AI_CONFIG.fallbackModel;
+            parsedFallback.value !== undefined
+              ? parsedFallback.value
+              : DEFAULT_AI_CONFIG.fallbackModel;
+          const sanitizedChannelOverrides = sanitizeChannelOverrides(rawAiObj['channelOverrides']);
+          if (parsedFallback.migrated || sanitizedChannelOverrides.migrated) {
+            const migratedRawAi: Record<string, unknown> = {
+              ...rawAiObj,
+              ...(parsedFallback.migrated ? { fallbackModel } : {}),
+              ...(sanitizedChannelOverrides.migrated
+                ? { channelOverrides: sanitizedChannelOverrides.overrides }
+                : {}),
+            };
+            this.db
+              .prepare(
+                'UPDATE guild_configs SET ai_config_json = ?, updated_at = ? WHERE guild_id = ?',
+              )
+              .run(JSON.stringify(migratedRawAi), Date.now(), row.guild_id);
+          }
           return {
             ...aiRaw,
             activePresetId:
@@ -320,7 +355,7 @@ export class GuildConfigRepo {
                 ? rawActiveCardId.trim()
                 : null,
             fallbackModel,
-            channelOverrides: sanitizeChannelOverrides(rawAiObj['channelOverrides']),
+            channelOverrides: sanitizedChannelOverrides.overrides,
             inputPricePer1MUsd:
               typeof rawInputPrice === 'number' && Number.isFinite(rawInputPrice) && rawInputPrice >= 0
                 ? rawInputPrice

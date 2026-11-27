@@ -80,6 +80,29 @@ import {
 export const MAX_AI_IMAGE_BYTES = 5 * 1024 * 1024;
 export const MAX_AI_IMAGES_PER_MESSAGE = 4;
 
+const MAX_SAFETY_REFUSAL_LEN = 1200;
+
+const SAFETY_REFUSAL_PATTERNS: readonly RegExp[] = [
+  /(?:您|你)的请求(?:包含|涉及|含有)[\s\S]{0,80}(?:露骨|色情|性行为|性互动|成人内容|不当内容|违规内容|规避[\s\S]{0,12}限制|违反[\s\S]{0,12}(?:安全|政策|准则|规定))/,
+  /(?:根据|遵循|按照|受限于|基于|出于)[\s\S]{0,16}(?:安全|内容|使用|伦理|合规)?(?:准则|政策|指南|规范|规定|限制)[\s\S]{0,30}(?:我|本模型|系统)?(?:无法|不能|不允许|拒绝|不予)(?:继续|为您|为你)?(?:生成|提供|创作|参与|协助|满足|回复|输出|响应|进行)/,
+  /(?:我|作为[\s\S]{0,10}(?:AI|人工智能|语言模型|助手))[\s\S]{0,20}(?:无法|不能|不允许|拒绝)(?:继续|为您|为你)?(?:生成|提供|创作|编写|输出|参与|进行)[\s\S]{0,30}(?:露骨|色情|性互动|性行为|性描写|成人|NSFW|色情角色扮演|低俗|违规|有害)/i,
+  /(?:使用|利用|借助|通过)了?[\s\S]{0,16}(?:角色扮演|虚构|情景|框架)[\s\S]{0,16}(?:来|以)?(?:规避|绕过|突破)[\s\S]{0,16}(?:常规|安全|内容)?(?:限制|审查|规则|准则)/,
+  /(?:如果|若)(?:您|你)希望[\s\S]{0,24}(?:在非色情|在合规|在安全|在正常)[\s\S]{0,20}(?:范围内|前提下)[\s\S]{0,40}(?:互动|对话|讨论|聊天|回复)/,
+  /(?:抱歉|很抱歉|对不起)[，,、\s]*(?:我)?(?:无法|不能)(?:满足|协助|处理|继续|生成|提供|回应)[\s\S]{0,40}(?:露骨|色情|性行为|性互动|成人|NSFW|安全准则|安全政策|内容政策|使用政策|相关规定|该请求|此请求)/i,
+  /\b(?:i\s+(?:cannot|can't|am unable to|won't|must decline to))\b[\s\S]{0,60}\b(?:sexually explicit|explicit sexual|explicit content|erotic|nsfw|sexual roleplay|safety guidelines|safety policy|content policy|usage policy)\b/i,
+  /\b(?:according to|under|due to|per)\s+(?:my\s+|our\s+|the\s+)?(?:safety|content|usage)\s+(?:guidelines|policies|policy)\b[\s\S]{0,60}\b(?:cannot|can't|unable to|won't|decline)\b/i,
+  /\byour request (?:contains|includes|involves)\b[\s\S]{0,80}\b(?:sexually explicit|explicit sexual|erotic|bypass(?:ing)?\s+(?:standard\s+)?restrictions)\b/i,
+  /\bas an ai(?: language model)?,?\s+i\s+(?:cannot|can't|am unable to)\b[\s\S]{0,60}\b(?:generate|create|provide|assist|fulfill|engage|continue|comply)\b/i,
+];
+
+export function isSafetyRefusalReply(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed || trimmed.length > MAX_SAFETY_REFUSAL_LEN) {
+    return false;
+  }
+  return SAFETY_REFUSAL_PATTERNS.some((pattern) => pattern.test(trimmed));
+}
+
 export interface DiscordAttachmentLike {
   url: string;
   contentType: string | null;
@@ -2390,6 +2413,7 @@ export class AiService {
     let fallbackStarted = false;
     let fallbackUsed = false;
     try {
+      const hasFallback = Boolean(resolved.effectiveFallbackModel);
       const baseRequest = {
         messages,
         temperature: effectiveTemperature,
@@ -2404,6 +2428,8 @@ export class AiService {
           ? { presencePenalty: resolved.preset.sampling.presencePenalty }
           : {}),
         validateContent: (raw: string) => extractCleanedCompletion(raw).isNonEmpty,
+        isRefusalContent: (raw: string) =>
+          isSafetyRefusalReply(extractCleanedCompletion(raw).cleanedText),
       };
 
       let response: LlmChatResponse;
@@ -2411,6 +2437,7 @@ export class AiService {
         response = await this.llmClient.chat({
           ...baseRequest,
           model: effectiveModel,
+          maxRefusalRetries: hasFallback ? 0 : 2,
         });
       } catch (primaryErr) {
         const primaryCode: LlmErrorCode =
@@ -2432,6 +2459,7 @@ export class AiService {
           ...baseRequest,
           model: fallbackModel,
           maxRetries: 3,
+          maxRefusalRetries: 2,
         });
         fallbackUsed = true;
         response = {

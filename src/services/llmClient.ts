@@ -36,6 +36,8 @@ export interface LlmChatRequest {
   stream?: boolean;
   maxRetries?: number;
   validateContent?: (rawContent: string) => boolean;
+  isRefusalContent?: (rawContent: string) => boolean;
+  maxRefusalRetries?: number;
 }
 
 export interface LlmUsage {
@@ -61,6 +63,7 @@ export type LlmErrorCode =
   | 'bad_request'
   | 'network_error'
   | 'empty_response'
+  | 'content_refusal'
   | 'unknown';
 
 export class LlmError extends Error {
@@ -568,10 +571,15 @@ export class LlmClient {
         ? Math.max(0, Math.min(this.maxRetries, Math.floor(request.maxRetries)))
         : this.maxRetries;
     const effectiveRateLimitCap = Math.min(effectiveMaxRetries, this.maxRateLimitRetries);
+    const effectiveRefusalCap = Math.min(
+      effectiveMaxRetries,
+      Math.max(0, Math.floor(request.maxRefusalRetries ?? 0)),
+    );
     const totalAttempts = effectiveMaxRetries + 1;
     const useStream = request.stream ?? true;
     const startedAt = this.nowFn();
     let rateLimitRetriesUsed = 0;
+    let refusalRetriesUsed = 0;
 
     const canRetryAfterDelay = (attempt: number, delayMs: number): boolean => {
       if (attempt >= totalAttempts) return false;
@@ -675,6 +683,24 @@ export class LlmClient {
               ? 'LLM returned empty content after CoT/output validation'
               : 'LLM returned empty content',
             userMessage: 'AI 返回了空内容，已自动重试仍为空，请换个问法或稍后再试。',
+          });
+        }
+
+        if (request.isRefusalContent && request.isRefusalContent(extracted.content)) {
+          if (refusalRetriesUsed < effectiveRefusalCap) {
+            const delayMs = Math.min(getFallbackDelayMs(attempt), EMPTY_RESPONSE_MAX_DELAY_MS);
+            if (canRetryAfterDelay(attempt, delayMs)) {
+              refusalRetriesUsed++;
+              await this.sleepFn(delayMs);
+              continue;
+            }
+          }
+          throw new LlmError({
+            code: 'content_refusal',
+            status: res.status,
+            attempts: attempt,
+            message: `LLM returned safety policy refusal: ${extracted.content.slice(0, 200)}`,
+            userMessage: 'AI 触发了上游内容安全拦截，主备模型均无法生成回复，请换个表达方式再试。',
           });
         }
 

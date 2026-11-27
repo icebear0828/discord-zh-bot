@@ -2399,7 +2399,7 @@ describe('menu router & multiplayer interaction flows', () => {
     await routeInteraction(paramsModal.interaction, ctx);
     const afterParams = ctx.repos.guildConfig.getOrCreate('g1').ai;
     expect(afterParams.modelOverride).toBe('gemini-custom');
-    expect(afterParams.fallbackModel).toBe('pg/gemini-4-carbon');
+    expect(afterParams.fallbackModel).toBe('paid/gemini-4-carbon');
     expect(afterParams.temperature).toBe(0.65);
     expect(afterParams.maxTokens).toBe(2048);
     expect(afterParams.contextWindowMessages).toBe(16);
