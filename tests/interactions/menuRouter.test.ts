@@ -2367,22 +2367,58 @@ describe('menu router & multiplayer interaction flows', () => {
     await routeInteraction(ignoreChan.interaction, ctx);
     expect(ctx.repos.guildConfig.getOrCreate('g1').ai.ignoredChannelIds).toEqual(['c_bad']);
 
-    // Edit persona & worldbook via Modal
+    // Edit persona & worldbook via Modal (supports up to 4000 chars per field without 500/1000 truncation)
+    const longIdentity = `你是深夜陪聊的群友。${'甲'.repeat(2600)}`;
+    const longSoul = `说话简短幽默。${'乙'.repeat(2700)}`;
+    const longWorldbook = `本群叫黑吊国，大家爱打游戏。${'丙'.repeat(3100)}`;
     const personaModal = createModalMock({
       customId: 'menu:modal_sub:admin_ai_persona',
       userId: 'admin1',
       fields: {
         personaName: '夜猫使者',
-        identityPrompt: '你是深夜陪聊的群友。',
-        soulPrompt: '说话简短幽默。',
-        worldbook: '本群叫黑吊国，大家爱打游戏。',
+        identityPrompt: longIdentity,
+        soulPrompt: longSoul,
+        worldbook: longWorldbook,
       },
     });
     await routeInteraction(personaModal.interaction, ctx);
     const afterPersona = ctx.repos.guildConfig.getOrCreate('g1').ai;
     expect(afterPersona.preset).toBe('custom');
     expect(afterPersona.personaName).toBe('夜猫使者');
-    expect(afterPersona.worldbook).toBe('本群叫黑吊国，大家爱打游戏。');
+    expect(afterPersona.identityPrompt).toBe(longIdentity);
+    expect(afterPersona.soulPrompt).toBe(longSoul);
+    expect(afterPersona.worldbook).toBe(longWorldbook);
+
+    const openPersonaBtn = createButtonMock({
+      customId: 'menu:modal:admin_ai_persona',
+      userId: 'admin1',
+      isAdmin: true,
+    });
+    await routeInteraction(openPersonaBtn.interaction, ctx);
+    expect(openPersonaBtn.showModal).toHaveBeenCalledTimes(1);
+    const shownModalJson = openPersonaBtn.showModal.mock.calls[0]![0].toJSON() as {
+      custom_id: string;
+      components: Array<{
+        components: Array<{
+          custom_id: string;
+          label: string;
+          max_length?: number;
+          value?: string;
+        }>;
+      }>;
+    };
+    const modalFields = new Map(
+      shownModalJson.components.flatMap((row) => row.components.map((c) => [c.custom_id, c])),
+    );
+    expect(modalFields.get('identityPrompt')?.max_length).toBe(4000);
+    expect(modalFields.get('identityPrompt')?.value).toBe(longIdentity);
+    expect((modalFields.get('identityPrompt')?.label.length ?? 99) <= 45).toBe(true);
+    expect(modalFields.get('soulPrompt')?.max_length).toBe(4000);
+    expect(modalFields.get('soulPrompt')?.value).toBe(longSoul);
+    expect((modalFields.get('soulPrompt')?.label.length ?? 99) <= 45).toBe(true);
+    expect(modalFields.get('worldbook')?.max_length).toBe(4000);
+    expect(modalFields.get('worldbook')?.value).toBe(longWorldbook);
+    expect((modalFields.get('worldbook')?.label.length ?? 99) <= 45).toBe(true);
 
     // Edit model & parameters via Modal
     const paramsModal = createModalMock({

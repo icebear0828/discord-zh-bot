@@ -48,41 +48,43 @@ import {
   respondFromModal,
 } from './menuHelpers.js';
 
+const MAX_AI_PERSONA_MODAL_TEXT_LEN = 4000;
+
 function buildAiPersonaModal(ai: AiConfig): ModalBuilder {
   const worldbookInput = new TextInputBuilder()
     .setCustomId('worldbook')
-    .setLabel('群背景与世界书（可选，最多1000字）')
+    .setLabel(truncateText(`群背景与世界书（可选，最多${MAX_AI_PERSONA_MODAL_TEXT_LEN}字）`, 45))
     .setStyle(TextInputStyle.Paragraph)
-    .setMaxLength(1000)
+    .setMaxLength(MAX_AI_PERSONA_MODAL_TEXT_LEN)
     .setPlaceholder('填写本群梗、常用规则、成员关系或固定设定...')
     .setRequired(false);
   if (ai.worldbook.trim()) {
-    worldbookInput.setValue(truncateText(ai.worldbook.trim(), 1000));
+    worldbookInput.setValue(truncateText(ai.worldbook.trim(), MAX_AI_PERSONA_MODAL_TEXT_LEN));
   }
 
   return new ModalBuilder()
     .setCustomId('menu:modal_sub:admin_ai_persona')
-    .setTitle('✍️ 编辑 AI 人设与世界书')
+    .setTitle(truncateText('✍️ 编辑 AI 人设与世界书', 45))
     .addComponents(
       prefilledField('personaName', '人格名称（1~32字）', truncateText(ai.personaName, 32), 32),
       new ActionRowBuilder<TextInputBuilder>().addComponents(
         new TextInputBuilder()
           .setCustomId('identityPrompt')
-          .setLabel('身份设定 Identity（1~500字）')
+          .setLabel(truncateText(`身份设定 Identity（1~${MAX_AI_PERSONA_MODAL_TEXT_LEN}字）`, 45))
           .setStyle(TextInputStyle.Paragraph)
           .setMinLength(1)
-          .setMaxLength(500)
-          .setValue(truncateText(ai.identityPrompt, 500))
+          .setMaxLength(MAX_AI_PERSONA_MODAL_TEXT_LEN)
+          .setValue(truncateText(ai.identityPrompt, MAX_AI_PERSONA_MODAL_TEXT_LEN))
           .setRequired(true),
       ),
       new ActionRowBuilder<TextInputBuilder>().addComponents(
         new TextInputBuilder()
           .setCustomId('soulPrompt')
-          .setLabel('说话风格 Soul（1~500字）')
+          .setLabel(truncateText(`说话风格 Soul（1~${MAX_AI_PERSONA_MODAL_TEXT_LEN}字）`, 45))
           .setStyle(TextInputStyle.Paragraph)
           .setMinLength(1)
-          .setMaxLength(500)
-          .setValue(truncateText(ai.soulPrompt, 500))
+          .setMaxLength(MAX_AI_PERSONA_MODAL_TEXT_LEN)
+          .setValue(truncateText(ai.soulPrompt, MAX_AI_PERSONA_MODAL_TEXT_LEN))
           .setRequired(true),
       ),
       new ActionRowBuilder<TextInputBuilder>().addComponents(worldbookInput),
