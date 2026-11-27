@@ -2629,12 +2629,16 @@ export class AiService {
       const errorCode: LlmErrorCode = err instanceof LlmError ? err.code : 'unknown';
       const errAttempts = err instanceof LlmError ? err.attempts : 1;
       const attempts = fallbackStarted ? primaryAttempts + errAttempts : errAttempts;
+      const failedModel =
+        fallbackStarted && resolved.effectiveFallbackModel
+          ? resolved.effectiveFallbackModel
+          : effectiveModel;
       try {
         this.aiMemoryRepo.recordUsageLog({
           guildId: input.guildId,
           channelId: input.channelId,
           userId: input.userId,
-          model: effectiveModel,
+          model: failedModel,
           status: 'error',
           errorCode,
           attempts,

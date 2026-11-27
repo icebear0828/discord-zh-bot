@@ -73,8 +73,13 @@ function parseRecord<T extends object>(raw: string, defaults: T): T {
 }
 
 const LEGACY_DEFAULT_LLM_FALLBACK_MODEL = 'pg/gemini-4-carbon';
+const PREV_DEFAULT_LLM_FALLBACK_MODEL = 'paid/gemini-4-carbon';
+const LEGACY_DEFAULT_MAX_TOKENS = 1024;
 
-function normalizeFallbackModelValue(raw: unknown): {
+function normalizeFallbackModelValue(
+  raw: unknown,
+  modelOverride?: string | null,
+): {
   value: string | null | undefined;
   migrated: boolean;
 } {
@@ -83,7 +88,12 @@ function normalizeFallbackModelValue(raw: unknown): {
     if (/^(none|off|false|-)$/i.test(trimmed)) {
       return { value: null, migrated: false };
     }
-    if (trimmed === LEGACY_DEFAULT_LLM_FALLBACK_MODEL) {
+    const normalizedOverride = typeof modelOverride === 'string' ? modelOverride.trim() : '';
+    if (
+      trimmed === LEGACY_DEFAULT_LLM_FALLBACK_MODEL ||
+      (trimmed === PREV_DEFAULT_LLM_FALLBACK_MODEL &&
+        (!normalizedOverride || normalizedOverride === PREV_DEFAULT_LLM_FALLBACK_MODEL))
+    ) {
       return { value: DEFAULT_AI_CONFIG.fallbackModel, migrated: true };
     }
     return { value: trimmed || undefined, migrated: false };
@@ -123,7 +133,7 @@ function sanitizeChannelOverrides(raw: unknown): {
           ? null
           : undefined;
     const rawFallback = item['fallbackModel'];
-    const parsedFallback = normalizeFallbackModelValue(rawFallback);
+    const parsedFallback = normalizeFallbackModelValue(rawFallback, modelOverride);
     if (parsedFallback.migrated) {
       migrated = true;
     }
@@ -323,17 +333,22 @@ export class GuildConfigRepo {
           const rawOutputPrice = rawAiObj['outputPricePer1MUsd'];
           const rawActivePresetId = rawAiObj['activePresetId'];
           const rawActiveCardId = rawAiObj['activeCardId'];
+          const rawModelOverride = sanitizeNullableString(rawAiObj['modelOverride']);
           const rawFallbackModel = rawAiObj['fallbackModel'];
-          const parsedFallback = normalizeFallbackModelValue(rawFallbackModel);
+          const parsedFallback = normalizeFallbackModelValue(rawFallbackModel, rawModelOverride);
           const fallbackModel =
             parsedFallback.value !== undefined
               ? parsedFallback.value
               : DEFAULT_AI_CONFIG.fallbackModel;
+          const maxTokensMigrated =
+            parsedFallback.migrated && rawAiObj['maxTokens'] === LEGACY_DEFAULT_MAX_TOKENS;
+          const maxTokens = maxTokensMigrated ? DEFAULT_AI_CONFIG.maxTokens : aiRaw.maxTokens;
           const sanitizedChannelOverrides = sanitizeChannelOverrides(rawAiObj['channelOverrides']);
-          if (parsedFallback.migrated || sanitizedChannelOverrides.migrated) {
+          if (parsedFallback.migrated || maxTokensMigrated || sanitizedChannelOverrides.migrated) {
             const migratedRawAi: Record<string, unknown> = {
               ...rawAiObj,
               ...(parsedFallback.migrated ? { fallbackModel } : {}),
+              ...(maxTokensMigrated ? { maxTokens } : {}),
               ...(sanitizedChannelOverrides.migrated
                 ? { channelOverrides: sanitizedChannelOverrides.overrides }
                 : {}),
@@ -346,6 +361,7 @@ export class GuildConfigRepo {
           }
           return {
             ...aiRaw,
+            maxTokens,
             activePresetId:
               typeof rawActivePresetId === 'string' && rawActivePresetId.trim()
                 ? rawActivePresetId.trim()

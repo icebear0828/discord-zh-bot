@@ -1248,14 +1248,15 @@ describe('aiService helpers & AiMemoryRepo', () => {
     db.close();
   });
 
-  it('defaults fallbackModel to paid/gemini-4-carbon (including legacy DB rows & old pg/gemini-4-carbon migration) and preserves explicit null/custom values', () => {
-    expect(DEFAULT_AI_CONFIG.fallbackModel).toBe('paid/gemini-4-carbon');
+  it('defaults fallbackModel to pg/gemini-4-argon and maxTokens to 4096 (including legacy DB migration) while preserving explicit overrides', () => {
+    expect(DEFAULT_AI_CONFIG.fallbackModel).toBe('pg/gemini-4-argon');
+    expect(DEFAULT_AI_CONFIG.maxTokens).toBe(4096);
 
     const db = createDatabase(':memory:');
     const guildConfigRepo = new GuildConfigRepo(db);
     guildConfigRepo.getOrCreate('g_fb_legacy');
 
-    // 1. Missing fallbackModel field -> defaults to paid/gemini-4-carbon
+    // 1. Missing fallbackModel field -> defaults to pg/gemini-4-argon
     const row = db
       .prepare('SELECT ai_config_json FROM guild_configs WHERE guild_id = ?')
       .get('g_fb_legacy') as { ai_config_json: string };
@@ -1267,34 +1268,68 @@ describe('aiService helpers & AiMemoryRepo', () => {
     );
 
     const legacyLoaded = guildConfigRepo.getOrCreate('g_fb_legacy');
-    expect(legacyLoaded.ai.fallbackModel).toBe('paid/gemini-4-carbon');
+    expect(legacyLoaded.ai.fallbackModel).toBe('pg/gemini-4-argon');
 
-    // 2. Old default pg/gemini-4-carbon -> auto-migrates to paid/gemini-4-carbon and persists
-    const parsedOld = { ...parsed, fallbackModel: 'pg/gemini-4-carbon' };
+    // 2. Old default pg/gemini-4-carbon -> auto-migrates to pg/gemini-4-argon and persists
+    const parsedOldPg = { ...parsed, modelOverride: null, fallbackModel: 'pg/gemini-4-carbon', maxTokens: 1024 };
     db.prepare('UPDATE guild_configs SET ai_config_json = ? WHERE guild_id = ?').run(
-      JSON.stringify(parsedOld),
+      JSON.stringify(parsedOldPg),
+      'g_fb_legacy',
+    );
+    const migratedPg = guildConfigRepo.getOrCreate('g_fb_legacy');
+    expect(migratedPg.ai.fallbackModel).toBe('pg/gemini-4-argon');
+    expect(migratedPg.ai.maxTokens).toBe(4096);
+
+    // 3. Old default paid/gemini-4-carbon with null modelOverride & 1024 maxTokens -> migrates to pg/gemini-4-argon + 4096
+    const parsedOldPaid = { ...parsed, modelOverride: null, fallbackModel: 'paid/gemini-4-carbon', maxTokens: 1024 };
+    db.prepare('UPDATE guild_configs SET ai_config_json = ? WHERE guild_id = ?').run(
+      JSON.stringify(parsedOldPaid),
       'g_fb_legacy',
     );
     const migrated = guildConfigRepo.getOrCreate('g_fb_legacy');
-    expect(migrated.ai.fallbackModel).toBe('paid/gemini-4-carbon');
+    expect(migrated.ai.fallbackModel).toBe('pg/gemini-4-argon');
+    expect(migrated.ai.maxTokens).toBe(4096);
     const persistedRow = db
       .prepare('SELECT ai_config_json FROM guild_configs WHERE guild_id = ?')
       .get('g_fb_legacy') as { ai_config_json: string };
-    expect((JSON.parse(persistedRow.ai_config_json) as Record<string, unknown>)['fallbackModel']).toBe(
-      'paid/gemini-4-carbon',
-    );
+    const persistedJson = JSON.parse(persistedRow.ai_config_json) as Record<string, unknown>;
+    expect(persistedJson['fallbackModel']).toBe('pg/gemini-4-argon');
+    expect(persistedJson['maxTokens']).toBe(4096);
 
-    // 3. Explicit null and custom fallback models are preserved
-    guildConfigRepo.updateAi('g_fb_legacy', { ...migrated.ai, fallbackModel: null });
-    expect(guildConfigRepo.getOrCreate('g_fb_legacy').ai.fallbackModel).toBeNull();
+    // 4. Explicit custom primary (pg/gemini-4-argon) + fallback (paid/gemini-4-carbon) is preserved
+    guildConfigRepo.updateAi('g_fb_legacy', {
+      ...migrated.ai,
+      modelOverride: 'pg/gemini-4-argon',
+      fallbackModel: 'paid/gemini-4-carbon',
+      maxTokens: 2048,
+    });
+    const preservedPair = guildConfigRepo.getOrCreate('g_fb_legacy');
+    expect(preservedPair.ai.modelOverride).toBe('pg/gemini-4-argon');
+    expect(preservedPair.ai.fallbackModel).toBe('paid/gemini-4-carbon');
+    expect(preservedPair.ai.maxTokens).toBe(2048);
 
-    guildConfigRepo.updateAi('g_fb_legacy', { ...migrated.ai, fallbackModel: 'custom/fallback-v2' });
+    // 5. Explicit null, custom fallback models, and explicit maxTokens=1024 after migration are preserved
+    guildConfigRepo.updateAi('g_fb_legacy', {
+      ...migrated.ai,
+      modelOverride: null,
+      fallbackModel: null,
+      maxTokens: 1024,
+    });
+    const explicitNull = guildConfigRepo.getOrCreate('g_fb_legacy');
+    expect(explicitNull.ai.fallbackModel).toBeNull();
+    expect(explicitNull.ai.maxTokens).toBe(1024);
+
+    guildConfigRepo.updateAi('g_fb_legacy', {
+      ...migrated.ai,
+      modelOverride: null,
+      fallbackModel: 'custom/fallback-v2',
+    });
     expect(guildConfigRepo.getOrCreate('g_fb_legacy').ai.fallbackModel).toBe('custom/fallback-v2');
 
     db.close();
   });
 
-  it('rerolls <think>-only output and falls back to paid/gemini-4-carbon on exhausted primary failures', async () => {
+  it('rerolls <think>-only output and falls back to pg/gemini-4-argon on exhausted primary failures', async () => {
     const db = createDatabase(':memory:');
     const guildConfigRepo = new GuildConfigRepo(db);
     const aiMemoryRepo = new AiMemoryRepo(db);
@@ -1307,8 +1342,8 @@ describe('aiService helpers & AiMemoryRepo', () => {
         {
           baseUrl: 'https://gateway.local/v1',
           apiKey: 'sk-test',
-          model: 'pg/gemini-4-argon',
-          fallbackModel: 'paid/gemini-4-carbon',
+          model: 'paid/gemini-4-carbon',
+          fallbackModel: 'pg/gemini-4-argon',
           timeoutMs: 10_000,
         },
         {
@@ -1317,11 +1352,11 @@ describe('aiService helpers & AiMemoryRepo', () => {
           fetchFn: async (_url, init) => {
             callCountA++;
             const body = JSON.parse(String(init?.body)) as { model: string };
-            expect(body.model).toBe('pg/gemini-4-argon');
+            expect(body.model).toBe('paid/gemini-4-carbon');
             if (callCountA === 1) {
               return new Response(
                 JSON.stringify({
-                  model: 'pg/gemini-4-argon',
+                  model: 'paid/gemini-4-carbon',
                   choices: [{ message: { content: '<think>只有思考没有正文</think>' } }],
                 }),
                 { status: 200, headers: { 'Content-Type': 'application/json' } },
@@ -1329,7 +1364,7 @@ describe('aiService helpers & AiMemoryRepo', () => {
             }
             return new Response(
               JSON.stringify({
-                model: 'pg/gemini-4-argon',
+                model: 'paid/gemini-4-carbon',
                 choices: [{ message: { content: '<think>思考完毕</think>\n正常接话了' } }],
               }),
               { status: 200, headers: { 'Content-Type': 'application/json' } },
@@ -1349,12 +1384,12 @@ describe('aiService helpers & AiMemoryRepo', () => {
       expect(resA.ok).toBe(true);
       if (resA.ok) {
         expect(resA.replyText).toBe('正常接话了');
-        expect(resA.model).toBe('pg/gemini-4-argon');
+        expect(resA.model).toBe('paid/gemini-4-carbon');
         expect(resA.attempts).toBe(2);
         expect(resA.fallbackUsed).toBeFalsy();
       }
 
-      // Case B: Primary fails across 503 (9 attempts), 429 (3 attempts), timeout (9 attempts), and <think>-only empty (9 attempts) -> falls back to paid/gemini-4-carbon
+      // Case B: Primary fails across 503 (9 attempts), 429 (3 attempts), timeout (9 attempts), and <think>-only empty (9 attempts) -> falls back to pg/gemini-4-argon
       const scenarios: Array<{
         name: string;
         expectedPrimaryCalls: number;
@@ -1387,7 +1422,7 @@ describe('aiService helpers & AiMemoryRepo', () => {
           failPrimary: async () =>
             new Response(
               JSON.stringify({
-                model: 'pg/gemini-4-argon',
+                model: 'paid/gemini-4-carbon',
                 choices: [{ message: { content: '<think>empty</think>' } }],
               }),
               { status: 200, headers: { 'Content-Type': 'application/json' } },
@@ -1401,8 +1436,8 @@ describe('aiService helpers & AiMemoryRepo', () => {
           {
             baseUrl: 'https://gateway.local/v1',
             apiKey: 'sk-test',
-            model: 'pg/gemini-4-argon',
-            fallbackModel: 'paid/gemini-4-carbon',
+            model: 'paid/gemini-4-carbon',
+            fallbackModel: 'pg/gemini-4-argon',
             timeoutMs: 10_000,
           },
           {
@@ -1411,13 +1446,13 @@ describe('aiService helpers & AiMemoryRepo', () => {
             fetchFn: async (_url, init) => {
               const body = JSON.parse(String(init?.body)) as { model: string };
               modelsCalled.push(body.model);
-              if (body.model === 'pg/gemini-4-argon') {
+              if (body.model === 'paid/gemini-4-carbon') {
                 return scenario.failPrimary();
               }
               return new Response(
                 JSON.stringify({
-                  model: 'paid/gemini-4-carbon',
-                  choices: [{ message: { content: `4C 兜底成功 (${scenario.name})` } }],
+                  model: 'pg/gemini-4-argon',
+                  choices: [{ message: { content: `4A 兜底成功 (${scenario.name})` } }],
                   usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
                 }),
                 { status: 200, headers: { 'Content-Type': 'application/json' } },
@@ -1438,20 +1473,20 @@ describe('aiService helpers & AiMemoryRepo', () => {
 
         expect(resB.ok).toBe(true);
         if (resB.ok) {
-          expect(resB.model).toBe('paid/gemini-4-carbon');
+          expect(resB.model).toBe('pg/gemini-4-argon');
           expect(resB.fallbackUsed).toBe(true);
           expect(resB.attempts).toBe(scenario.expectedPrimaryCalls + 1);
-          expect(resB.replyText).toBe(`4C 兜底成功 (${scenario.name})`);
+          expect(resB.replyText).toBe(`4A 兜底成功 (${scenario.name})`);
         }
-        expect(modelsCalled.filter((m) => m === 'pg/gemini-4-argon')).toHaveLength(
+        expect(modelsCalled.filter((m) => m === 'paid/gemini-4-carbon')).toHaveLength(
           scenario.expectedPrimaryCalls,
         );
-        expect(modelsCalled.filter((m) => m === 'paid/gemini-4-carbon')).toHaveLength(1);
+        expect(modelsCalled.filter((m) => m === 'pg/gemini-4-argon')).toHaveLength(1);
 
         const logs = aiB.listRecentUsageLogs(guildId, 5);
         expect(logs).toHaveLength(1);
         expect(logs[0]?.status).toBe('ok');
-        expect(logs[0]?.model).toBe('paid/gemini-4-carbon');
+        expect(logs[0]?.model).toBe('pg/gemini-4-argon');
         expect(logs[0]?.attempts).toBe(scenario.expectedPrimaryCalls + 1);
       }
 
@@ -1461,8 +1496,8 @@ describe('aiService helpers & AiMemoryRepo', () => {
         {
           baseUrl: 'https://gateway.local/v1',
           apiKey: 'sk-test',
-          model: 'pg/gemini-4-argon',
-          fallbackModel: 'paid/gemini-4-carbon',
+          model: 'paid/gemini-4-carbon',
+          fallbackModel: 'pg/gemini-4-argon',
           timeoutMs: 10_000,
         },
         {
@@ -1493,8 +1528,8 @@ describe('aiService helpers & AiMemoryRepo', () => {
         {
           baseUrl: 'https://gateway.local/v1',
           apiKey: 'sk-test',
-          model: 'paid/gemini-4-carbon',
-          fallbackModel: 'paid/gemini-4-carbon',
+          model: 'pg/gemini-4-argon',
+          fallbackModel: 'pg/gemini-4-argon',
           timeoutMs: 10_000,
         },
         {
@@ -1523,7 +1558,7 @@ describe('aiService helpers & AiMemoryRepo', () => {
         {
           baseUrl: 'https://gateway.local/v1',
           apiKey: 'sk-test',
-          model: 'pg/gemini-4-argon',
+          model: 'paid/gemini-4-carbon',
           timeoutMs: 10_000,
         },
         {
@@ -1554,7 +1589,7 @@ describe('aiService helpers & AiMemoryRepo', () => {
     }
   });
 
-  it('detects safety policy refusals without false positives and immediately switches to paid/gemini-4-carbon fallback', async () => {
+  it('detects safety policy refusals without false positives and immediately switches to pg/gemini-4-argon fallback', async () => {
     const exactRefusal = [
       '您的请求包含针对露骨色情内容及引导性性行为描写的指令，并且使用了角色扮演框架来规避常规限制。根据安全准则，我无法继续生成露骨的性互动或色情角色扮演内容。',
       '',
@@ -1594,14 +1629,14 @@ describe('aiService helpers & AiMemoryRepo', () => {
     const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
 
     try {
-      // 1. Primary returns exact safety refusal -> fails fast (1 primary call) and falls back to paid/gemini-4-carbon
+      // 1. Primary returns exact safety refusal -> fails fast (1 primary call) and falls back to pg/gemini-4-argon
       const called1: string[] = [];
       const client1 = new LlmClient(
         {
           baseUrl: 'https://gateway.local/v1',
           apiKey: 'sk-test',
-          model: 'pg/gemini-4-argon',
-          fallbackModel: 'paid/gemini-4-carbon',
+          model: 'paid/gemini-4-carbon',
+          fallbackModel: 'pg/gemini-4-argon',
           timeoutMs: 10_000,
         },
         {
@@ -1610,10 +1645,10 @@ describe('aiService helpers & AiMemoryRepo', () => {
           fetchFn: async (_url, init) => {
             const body = JSON.parse(String(init?.body)) as { model: string };
             called1.push(body.model);
-            if (body.model === 'pg/gemini-4-argon') {
+            if (body.model === 'paid/gemini-4-carbon') {
               return new Response(
                 JSON.stringify({
-                  model: 'pg/gemini-4-argon',
+                  model: 'paid/gemini-4-carbon',
                   choices: [{ message: { content: `<think>先审一下</think>\n${exactRefusal}` } }],
                 }),
                 { status: 200, headers: { 'Content-Type': 'application/json' } },
@@ -1621,7 +1656,7 @@ describe('aiService helpers & AiMemoryRepo', () => {
             }
             return new Response(
               JSON.stringify({
-                model: 'paid/gemini-4-carbon',
+                model: 'pg/gemini-4-argon',
                 choices: [{ message: { content: '哼，这还差不多，算你识相~' } }],
                 usage: { prompt_tokens: 12, completion_tokens: 8, total_tokens: 20 },
               }),
@@ -1641,15 +1676,15 @@ describe('aiService helpers & AiMemoryRepo', () => {
       });
       expect(res1.ok).toBe(true);
       if (res1.ok) {
-        expect(res1.model).toBe('paid/gemini-4-carbon');
+        expect(res1.model).toBe('pg/gemini-4-argon');
         expect(res1.fallbackUsed).toBe(true);
         expect(res1.attempts).toBe(2);
         expect(res1.replyText).toBe('哼，这还差不多，算你识相~');
       }
-      expect(called1).toEqual(['pg/gemini-4-argon', 'paid/gemini-4-carbon']);
+      expect(called1).toEqual(['paid/gemini-4-carbon', 'pg/gemini-4-argon']);
       expect(
         infoSpy.mock.calls.some((args) =>
-          String(args[0]).includes('[ai:fallback] from=pg/gemini-4-argon to=paid/gemini-4-carbon reason=content_refusal'),
+          String(args[0]).includes('[ai:fallback] from=paid/gemini-4-carbon to=pg/gemini-4-argon reason=content_refusal'),
         ),
       ).toBe(true);
 
@@ -1659,8 +1694,8 @@ describe('aiService helpers & AiMemoryRepo', () => {
         {
           baseUrl: 'https://gateway.local/v1',
           apiKey: 'sk-test',
-          model: 'pg/gemini-4-argon',
-          fallbackModel: 'paid/gemini-4-carbon',
+          model: 'paid/gemini-4-carbon',
+          fallbackModel: 'pg/gemini-4-argon',
           timeoutMs: 10_000,
         },
         {
@@ -1670,7 +1705,7 @@ describe('aiService helpers & AiMemoryRepo', () => {
             called2.push(body.model);
             return new Response(
               JSON.stringify({
-                model: 'pg/gemini-4-argon',
+                model: 'paid/gemini-4-carbon',
                 choices: [
                   {
                     message: {
@@ -1696,11 +1731,11 @@ describe('aiService helpers & AiMemoryRepo', () => {
       });
       expect(res2.ok).toBe(true);
       if (res2.ok) {
-        expect(res2.model).toBe('pg/gemini-4-argon');
+        expect(res2.model).toBe('paid/gemini-4-carbon');
         expect(res2.fallbackUsed).toBeFalsy();
         expect(res2.replyText).toBe('少贫嘴，赶紧打游戏去');
       }
-      expect(called2).toEqual(['pg/gemini-4-argon']);
+      expect(called2).toEqual(['paid/gemini-4-carbon']);
 
       // 3. Fallback retries occasional refusal and succeeds on 2nd fallback attempt; all-refused returns content_refusal error
       let fbTry = 0;
@@ -1709,8 +1744,8 @@ describe('aiService helpers & AiMemoryRepo', () => {
         {
           baseUrl: 'https://gateway.local/v1',
           apiKey: 'sk-test',
-          model: 'pg/gemini-4-argon',
-          fallbackModel: 'paid/gemini-4-carbon',
+          model: 'paid/gemini-4-carbon',
+          fallbackModel: 'pg/gemini-4-argon',
           timeoutMs: 10_000,
         },
         {
@@ -1718,10 +1753,10 @@ describe('aiService helpers & AiMemoryRepo', () => {
           fetchFn: async (_url, init) => {
             const body = JSON.parse(String(init?.body)) as { model: string };
             called3.push(body.model);
-            if (body.model === 'pg/gemini-4-argon') {
+            if (body.model === 'paid/gemini-4-carbon') {
               return new Response(
                 JSON.stringify({
-                  model: 'pg/gemini-4-argon',
+                  model: 'paid/gemini-4-carbon',
                   choices: [{ message: { content: exactRefusal } }],
                 }),
                 { status: 200, headers: { 'Content-Type': 'application/json' } },
@@ -1731,7 +1766,7 @@ describe('aiService helpers & AiMemoryRepo', () => {
             if (fbTry === 1) {
               return new Response(
                 JSON.stringify({
-                  model: 'paid/gemini-4-carbon',
+                  model: 'pg/gemini-4-argon',
                   choices: [{ message: { content: exactRefusal } }],
                 }),
                 { status: 200, headers: { 'Content-Type': 'application/json' } },
@@ -1739,7 +1774,7 @@ describe('aiService helpers & AiMemoryRepo', () => {
             }
             return new Response(
               JSON.stringify({
-                model: 'paid/gemini-4-carbon',
+                model: 'pg/gemini-4-argon',
                 choices: [{ message: { content: '兜底第二次成功了' } }],
               }),
               { status: 200, headers: { 'Content-Type': 'application/json' } },
@@ -1758,15 +1793,15 @@ describe('aiService helpers & AiMemoryRepo', () => {
       });
       expect(res3.ok).toBe(true);
       if (res3.ok) {
-        expect(res3.model).toBe('paid/gemini-4-carbon');
+        expect(res3.model).toBe('pg/gemini-4-argon');
         expect(res3.fallbackUsed).toBe(true);
         expect(res3.attempts).toBe(3);
         expect(res3.replyText).toBe('兜底第二次成功了');
       }
       expect(called3).toEqual([
+        'paid/gemini-4-carbon',
         'pg/gemini-4-argon',
-        'paid/gemini-4-carbon',
-        'paid/gemini-4-carbon',
+        'pg/gemini-4-argon',
       ]);
 
       // 4. Both primary and fallback keep refusing -> returns errorCode: content_refusal (does not leak refusal text to channel)
@@ -1775,8 +1810,8 @@ describe('aiService helpers & AiMemoryRepo', () => {
         {
           baseUrl: 'https://gateway.local/v1',
           apiKey: 'sk-test',
-          model: 'pg/gemini-4-argon',
-          fallbackModel: 'paid/gemini-4-carbon',
+          model: 'paid/gemini-4-carbon',
+          fallbackModel: 'pg/gemini-4-argon',
           timeoutMs: 10_000,
         },
         {
@@ -1808,15 +1843,16 @@ describe('aiService helpers & AiMemoryRepo', () => {
         expect(res4.errorCode).toBe('content_refusal');
       }
       expect(called4).toEqual([
+        'paid/gemini-4-carbon',
         'pg/gemini-4-argon',
-        'paid/gemini-4-carbon',
-        'paid/gemini-4-carbon',
-        'paid/gemini-4-carbon',
+        'pg/gemini-4-argon',
+        'pg/gemini-4-argon',
       ]);
       const errLogs = ai4.listRecentUsageLogs('g_refusal_both_fail', 5);
       expect(errLogs).toHaveLength(1);
       expect(errLogs[0]?.status).toBe('error');
       expect(errLogs[0]?.errorCode).toBe('content_refusal');
+      expect(errLogs[0]?.model).toBe('pg/gemini-4-argon');
     } finally {
       infoSpy.mockRestore();
       db.close();

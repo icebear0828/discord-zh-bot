@@ -2399,20 +2399,20 @@ describe('menu router & multiplayer interaction flows', () => {
     await routeInteraction(paramsModal.interaction, ctx);
     const afterParams = ctx.repos.guildConfig.getOrCreate('g1').ai;
     expect(afterParams.modelOverride).toBe('gemini-custom');
-    expect(afterParams.fallbackModel).toBe('paid/gemini-4-carbon');
+    expect(afterParams.fallbackModel).toBe('pg/gemini-4-argon');
     expect(afterParams.temperature).toBe(0.65);
     expect(afterParams.maxTokens).toBe(2048);
     expect(afterParams.contextWindowMessages).toBe(16);
     expect(afterParams.maxMemoriesPerScope).toBe(40);
 
-    // Pipe syntax updates both primary and fallback (including disabling via none)
+    // Pipe syntax updates both primary and fallback (including disabling via none) and supports up to 16384 maxTokens
     const pipeParamsModal = createModalMock({
       customId: 'menu:modal_sub:admin_ai_params',
       userId: 'admin1',
       fields: {
         modelOverride: 'pg/gemini-4-argon | none',
         temperature: '0.85',
-        maxTokens: '1024',
+        maxTokens: '12288',
         contextWindowMessages: '20',
         maxMemoriesPerScope: '30',
       },
@@ -2421,6 +2421,7 @@ describe('menu router & multiplayer interaction flows', () => {
     const afterPipe = ctx.repos.guildConfig.getOrCreate('g1').ai;
     expect(afterPipe.modelOverride).toBe('pg/gemini-4-argon');
     expect(afterPipe.fallbackModel).toBeNull();
+    expect(afterPipe.maxTokens).toBe(12288);
 
     // Toggle memory & vision
     const toggleMem = createButtonMock({

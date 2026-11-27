@@ -608,4 +608,45 @@ describe('LlmClient', () => {
     expect(retryRes.attempts).toBe(3);
     expect(retrySleeps).toEqual([1200, 2500]);
   });
+
+  it('includes SSE finish_reason in empty_response error diagnostics', async () => {
+    const encoder = new TextEncoder();
+    const client = new LlmClient(
+      {
+        baseUrl: 'https://gateway.local/v1',
+        apiKey: 'sk-test',
+        model: 'paid/gemini-4-carbon',
+        timeoutMs: 10_000,
+      },
+      {
+        maxRetries: 0,
+        fetchFn: async () => {
+          const chunks = [
+            'data: {"model":"gemini-4-carbon","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}\n\n',
+            'data: {"model":"gemini-4-carbon","choices":[{"index":0,"delta":{},"finish_reason":"length"}]}\n\n',
+            'data: [DONE]\n\n',
+          ];
+          const stream = new ReadableStream<Uint8Array>({
+            start(controller) {
+              for (const chunk of chunks) {
+                controller.enqueue(encoder.encode(chunk));
+              }
+              controller.close();
+            },
+          });
+          return new Response(stream, {
+            status: 200,
+            headers: { 'Content-Type': 'text/event-stream; charset=utf-8' },
+          });
+        },
+      },
+    );
+
+    await expect(
+      client.chat({ messages: [{ role: 'user', content: 'hi' }] }),
+    ).rejects.toMatchObject({
+      code: 'empty_response',
+      message: expect.stringContaining('finish_reason=length'),
+    });
+  });
 });

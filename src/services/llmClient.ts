@@ -218,6 +218,7 @@ function extractResponseContent(data: unknown): {
   content: string;
   model?: string;
   usage?: LlmUsage;
+  finishReason?: string;
 } {
   if (!isRecord(data)) {
     return { content: '' };
@@ -236,13 +237,18 @@ function extractResponseContent(data: unknown): {
     return { content: '', model, usage };
   }
 
+  const finishReason =
+    typeof first.finish_reason === 'string' && first.finish_reason.trim()
+      ? first.finish_reason.trim()
+      : undefined;
+
   const msg = first.message;
   if (!isRecord(msg)) {
-    return { content: '', model, usage };
+    return { content: '', model, usage, finishReason };
   }
 
   const text = extractTextFromContentField(msg.content).trim();
-  return { content: text, model, usage };
+  return { content: text, model, usage, finishReason };
 }
 
 function isContextTooLong(status: number, bodyText: string): boolean {
@@ -422,7 +428,7 @@ export class LlmClient {
     timeoutMs: number,
     controller: AbortController,
     onTimedOut: () => void,
-  ): Promise<{ content: string; model?: string; usage?: LlmUsage }> {
+  ): Promise<{ content: string; model?: string; usage?: LlmUsage; finishReason?: string }> {
     const body = res.body;
     if (!body) {
       return { content: '' };
@@ -452,6 +458,7 @@ export class LlmClient {
     const contentParts: string[] = [];
     let resolvedModel: string | undefined;
     let usage: LlmUsage | undefined;
+    let finishReason: string | undefined;
     let lineBuffer = '';
     let doneSeen = false;
 
@@ -492,6 +499,10 @@ export class LlmClient {
       if (!Array.isArray(choices) || choices.length === 0) return;
       const first = choices[0];
       if (!isRecord(first)) return;
+
+      if (typeof first.finish_reason === 'string' && first.finish_reason.trim()) {
+        finishReason = first.finish_reason.trim();
+      }
 
       if (isRecord(first.delta)) {
         const chunkText = extractTextFromContentField(first.delta.content);
@@ -541,6 +552,7 @@ export class LlmClient {
       content: contentParts.join('').trim(),
       model: resolvedModel,
       usage,
+      finishReason,
     };
   }
 
@@ -647,7 +659,7 @@ export class LlmClient {
         }
 
         const contentType = (res.headers.get('content-type') ?? '').toLowerCase();
-        let extracted: { content: string; model?: string; usage?: LlmUsage };
+        let extracted: { content: string; model?: string; usage?: LlmUsage; finishReason?: string };
         if (contentType.includes('text/event-stream') && res.body) {
           extracted = await this.readSseStream(res, timeoutMs, controller, () => {
             timedOut = true;
@@ -675,13 +687,16 @@ export class LlmClient {
             await this.sleepFn(delayMs);
             continue;
           }
+          const finishPart = extracted.finishReason
+            ? ` (finish_reason=${extracted.finishReason})`
+            : '';
           throw new LlmError({
             code: 'empty_response',
             status: res.status,
             attempts: attempt,
             message: extracted.content
-              ? 'LLM returned empty content after CoT/output validation'
-              : 'LLM returned empty content',
+              ? `LLM returned empty content after CoT/output validation${finishPart}`
+              : `LLM returned empty content${finishPart}`,
             userMessage: 'AI 返回了空内容，已自动重试仍为空，请换个问法或稍后再试。',
           });
         }

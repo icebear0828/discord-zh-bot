@@ -104,7 +104,7 @@ function buildAiParamsModal(
     .setPlaceholder(
       defaultModel
         ? `默认: ${truncateText(defaultModel, 40)} | 兜底: ${truncateText(fallbackValue || '无', 30)}`
-        : '例如：pg/gemini-4-argon | paid/gemini-4-carbon',
+        : '例如：paid/gemini-4-carbon | pg/gemini-4-argon',
     )
     .setRequired(false);
   const leftPrefill = ai.modelOverride?.trim() ?? '';
@@ -125,7 +125,7 @@ function buildAiParamsModal(
     .addComponents(
       new ActionRowBuilder<TextInputBuilder>().addComponents(modelField),
       prefilledField('temperature', '温度 Temperature（0.0 ~ 2.0）', ai.temperature, 8),
-      prefilledField('maxTokens', '最大输出 Token（128 ~ 8192）', ai.maxTokens, 8),
+      prefilledField('maxTokens', '最大输出 Token（128 ~ 16384）', ai.maxTokens, 8),
       prefilledField('contextWindowMessages', '短期上下文滑窗条数（0 ~ 30）', ai.contextWindowMessages, 4),
       prefilledField('maxMemoriesPerScope', '单作用域记忆上限（5 ~ 100）', ai.maxMemoriesPerScope, 4),
     );
@@ -1481,7 +1481,7 @@ export async function tryHandleAiMenuModal(
   const maxTokens = parseIntInRange(
     interaction.fields.getTextInputValue('maxTokens'),
     128,
-    8192,
+    16384,
   );
   const contextWindowMessages = parseIntInRange(
     interaction.fields.getTextInputValue('contextWindowMessages'),
@@ -1509,7 +1509,7 @@ export async function tryHandleAiMenuModal(
         { page: 'admin_ai' },
         {
           type: 'error',
-          text: '参数格式无效：温度需在 0~2，MaxTokens 128~8192，上下文条数 0~30，记忆上限 5~100。',
+          text: '参数格式无效：温度需在 0~2，MaxTokens 128~16384，上下文条数 0~30，记忆上限 5~100。',
         },
       ),
     );

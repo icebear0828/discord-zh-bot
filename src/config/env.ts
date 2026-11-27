@@ -1,6 +1,6 @@
 import dotenv from 'dotenv';
 
-export const DEFAULT_LLM_FALLBACK_MODEL = 'paid/gemini-4-carbon';
+export const DEFAULT_LLM_FALLBACK_MODEL = 'pg/gemini-4-argon';
 export const DEFAULT_LLM_MAX_RETRIES = 8;
 export const DEFAULT_LLM_RATE_LIMIT_MAX_RETRIES = 2;
 
