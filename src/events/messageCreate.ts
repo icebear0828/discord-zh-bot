@@ -1,6 +1,14 @@
-import { Events, type Client, type Message } from 'discord.js';
+import {
+  AttachmentBuilder,
+  Events,
+  PermissionFlagsBits,
+  type Client,
+  type Message,
+} from 'discord.js';
+import type { GuildConfig } from '../config/defaults.js';
 import { resolveGameChatChannelId, sendToChannel } from '../interactions/menuHelpers.js';
 import { resolveDiscordUserMentions } from '../services/aiRegex.js';
+import { isBotAdmin } from '../services/permissionService.js';
 import {
   stripBotMention,
   type ContextMentionedUser,
@@ -71,6 +79,19 @@ function resolveMessageUserMentionName(msg: Message, userId: string): string | n
 
 function getMessageAuthorName(msg: Message): string {
   return msg.member?.displayName ?? msg.author.displayName ?? msg.author.username;
+}
+
+function isMessageAuthorBotAdmin(msg: Message, cfg: GuildConfig): boolean {
+  const perms = msg.member?.permissions;
+  const roleCache = msg.member?.roles?.cache;
+  return isBotAdmin({
+    isGuildAdmin: Boolean(perms?.has?.(PermissionFlagsBits.Administrator)),
+    hasManageGuild: Boolean(perms?.has?.(PermissionFlagsBits.ManageGuild)),
+    memberRoleIds: roleCache ? [...roleCache.keys()] : [],
+    configuredAdminRoleIds: cfg.adminRoleIds,
+    userId: msg.author.id,
+    configuredAdminUserIds: cfg.adminUserIds,
+  });
 }
 
 function extractNonBotMentionedUsers(msg: Message, botId: string): ContextMentionedUser[] {
@@ -172,7 +193,7 @@ async function executeAiTask(task: QueuedAiTask): Promise<void> {
     if (cfg.ai.contextWindowMessages > 0 && message.channel.isTextBased()) {
       try {
         const fetched = await message.channel.messages.fetch({
-          limit: Math.min(30, cfg.ai.contextWindowMessages + 2),
+          limit: Math.min(50, cfg.ai.contextWindowMessages + 10),
           before: message.id,
         });
         const lookup = new Map<string, Message>(replyData.fetchedMessages);
@@ -205,6 +226,7 @@ async function executeAiTask(task: QueuedAiTask): Promise<void> {
         userName: userDisplayName,
         userHandle,
         messageId: message.id,
+        messageTimestamp: message.createdTimestamp,
         userContent,
         ...(directRef
           ? {
@@ -239,8 +261,62 @@ async function executeAiTask(task: QueuedAiTask): Promise<void> {
       `[ai:ok] model=${res.model}${res.fallbackUsed ? ' fallback=true' : ''} user=${userHandle}(${message.author.id}) guild=${guildId} channel=${message.channelId} tokens=${res.usage.promptTokens}+${res.usage.completionTokens}=${res.usage.totalTokens}${res.usage.estimated ? '(est)' : ''} cost=$${res.usage.costUsd.toFixed(6)} latency=${res.usage.latencyMs}ms attempts=${res.attempts}`,
     );
 
-    for (let i = 0; i < res.chunks.length; i++) {
-      const chunk = res.chunks[i];
+    let selfieAttachment: AttachmentBuilder | null = null;
+    let selfieFallbackNotice = '';
+    if (res.selfiePrompt && ctx.services.image?.isConfigured()) {
+      const selfieRes = await ctx.services.image.generateOcSelfie({
+        guildId,
+        channelId: message.channelId,
+        userId: message.author.id,
+        prompt: res.selfiePrompt.prompt,
+        negativePrompt: res.selfiePrompt.negativePrompt,
+        charCaptions: res.selfiePrompt.charCaptions,
+        aspectRatio: res.selfiePrompt.aspectRatio,
+        steps: res.selfiePrompt.steps,
+        scale: res.selfiePrompt.scale,
+        cfgRescale: res.selfiePrompt.cfgRescale,
+        spoiler: res.selfiePrompt.spoiler,
+        isAdmin: isMessageAuthorBotAdmin(message, cfg),
+      });
+
+      if (selfieRes.ok) {
+        const attachment = new AttachmentBuilder(selfieRes.buffer, {
+          name: `oc-selfie-${selfieRes.record.id}.png`,
+        });
+        if (selfieRes.record.spoiler) {
+          attachment.setSpoiler(true);
+        }
+        selfieAttachment = attachment;
+        console.info(
+          `[ai:selfie_ok] id=#${selfieRes.record.id} ratio=${selfieRes.record.aspectRatio} spoiler=${selfieRes.record.spoiler} latency=${selfieRes.record.latencyMs}ms user=${userHandle}(${message.author.id}) guild=${guildId} channel=${message.channelId}`,
+        );
+      } else {
+        console.info(
+          `[ai:selfie_skip] code=${selfieRes.errorCode} user=${userHandle}(${message.author.id}) guild=${guildId} channel=${message.channelId} msg=${selfieRes.errorMessage}`,
+        );
+        if (selfieRes.errorCode === 'cooldown' && selfieRes.retryAfterSec) {
+          selfieFallbackNotice = `\n*（📷 相机还在冷却，等 ${selfieRes.retryAfterSec} 秒再拍~）*`;
+        } else if (selfieRes.errorCode === 'queue_full') {
+          selfieFallbackNotice = '\n*（📷 当前生图排队已满，稍等片刻再拍~）*';
+        } else if (selfieRes.errorCode !== 'module_disabled') {
+          selfieFallbackNotice = '\n*（📷 相机刚卡了一下没拍出来，稍后再试~）*';
+        }
+      }
+    }
+
+    const outgoingChunks = [...res.chunks];
+    if (selfieFallbackNotice && outgoingChunks.length > 0) {
+      const lastIdx = outgoingChunks.length - 1;
+      const lastChunk = outgoingChunks[lastIdx]!;
+      if (lastChunk.length + selfieFallbackNotice.length <= 2000) {
+        outgoingChunks[lastIdx] = `${lastChunk}${selfieFallbackNotice}`;
+      } else {
+        outgoingChunks.push(selfieFallbackNotice.trim());
+      }
+    }
+
+    for (let i = 0; i < outgoingChunks.length; i++) {
+      const chunk = outgoingChunks[i];
       if (!chunk) continue;
       const chunkAllowedUsers = res.allowedMentionUserIds.filter((id) =>
         chunk.includes(`<@${id}>`),
@@ -248,6 +324,7 @@ async function executeAiTask(task: QueuedAiTask): Promise<void> {
       if (i === 0) {
         await message.reply({
           content: chunk,
+          ...(selfieAttachment ? { files: [selfieAttachment] } : {}),
           allowedMentions: { parse: [], users: chunkAllowedUsers, repliedUser: true },
           failIfNotExists: false,
         });

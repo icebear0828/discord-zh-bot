@@ -2591,6 +2591,66 @@ describe('menu router & multiplayer interaction flows', () => {
     await routeInteraction(clearUsageBtn.interaction, ctx);
     expect(ctx.services.ai.getUsageSummary('g1', 24).totalCalls).toBe(0);
 
+    // admin_ai:selfie panel navigation, preset switch, toggle, and custom OC modals
+    const selfieNavSelect = createStringSelectMock({
+      customId: 'menu:admin_ai_selfie_preset',
+      userId: 'admin1',
+      values: ['nav:selfie'],
+    });
+    await routeInteraction(selfieNavSelect.interaction, ctx);
+    expect(selfieNavSelect.update.mock.calls[0]![0].embeds?.[0]?.toJSON().title).toContain(
+      'AI 聊天自设（OC）',
+    );
+
+    const selfieSelect = createStringSelectMock({
+      customId: 'menu:admin_ai_selfie_preset',
+      userId: 'admin1',
+      values: ['preset:custom'],
+    });
+    await routeInteraction(selfieSelect.interaction, ctx);
+    expect(ctx.repos.guildConfig.getOrCreate('g1').ai.selfie.ocPreset).toBe('custom');
+    expect(selfieSelect.update.mock.calls[0]![0].embeds?.[0]?.toJSON().title).toContain(
+      'AI 聊天自设（OC）',
+    );
+
+    const toggleSelfieNsfw = createButtonMock({
+      customId: 'menu:admin:ai_toggle_selfie_nsfw',
+      userId: 'admin1',
+    });
+    await routeInteraction(toggleSelfieNsfw.interaction, ctx);
+    expect(ctx.repos.guildConfig.getOrCreate('g1').ai.selfie.allowNsfw).toBe(false);
+
+    const customOcAppearanceModal = createModalMock({
+      customId: 'menu:modal_sub:admin_ai_selfie_appearance',
+      userId: 'admin1',
+      fields: {
+        name: '雪虎姬',
+        cooldownSec: '30',
+        appearance: '1girl, white hair, golden eyes, tiger hairpin',
+        silhouetteGuard: '-1.2::hat::,',
+      },
+    });
+    await routeInteraction(customOcAppearanceModal.interaction, ctx);
+    const afterAppearance = ctx.repos.guildConfig.getOrCreate('g1').ai.selfie;
+    expect(afterAppearance.ocPreset).toBe('custom');
+    expect(afterAppearance.cooldownSec).toBe(30);
+    expect(afterAppearance.customOc.name).toBe('雪虎姬');
+    expect(afterAppearance.customOc.appearance.startsWith('girl,')).toBe(true);
+
+    const customOcCostumeModal = createModalMock({
+      customId: 'menu:modal_sub:admin_ai_selfie_costume',
+      userId: 'admin1',
+      fields: {
+        costumePortrait: 'black choker, bare shoulders',
+        costumeUpper: 'black choker, bare shoulders, black crop top, denim shorts',
+        costumeFull: 'black choker, bare shoulders, black crop top, denim shorts, black boots',
+      },
+    });
+    await routeInteraction(customOcCostumeModal.interaction, ctx);
+    expect(ctx.repos.guildConfig.getOrCreate('g1').ai.selfie.customOc.costumeFull).toContain(
+      'black boots',
+    );
+
     ctx.db.close();
   });
 

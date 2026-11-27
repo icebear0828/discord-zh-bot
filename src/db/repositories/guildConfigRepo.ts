@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3';
+import { sanitizeStoredAiSelfieConfig } from '../../services/aiOcSelfie.js';
 import { sanitizeStoredUserProfiles } from '../../services/aiProfiles.js';
 import {
   cloneDefaultAiRegexRules,
@@ -334,6 +335,7 @@ export class GuildConfigRepo {
                 : true,
             regexRules: parsedRules !== undefined ? parsedRules : cloneDefaultAiRegexRules(),
             userProfiles: parsedProfiles,
+            selfie: sanitizeStoredAiSelfieConfig(rawAiObj['selfie']),
             freeChatChannelIds: Array.isArray(aiRaw.freeChatChannelIds)
               ? aiRaw.freeChatChannelIds.filter((id): id is string => typeof id === 'string')
               : [],

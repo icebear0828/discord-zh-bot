@@ -48,7 +48,7 @@ export function buildAdminAiView(
   guildId: string,
   actor: MenuActor,
   feedback: MenuFeedback | undefined,
-  tab: 'basic' | 'channels' | 'regex' | 'usage' | 'profiles' = 'basic',
+  tab: 'basic' | 'channels' | 'regex' | 'usage' | 'profiles' | 'selfie' = 'basic',
   regexPage = 1,
   profilePage = 1,
 ): BuiltMenuMessage {
@@ -61,6 +61,86 @@ export function buildAdminAiView(
   const memCounts = ctx.services.ai.countMemories(guildId);
   const enabledRegexCount = ai.regexRules.filter((r) => r.enabled).length;
   const usage24h = ctx.services.ai.getUsageSummary(guildId, 24);
+  const externalOcProfiles = ctx.services.ai.listOcProfiles();
+  const activeOc = ctx.services.ai.resolveActiveOcProfile(ai.selfie);
+  const imageConfigured = Boolean(ctx.services.image?.isConfigured());
+
+  if (tab === 'selfie') {
+    const selfie = ai.selfie;
+    const description = [
+      `📸 **聊天自设生图开关**：${selfie.enabled ? '✅ 已开启' : '⛔ 已关闭'} ｜ **生图网关**：${imageConfigured ? '✅ 已就绪' : '⚠️ 未配置 IMAGE_BASE_URL / IMAGE_API_KEY'}`,
+      `🎭 **当前生效自设（OC）**：**${activeOc.name}**（\`${activeOc.id}\`）`,
+      `⏱️ **单人拍照冷却**：**${selfie.cooldownSec}s**（管理员免冷却，与 \`/画图\` 频道白名单解耦）`,
+      `🔞 **分级与遮罩策略**：${selfie.allowNsfw ? '日常默认 SFW；群友明确索要 R18/涩图时启用无码词并**自动打模糊遮罩**' : '🔒 严格 SFW（始终拦截裸露色情标签）'}`,
+      ...(externalOcProfiles.length > 0
+        ? [`📦 **本地私有自设库**：已加载 **${externalOcProfiles.length}** 套私有 OC 预设`]
+        : ['📦 **本地私有自设库**：未检测到 `data/ai-packs/oc-presets.json`，当前使用自定义自设']),
+      '',
+      `> **外貌锚点（Line 1 固定不变）**：\n> \`${truncateText(activeOc.appearance, 220)}\``,
+      `> **特写服饰（PORTRAIT）**：\`${truncateText(activeOc.costumePortrait, 140)}\``,
+      `> **半身服饰（UPPER）**：\`${truncateText(activeOc.costumeUpper, 140)}\``,
+      `> **全身服饰（FULL）**：\`${truncateText(activeOc.costumeFull, 140)}\``,
+      ...(activeOc.silhouetteGuard
+        ? [`> **防漂移负权重守卫**：\`${truncateText(activeOc.silhouetteGuard, 120)}\``]
+        : []),
+    ].join('\n');
+
+    const embed = new EmbedBuilder()
+      .setColor(resolveColor(COLORS.FUN, feedback))
+      .setAuthor({ name: `${actor.displayName} · AI 聊天自设生图配置`, iconURL: actor.avatarUrl })
+      .setTitle('📸 AI 聊天自设（OC）与 NovelAI V5 流水线配置')
+      .setDescription(withFeedback(truncateText(description, 4000), feedback))
+      .setFooter({ text: '🔒 群友在聊天频道让 Bot 发自拍/看穿搭/发表情包时将自动按景别调用此自设生图' })
+      .setTimestamp();
+
+    const ocOptions = [
+      ...externalOcProfiles.slice(0, 20).map((profile) =>
+        new StringSelectMenuOptionBuilder()
+          .setLabel(truncateText(profile.name, 100))
+          .setValue(`preset:${profile.id}`)
+          .setDescription(truncateText(profile.description, 100))
+          .setDefault(activeOc.id === profile.id),
+      ),
+      new StringSelectMenuOptionBuilder()
+        .setLabel(`✍️ 自定义专属自设（${truncateText(selfie.customOc.name || 'Custom OC', 30)}）`)
+        .setValue('preset:custom')
+        .setDescription('使用下方弹窗自定义的专属外貌锚点与三级景别服饰')
+        .setDefault(activeOc.id === 'custom'),
+    ];
+
+    const ocSelect = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId('menu:admin_ai_selfie_preset')
+        .setPlaceholder('📸 一键切换 Bot 专属自设（OC）形象...')
+        .addOptions(ocOptions),
+    );
+
+    const components: MenuComponentRow[] = [
+      ocSelect,
+      buttonRow(
+        makeButton(
+          'menu:admin:ai_toggle_selfie',
+          `📸 聊天生图: ${selfie.enabled ? '开' : '关'}`,
+          selfie.enabled ? ButtonStyle.Success : ButtonStyle.Secondary,
+        ),
+        makeButton(
+          'menu:admin:ai_toggle_selfie_nsfw',
+          `🔞 R18遮罩: ${selfie.allowNsfw ? '允许' : '禁止'}`,
+          selfie.allowNsfw ? ButtonStyle.Danger : ButtonStyle.Secondary,
+        ),
+        makeButton('menu:modal:admin_ai_selfie_appearance', '✍️ 编辑外貌与冷却', ButtonStyle.Primary),
+        makeButton('menu:modal:admin_ai_selfie_costume', '👗 编辑三级服饰', ButtonStyle.Primary),
+      ),
+      buttonRow(
+        makeButton('menu:nav:admin_ai:basic', '🎭 人设与参数', ButtonStyle.Primary),
+        makeButton('menu:nav:admin_image:basic', '🎨 独立生图后台', ButtonStyle.Secondary),
+        makeButton('menu:nav:admin', '⬅️ 管理后台', ButtonStyle.Secondary),
+        makeButton('menu:nav:home', '🏠 主菜单', ButtonStyle.Secondary),
+      ),
+    ];
+
+    return { embeds: [embed], components };
+  }
 
   if (tab === 'profiles') {
     const paged = paginateSlice(ai.userProfiles, profilePage, PROFILE_PAGE_SIZE);
@@ -352,6 +432,7 @@ export function buildAdminAiView(
     `🔓 **破限预设**：**${resolvedBinding.preset.name}**（\`${resolvedBinding.preset.id}@v${resolvedBinding.preset.version}\`）${channelOverrideCount > 0 ? ` ｜ 🧪 频道沙盒覆盖：**${channelOverrideCount}** 个` : ''}`,
     `🤖 **当前模型**：\`${effectiveModel}\`${ai.modelOverride ? '（后台覆盖）' : '（默认）'} ｜ 🛡️ 兜底：\`${resolvedBinding.effectiveFallbackModel || '无'}\` ｜ 温度 **${ai.temperature}** ｜ MaxTokens **${ai.maxTokens}**`,
     `💬 **上下文与记忆**：滑窗 **${ai.contextWindowMessages}** 条 ｜ 记忆抽取 ${ai.memoryEnabled ? `✅ 开（每域上限 ${ai.maxMemoriesPerScope} 条）` : '⛔ 关'} ｜ 图片识图 ${ai.visionEnabled ? '✅ 开' : '⛔ 关'}`,
+    `📸 **聊天自设生图**：${ai.selfie.enabled ? `✅ 开（**${truncateText(activeOc.name, 26)}** ｜ 冷却 ${ai.selfie.cooldownSec}s ｜ R18遮罩 ${ai.selfie.allowNsfw ? '允许' : '关'}）` : '⛔ 已关闭'}`,
     `🔧 **正则替换与反八股**：启用 **${enabledRegexCount}/${ai.regexRules.length}** 条规则 ｜ 反八股提示词 ${ai.antiClichePromptEnabled ? '✅ 开' : '⛔ 关'}`,
     `👤 **人物关系档案**：已绑定 **${ai.userProfiles.length}/${MAX_AI_USER_PROFILES}** 人`,
     `📊 **近 24h 用量**：**${usage24h.totalCalls}** 次（失败 ${usage24h.errorCalls}） ｜ **${usage24h.totalTokens.toLocaleString('en-US')}** Tokens ｜ 估算 **${formatUsd(usage24h.estimatedCostUsd)}**`,
@@ -471,9 +552,35 @@ export function buildAdminAiView(
     return { embeds: [embed], components };
   }
 
+  const selfieQuickOptions = [
+    ...externalOcProfiles.slice(0, 20).map((profile) =>
+      new StringSelectMenuOptionBuilder()
+        .setLabel(truncateText(profile.name, 100))
+        .setValue(`preset:${profile.id}`)
+        .setDescription(truncateText(profile.description, 100)),
+    ),
+    new StringSelectMenuOptionBuilder()
+      .setLabel(`✍️ 自定义专属自设（${truncateText(ai.selfie.customOc.name || 'Custom OC', 30)}）`)
+      .setValue('preset:custom')
+      .setDescription('切换为自定义自设并打开三级服饰与外貌配置面板'),
+    new StringSelectMenuOptionBuilder()
+      .setLabel('⚙️ 打开聊天自设详细配置面板（开关 / 冷却 / R18遮罩 / 自定义词）')
+      .setValue('nav:selfie')
+      .setDescription('查看或编辑完整 OC 外貌锚点、三级景别服饰与冷却参数'),
+  ];
+
+  const selfieQuickRow = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId('menu:admin_ai_selfie_preset')
+      .setPlaceholder(
+        `📸 聊天自设（OC）：${ai.selfie.enabled ? truncateText(activeOc.name, 36) : '已关闭'}（点击切换或配置）...`,
+      )
+      .addOptions(selfieQuickOptions),
+  );
+
   const components: MenuComponentRow[] = [
     presetRow,
-    new ActionRowBuilder<ChannelSelectMenuBuilder>().addComponents(allowedChanSelect),
+    selfieQuickRow,
     new ActionRowBuilder<ChannelSelectMenuBuilder>().addComponents(freeChanSelect),
     buttonRow(
       makeButton('menu:modal:admin_ai_persona', '✍️ 编辑人设/世界书', ButtonStyle.Primary),

@@ -117,7 +117,9 @@ describe('AI Breaklimit Compilation Engine, Byte-for-Byte Legacy Parity & Channe
     expect(sentMessages[0]?.role).toBe('system');
     expect(sentMessages[0]?.content).toBe(expectedLegacySystemPrompt);
     expect(sentMessages[1]?.role).toBe('user');
-    expect(sentMessages[1]?.content).toBe('[大佬甲(核心偏爱)]: 出来冒个泡');
+    expect(sentMessages[1]?.content).toMatch(
+      /^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}\] \[大佬甲\(核心偏爱\)\]: 出来冒个泡$/,
+    );
 
     db.close();
   });

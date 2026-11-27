@@ -84,6 +84,21 @@ function main(): void {
       : path.join(path.dirname(path.resolve(env.dbPath)), 'ai-packs');
   const aiPackStore = aiPacksDir ? new AiPackStore(aiPacksDir) : undefined;
   aiPackStore?.ensureInitialized();
+  const imageService = new ImageService(
+    guildConfigRepo,
+    imageRepo,
+    imageClient,
+    imagePromptProcessor,
+  );
+  const aiService = new AiService(
+    guildConfigRepo,
+    aiMemoryRepo,
+    llmClient,
+    fetch,
+    aiPackStore,
+    () => imageService.isConfigured(),
+    env.timezone,
+  );
 
   const creditLoanService = new CreditLoanService(
     db,
@@ -201,8 +216,8 @@ function main(): void {
         env.timezone,
         creditLoanService,
       ),
-      ai: new AiService(guildConfigRepo, aiMemoryRepo, llmClient, fetch, aiPackStore),
-      image: new ImageService(guildConfigRepo, imageRepo, imageClient, imagePromptProcessor),
+      ai: aiService,
+      image: imageService,
       creditLoan: creditLoanService,
       rpg: rpgService,
       duelArena: new DuelArenaService(db, profileRepo, duelRepo, chaosRepo, creditLoanService),

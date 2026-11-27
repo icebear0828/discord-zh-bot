@@ -14,16 +14,28 @@ import {
   type AiUserProfile,
   type AiUserRelation,
 } from '../services/aiProfiles.js';
+import {
+  DEFAULT_AI_SELFIE_CONFIG,
+  DEFAULT_CUSTOM_OC_CONFIG,
+  type AiCustomOcConfig,
+  type AiOcPresetKey,
+  type AiSelfieConfig,
+} from '../services/aiOcSelfie.js';
 import { DEFAULT_RPG_CONFIG, type RpgConfig } from '../services/rpgService.js';
 
 export {
+  DEFAULT_AI_SELFIE_CONFIG,
   DEFAULT_CREDIT_LOAN_CONFIG,
+  DEFAULT_CUSTOM_OC_CONFIG,
   DEFAULT_RPG_CONFIG,
   MAX_AI_USER_ALIAS_LEN,
   MAX_AI_USER_NOTE_LEN,
   MAX_AI_USER_PROFILES,
+  type AiCustomOcConfig,
+  type AiOcPresetKey,
   type AiRegexRule,
   type AiRegexRuleScope,
+  type AiSelfieConfig,
   type AiUserProfile,
   type AiUserRelation,
   type CreditLoanConfig,
@@ -176,6 +188,7 @@ export interface AiConfig {
   antiClichePromptEnabled: boolean;
   regexRules: AiRegexRule[];
   userProfiles: AiUserProfile[];
+  selfie: AiSelfieConfig;
   freeChatChannelIds: string[];
   allowedChannelIds: string[];
   ignoredChannelIds: string[];
@@ -413,6 +426,10 @@ export const DEFAULT_AI_CONFIG: AiConfig = {
   antiClichePromptEnabled: true,
   regexRules: cloneDefaultAiRegexRules(),
   userProfiles: [],
+  selfie: {
+    ...DEFAULT_AI_SELFIE_CONFIG,
+    customOc: { ...DEFAULT_CUSTOM_OC_CONFIG },
+  },
   freeChatChannelIds: [],
   allowedChannelIds: [],
   ignoredChannelIds: [],
@@ -461,6 +478,10 @@ export function createDefaultGuildConfig(guildId: string, nowMs = Date.now()): G
       channelOverrides: {},
       regexRules: cloneDefaultAiRegexRules(),
       userProfiles: [],
+      selfie: {
+        ...DEFAULT_AI_SELFIE_CONFIG,
+        customOc: { ...DEFAULT_CUSTOM_OC_CONFIG },
+      },
       freeChatChannelIds: [],
       allowedChannelIds: [],
       ignoredChannelIds: [],

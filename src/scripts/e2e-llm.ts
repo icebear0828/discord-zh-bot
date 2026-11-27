@@ -34,6 +34,8 @@ async function runLlmE2E(): Promise<void> {
       llmClient,
       async () => new Response(pngBytes, { status: 200, headers: { 'Content-Type': 'image/png' } }),
       packStore,
+      undefined,
+      env.timezone,
     );
 
     if (packStore.getCard('community')) {
@@ -155,6 +157,7 @@ async function runLlmE2E(): Promise<void> {
         userName: '北极熊',
         userHandle: 'polarbear',
         messageId: 'm4_ally',
+        messageTimestamp: t4,
         userContent: '有人挑衅你，直接点名回敬他 @挑事路人',
         mentionedUsers: [{ id: TARGET_ID, name: '挑事路人' }],
         channelWindow: [
@@ -164,7 +167,7 @@ async function runLlmE2E(): Promise<void> {
             authorName: '挑事路人',
             isBot: false,
             content: '你也太菜了吧',
-            createdTimestamp: 1000,
+            createdTimestamp: t4 - 3 * 60_000,
           },
         ],
       },
@@ -173,8 +176,8 @@ async function runLlmE2E(): Promise<void> {
     if (!res4.ok) {
       throw new Error(`[E2E #4/5] 失败 (${res4.errorCode}): ${res4.errorMessage}`);
     }
-    if (/^\[[^\]]+\]\s*[:：]/.test(res4.replyText)) {
-      throw new Error(`[E2E #4/5] 检测到未清除的发言人前缀: ${res4.replyText}`);
+    if (/^\[[^\]]+\]\s*[:：]/.test(res4.replyText) || /^\[\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\]/.test(res4.replyText)) {
+      throw new Error(`[E2E #4/5] 检测到未清除的前缀或时间戳: ${res4.replyText}`);
     }
     console.log(
       `[E2E #4/5 沙盒频道@D0预设+点名回敬] OK (${Date.now() - t4}ms, mentions=${JSON.stringify(res4.allowedMentionUserIds)}, tokens=${res4.usage.promptTokens}+${res4.usage.completionTokens}=${res4.usage.totalTokens}) | 回复: ${res4.replyText.replace(/\s+/g, ' ').slice(0, 140)}`,

@@ -12,6 +12,7 @@
     "e2e": "tsx src/scripts/e2e-check.ts",
     "e2e:llm": "tsx src/scripts/e2e-llm.ts",
     "e2e:image": "tsx src/scripts/e2e-image.ts",
+    "e2e:selfie": "tsx src/scripts/e2e-selfie.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",

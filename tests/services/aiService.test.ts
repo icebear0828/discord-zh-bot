@@ -12,6 +12,7 @@ import {
   buildSystemPrompt,
   cleanAiOutput,
   extractMemoryTags,
+  formatAiMinuteTimestamp,
   loadImageParts,
   MAX_AI_IMAGE_BYTES,
   mergeConversationHistory,
@@ -159,10 +160,116 @@ describe('aiService helpers & AiMemoryRepo', () => {
     });
 
     expect(messages).toEqual([
-      { role: 'user', content: '[Alice]: 你好' },
-      { role: 'assistant', content: '你好呀 Alice' },
-      { role: 'user', content: '[Bob]: 路过插一句' },
+      { role: 'user', content: '[1970-01-01 08:00] [Alice]: 你好' },
+      { role: 'assistant', content: '[1970-01-01 08:00] 你好呀 Alice' },
+      { role: 'user', content: '[1970-01-01 08:00] [Bob]: 路过插一句' },
     ]);
+  });
+
+  it('formats minute-precision timestamps for every layer in a 20-message channel window and current turn', async () => {
+    expect(formatAiMinuteTimestamp(Date.UTC(2026, 10, 26, 16, 5, 42), 'Asia/Shanghai')).toBe(
+      '2026-11-27 00:05',
+    );
+    expect(formatAiMinuteTimestamp(Date.UTC(2026, 10, 26, 11, 18, 59), 'Asia/Shanghai')).toBe(
+      '2026-11-26 19:18',
+    );
+    expect(formatAiMinuteTimestamp(Date.UTC(2026, 10, 26, 11, 18, 59), 'UTC')).toBe(
+      '2026-11-26 11:18',
+    );
+    expect(formatAiMinuteTimestamp(0, 'Asia/Shanghai')).toBe('');
+    expect(formatAiMinuteTimestamp(undefined, 'Asia/Shanghai')).toBe('');
+
+    const baseUtc = Date.UTC(2026, 10, 26, 10, 0, 35); // 2026-11-26 18:00 Asia/Shanghai
+    const window20 = Array.from({ length: 20 }, (_, i) => {
+      const isBot = i % 3 === 2;
+      return {
+        id: `m_${i}`,
+        authorId: isBot ? 'bot1' : `u_${i % 2}`,
+        authorName: isBot ? '白虎姬' : i % 2 === 0 ? 'Alice' : 'Bob',
+        isBot,
+        content: `第 ${i + 1} 层消息`,
+        createdTimestamp: baseUtc + i * 60_000,
+      };
+    });
+
+    const history = mergeConversationHistory({
+      botId: 'bot1',
+      currentMessageId: 'm_cur',
+      resetAt: 0,
+      maxMessages: 20,
+      timezone: 'Asia/Shanghai',
+      replyChain: [],
+      channelWindow: window20,
+    });
+
+    const allLines = history.flatMap((m) =>
+      typeof m.content === 'string' ? m.content.split('\n') : [],
+    );
+    expect(allLines).toHaveLength(20);
+    for (let i = 0; i < 20; i++) {
+      const expectedMinute = String(i).padStart(2, '0');
+      expect(allLines[i]).toContain(`[2026-11-26 18:${expectedMinute}] `);
+      expect(allLines[i]).not.toMatch(/\d{2}:\d{2}:\d{2}/);
+    }
+
+    // Current turn also carries minute-precision timestamp via messageTimestamp
+    const db = createDatabase(':memory:');
+    const guildConfigRepo = new GuildConfigRepo(db);
+    const aiMemoryRepo = new AiMemoryRepo(db);
+    let capturedBody: Record<string, unknown> | null = null;
+    const llmClient = new LlmClient(
+      {
+        baseUrl: 'https://gateway.local/v1',
+        apiKey: 'sk-test',
+        model: 'demo-model',
+        timeoutMs: 10_000,
+      },
+      {
+        fetchFn: async (_url, init) => {
+          capturedBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+          return new Response(
+            JSON.stringify({
+              model: 'demo-model',
+              choices: [{ message: { content: '[2026-11-26 18:25] 刚才那条收到了' } }],
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          );
+        },
+      },
+    );
+    const aiService = new AiService(
+      guildConfigRepo,
+      aiMemoryRepo,
+      llmClient,
+      fetch,
+      undefined,
+      undefined,
+      'Asia/Shanghai',
+    );
+    const res = await aiService.generateReply(
+      {
+        guildId: 'g1',
+        channelId: 'c1',
+        userId: 'u_0',
+        userName: 'Alice',
+        messageId: 'm_cur',
+        messageTimestamp: Date.UTC(2026, 10, 26, 10, 25, 48), // 18:25 Asia/Shanghai
+        userContent: '现在几点了',
+        channelWindow: window20,
+      },
+      'bot1',
+    );
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      // Leaked leading timestamp prefix from LLM must be stripped cleanly
+      expect(res.replyText).toBe('刚才那条收到了');
+    }
+    const sentMsgs = (capturedBody?.['messages'] ?? []) as Array<{ role: string; content: string }>;
+    const lastSent = sentMsgs[sentMsgs.length - 1];
+    expect(lastSent?.role).toBe('user');
+    expect(lastSent?.content).toContain('[2026-11-26 18:25] [Alice]: 现在几点了');
+    expect(lastSent?.content).toContain('[2026-11-26 18:19] [Bob]: 第 20 层消息');
+    db.close();
   });
 
   it('loads bounded image attachments as base64 data URLs and skips oversized/invalid files', async () => {
@@ -323,6 +430,13 @@ describe('aiService helpers & AiMemoryRepo', () => {
     );
     expect(cleanAiOutput('[毒舌使者]：  就这水平？', '毒舌使者')).toBe('就这水平？');
     expect(cleanAiOutput('[白虎姬]: [Bot]: 双重前缀测试', '白虎姬')).toBe('双重前缀测试');
+    expect(cleanAiOutput('[2026-11-26 19:18] [白虎姬]: 带时间戳前缀测试', '白虎姬')).toBe(
+      '带时间戳前缀测试',
+    );
+    expect(cleanAiOutput('[2026-11-26 19:18] 直接跟时间戳正文', '白虎姬')).toBe(
+      '直接跟时间戳正文',
+    );
+    expect(cleanAiOutput('[11-26 19:18]: 短日期时间戳测试', '白虎姬')).toBe('短日期时间戳测试');
     expect(cleanAiOutput('白虎姬：不带括号前缀也要去掉', '白虎姬')).toBe(
       '不带括号前缀也要去掉',
     );
@@ -656,8 +770,8 @@ describe('aiService helpers & AiMemoryRepo', () => {
     });
 
     expect(messages).toEqual([
-      { role: 'user', content: '[Alice]: 发个红包' },
-      { role: 'assistant', content: '正常聊天回复' },
+      { role: 'user', content: '[1970-01-01 08:00] [Alice]: 发个红包' },
+      { role: 'assistant', content: '[1970-01-01 08:00] 正常聊天回复' },
     ]);
   });
 
@@ -832,19 +946,19 @@ describe('aiService helpers & AiMemoryRepo', () => {
       {
         role: 'user',
         content: [
-          '[icebear(核心偏爱·冰吊王)]: 有人骂你 @天使本性',
-          '[天使本性(重点怼·天使)]: :emoji_61:',
+          '[1970-01-01 08:00] [icebear(核心偏爱·冰吊王)]: 有人骂你 @天使本性',
+          '[1970-01-01 08:00] [天使本性(重点怼·天使)]: :emoji_61:',
         ].join('\n'),
       },
       {
         role: 'assistant',
-        content: '天使本性你嘴放干净点',
+        content: '[1970-01-01 08:00] 天使本性你嘴放干净点',
       },
       {
         role: 'user',
         content: [
-          '[天使本性(重点怼·天使) 回复 你]: 鸡巴',
-          '[icebear(核心偏爱·冰吊王)]: :fennunailong:',
+          '[1970-01-01 08:00] [天使本性(重点怼·天使) 回复 你]: 鸡巴',
+          '[1970-01-01 08:00] [icebear(核心偏爱·冰吊王)]: :fennunailong:',
         ].join('\n'),
       },
     ]);
@@ -1065,7 +1179,7 @@ describe('aiService helpers & AiMemoryRepo', () => {
     const msgs1 = (capturedBodies[0]?.['messages'] ?? []) as Array<{ role: string; content: string }>;
     expect(msgs1[0]?.content).not.toContain('唯一头号正主专属娇媚备注');
     expect(msgs1[0]?.content).not.toContain('未认证冒充');
-    expect(msgs1[1]?.content).toBe('[路人甲]: 今晚吃啥比较合适');
+    expect(msgs1[1]?.content).toMatch(/^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}\] \[路人甲\]: 今晚吃啥比较合适$/);
 
     // 2. Ordinary member mentions 黑吊王 (normalized -> 黑屌王) -> VIP profile injected for context, speaker still unverified
     await aiService.generateReply(
@@ -1082,7 +1196,9 @@ describe('aiService helpers & AiMemoryRepo', () => {
     const msgs2 = (capturedBodies[1]?.['messages'] ?? []) as Array<{ role: string; content: string }>;
     expect(msgs2[0]?.content).toContain('唯一头号正主专属娇媚备注');
     expect(msgs2[0]?.content).not.toContain('未认证冒充');
-    expect(msgs2[1]?.content).toBe('[路人甲]: 黑屌王昨天轮盘赢了多少');
+    expect(msgs2[1]?.content).toMatch(
+      /^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}\] \[路人甲\]: 黑屌王昨天轮盘赢了多少$/,
+    );
 
     // 3. Impersonator (non-VIP user & friend user) using nickname 草莓布丁酱 / 黑屌王 -> explicitly flagged
     await aiService.generateReply(
@@ -1126,7 +1242,7 @@ describe('aiService helpers & AiMemoryRepo', () => {
     const msgs4 = (capturedBodies[3]?.['messages'] ?? []) as Array<{ role: string; content: string }>;
     expect(msgs4[0]?.content).toContain('当前对你说话的群友：黑屌王｜档案：黑屌王（核心偏爱）');
     expect(msgs4[0]?.content).not.toContain('未认证冒充');
-    expect(msgs4[1]?.content).toBe('[黑屌王(核心偏爱)]: 刚下班');
+    expect(msgs4[1]?.content).toMatch(/^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}\] \[黑屌王\(核心偏爱\)\]: 刚下班$/);
 
     db.close();
   });

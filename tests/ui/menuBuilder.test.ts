@@ -441,6 +441,8 @@ describe('menuBuilder Discord component constraints & schema integration', () =>
       { page: 'admin_ai', tab: 'channels' },
       { page: 'admin_ai', tab: 'regex', regexPage: 1 },
       { page: 'admin_ai', tab: 'usage' },
+      { page: 'admin_ai', tab: 'profiles', profilePage: 1 },
+      { page: 'admin_ai', tab: 'selfie' },
       { page: 'admin_image', tab: 'basic' },
       { page: 'admin_image', tab: 'channels' },
       { page: 'admin_credit_rpg' },

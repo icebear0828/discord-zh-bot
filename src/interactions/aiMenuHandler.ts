@@ -12,10 +12,17 @@ import {
 import {
   AI_PERSONA_PRESETS,
   DEFAULT_AI_CONFIG,
+  DEFAULT_AI_SELFIE_CONFIG,
+  DEFAULT_CUSTOM_OC_CONFIG,
   type AiConfig,
   type AiPersonaPresetKey,
+  type AiSelfieConfig,
   type AiUserProfile,
 } from '../config/defaults.js';
+import {
+  normalizeOcAppearance,
+  normalizeOcCostumeTier,
+} from '../services/aiOcSelfie.js';
 import {
   formatAiRelationBadge,
   MAX_AI_USER_ALIAS_LEN,
@@ -235,6 +242,92 @@ function buildAiUserProfileModal(
     );
 }
 
+function buildAiSelfieAppearanceModal(selfie: AiSelfieConfig): ModalBuilder {
+  const guardField = new TextInputBuilder()
+    .setCustomId('silhouetteGuard')
+    .setLabel(truncateText('防漂移负权重守卫（可选，末尾自动拼接）', 45))
+    .setStyle(TextInputStyle.Short)
+    .setMaxLength(400)
+    .setPlaceholder('例如：-1.2::kimono lapels covering shoulders::,')
+    .setRequired(false);
+  if (selfie.customOc.silhouetteGuard.trim()) {
+    guardField.setValue(truncateText(selfie.customOc.silhouetteGuard.trim(), 400));
+  }
+
+  return new ModalBuilder()
+    .setCustomId('menu:modal_sub:admin_ai_selfie_appearance')
+    .setTitle(truncateText('✍️ 编辑自定义自设外貌与冷却', 45))
+    .addComponents(
+      prefilledField(
+        'name',
+        truncateText('自设名称（1~40字）', 45),
+        truncateText(selfie.customOc.name || '自定义专属自设', 40),
+        40,
+      ),
+      prefilledField(
+        'cooldownSec',
+        truncateText('单人拍照冷却秒数（0 ~ 600，管理员免冷却）', 45),
+        selfie.cooldownSec,
+        6,
+      ),
+      new ActionRowBuilder<TextInputBuilder>().addComponents(
+        new TextInputBuilder()
+          .setCustomId('appearance')
+          .setLabel(truncateText('固定外貌锚点 OC_APPEARANCE（英文Tag）', 45))
+          .setStyle(TextInputStyle.Paragraph)
+          .setMinLength(1)
+          .setMaxLength(1500)
+          .setValue(truncateText(selfie.customOc.appearance, 1500))
+          .setPlaceholder('girl, silver hair, red eyes, hair ornament, slender figure,')
+          .setRequired(true),
+      ),
+      new ActionRowBuilder<TextInputBuilder>().addComponents(guardField),
+    );
+}
+
+function buildAiSelfieCostumeModal(selfie: AiSelfieConfig): ModalBuilder {
+  const upperField = new TextInputBuilder()
+    .setCustomId('costumeUpper')
+    .setLabel(truncateText('半身服饰 OC_COSTUME_UPPER（留空继承特写）', 45))
+    .setStyle(TextInputStyle.Paragraph)
+    .setMaxLength(1800)
+    .setPlaceholder('特写服饰 + 腰封/百褶裙/大腿袜边（不含鞋子）')
+    .setRequired(false);
+  if (selfie.customOc.costumeUpper.trim()) {
+    upperField.setValue(truncateText(selfie.customOc.costumeUpper.trim(), 1800));
+  }
+
+  const fullField = new TextInputBuilder()
+    .setCustomId('costumeFull')
+    .setLabel(truncateText('全身服饰 OC_COSTUME_FULL（留空继承半身）', 45))
+    .setStyle(TextInputStyle.Paragraph)
+    .setMaxLength(2000)
+    .setPlaceholder('半身服饰 + 完整腿袜与鞋履细节（全身立绘与Q版用）')
+    .setRequired(false);
+  if (selfie.customOc.costumeFull.trim()) {
+    fullField.setValue(truncateText(selfie.customOc.costumeFull.trim(), 2000));
+  }
+
+  return new ModalBuilder()
+    .setCustomId('menu:modal_sub:admin_ai_selfie_costume')
+    .setTitle(truncateText('👗 编辑自定义自设三级景别服饰', 45))
+    .addComponents(
+      new ActionRowBuilder<TextInputBuilder>().addComponents(
+        new TextInputBuilder()
+          .setCustomId('costumePortrait')
+          .setLabel(truncateText('特写服饰 OC_COSTUME_PORTRAIT（领口/肩袖）', 45))
+          .setStyle(TextInputStyle.Paragraph)
+          .setMinLength(1)
+          .setMaxLength(1500)
+          .setValue(truncateText(selfie.customOc.costumePortrait, 1500))
+          .setPlaceholder('仅填颈饰、衣领、肩部与上臂袖口（防全身鞋袜拉远特写镜头）')
+          .setRequired(true),
+      ),
+      new ActionRowBuilder<TextInputBuilder>().addComponents(upperField),
+      new ActionRowBuilder<TextInputBuilder>().addComponents(fullField),
+    );
+}
+
 export async function tryHandleAiMenuButton(
   interaction: ButtonInteraction,
   ctx: AppContext,
@@ -252,7 +345,7 @@ export async function tryHandleAiMenuButton(
       return true;
     }
     const tabRaw = parts[3];
-    const tab: 'basic' | 'channels' | 'regex' | 'usage' | 'profiles' =
+    const tab: 'basic' | 'channels' | 'regex' | 'usage' | 'profiles' | 'selfie' =
       tabRaw === 'channels'
         ? 'channels'
         : tabRaw === 'regex'
@@ -261,7 +354,9 @@ export async function tryHandleAiMenuButton(
             ? 'usage'
             : tabRaw === 'profiles'
               ? 'profiles'
-              : 'basic';
+              : tabRaw === 'selfie'
+                ? 'selfie'
+                : 'basic';
     const parsedPage = parts[4] ? Number.parseInt(parts[4], 10) : 1;
     const safePage = Number.isFinite(parsedPage) && parsedPage > 0 ? parsedPage : 1;
     await interaction.update(
@@ -280,7 +375,9 @@ export async function tryHandleAiMenuButton(
     (parts[2] === 'admin_ai_persona' ||
       parts[2] === 'admin_ai_params' ||
       parts[2] === 'admin_ai_regex_add' ||
-      parts[2] === 'admin_ai_pricing')
+      parts[2] === 'admin_ai_pricing' ||
+      parts[2] === 'admin_ai_selfie_appearance' ||
+      parts[2] === 'admin_ai_selfie_costume')
   ) {
     if (!actor.isAdmin) {
       await interaction.update(
@@ -301,6 +398,10 @@ export async function tryHandleAiMenuButton(
       );
     } else if (parts[2] === 'admin_ai_pricing') {
       await interaction.showModal(buildAiPricingModal(cfg.ai));
+    } else if (parts[2] === 'admin_ai_selfie_appearance') {
+      await interaction.showModal(buildAiSelfieAppearanceModal(cfg.ai.selfie));
+    } else if (parts[2] === 'admin_ai_selfie_costume') {
+      await interaction.showModal(buildAiSelfieCostumeModal(cfg.ai.selfie));
     } else {
       await interaction.showModal(buildAiRegexAddModal());
     }
@@ -312,6 +413,8 @@ export async function tryHandleAiMenuButton(
     const handled = new Set([
       'ai_toggle_memory',
       'ai_toggle_vision',
+      'ai_toggle_selfie',
+      'ai_toggle_selfie_nsfw',
       'ai_toggle_allowed_here',
       'ai_clear_allowed',
       'ai_reset_config',
@@ -357,6 +460,50 @@ export async function tryHandleAiMenuButton(
           actor,
           { page: 'admin_ai' },
           { type: 'success', text: `AI 图片识图能力已切换为：**${next ? '开启' : '关闭'}**。` },
+        ),
+      );
+      return true;
+    }
+
+    if (action === 'ai_toggle_selfie') {
+      const next = !cfg.ai.selfie.enabled;
+      ctx.repos.guildConfig.updateAi(guildId, {
+        ...cfg.ai,
+        selfie: { ...cfg.ai.selfie, enabled: next },
+      });
+      await interaction.update(
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'admin_ai', tab: 'selfie' },
+          {
+            type: 'success',
+            text: `AI 聊天自设生图已切换为：**${next ? '开启' : '关闭'}**。`,
+          },
+        ),
+      );
+      return true;
+    }
+
+    if (action === 'ai_toggle_selfie_nsfw') {
+      const next = !cfg.ai.selfie.allowNsfw;
+      ctx.repos.guildConfig.updateAi(guildId, {
+        ...cfg.ai,
+        selfie: { ...cfg.ai.selfie, allowNsfw: next },
+      });
+      await interaction.update(
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'admin_ai', tab: 'selfie' },
+          {
+            type: 'success',
+            text: next
+              ? '已开启 **🔞 R18 遮罩模式**：日常默认 SFW，群友明确索要 R18 时启用无码词并自动打模糊遮罩。'
+              : '已切换为 **🔒 严格 SFW 模式**：聊天自设生图一律禁止裸露色情标签。',
+          },
         ),
       );
       return true;
@@ -421,6 +568,10 @@ export async function tryHandleAiMenuButton(
         antiClichePromptEnabled: true,
         regexRules: cloneDefaultAiRegexRules(),
         userProfiles: cfg.ai.userProfiles,
+        selfie: {
+          ...DEFAULT_AI_SELFIE_CONFIG,
+          customOc: { ...DEFAULT_CUSTOM_OC_CONFIG },
+        },
         freeChatChannelIds: [],
         allowedChannelIds: [],
         ignoredChannelIds: [],
@@ -600,6 +751,70 @@ export async function tryHandleAiMenuStringSelect(
               text: `已删除 <@${res.profile.userId}>（**${res.profile.alias}**）的人物档案。`,
             }
           : { type: 'error', text: res.error },
+      ),
+    );
+    return true;
+  }
+
+  if (parts[1] === 'admin_ai_selfie_preset') {
+    if (!actor.isAdmin) {
+      await interaction.update(
+        buildMenuMessage(ctx, guildId, actor, { page: 'home' }, ADMIN_DENIED_FEEDBACK),
+      );
+      return true;
+    }
+
+    const chosen = interaction.values[0] ?? '';
+    if (chosen === 'nav:selfie') {
+      await interaction.update(
+        buildMenuMessage(ctx, guildId, actor, { page: 'admin_ai', tab: 'selfie' }),
+      );
+      return true;
+    }
+
+    const cfg = ctx.repos.guildConfig.getOrCreate(guildId);
+    if (chosen.startsWith('preset:')) {
+      const nextPreset = chosen.slice('preset:'.length).trim();
+      const matchedExternal =
+        nextPreset === 'custom'
+          ? null
+          : ctx.services.ai.listOcProfiles().find((p) => p.id === nextPreset) ?? null;
+
+      if (nextPreset === 'custom' || matchedExternal) {
+        ctx.repos.guildConfig.updateAi(guildId, {
+          ...cfg.ai,
+          selfie: {
+            ...cfg.ai.selfie,
+            enabled: true,
+            ocPreset: nextPreset,
+          },
+        });
+        const label = matchedExternal
+          ? matchedExternal.name
+          : `✍️ ${cfg.ai.selfie.customOc.name || '自定义专属自设'}`;
+        await interaction.update(
+          buildMenuMessage(
+            ctx,
+            guildId,
+            actor,
+            { page: 'admin_ai', tab: 'selfie' },
+            {
+              type: 'success',
+              text: `已切换聊天自设（OC）为：**${label}**（聊天拍照技能已开启）。`,
+            },
+          ),
+        );
+        return true;
+      }
+    }
+
+    await interaction.update(
+      buildMenuMessage(
+        ctx,
+        guildId,
+        actor,
+        { page: 'admin_ai', tab: 'selfie' },
+        { type: 'error', text: '无效的自设预设选项。' },
       ),
     );
     return true;
@@ -851,7 +1066,9 @@ export async function tryHandleAiMenuModal(
     modalType !== 'admin_ai_params' &&
     modalType !== 'admin_ai_regex_add' &&
     modalType !== 'admin_ai_pricing' &&
-    modalType !== 'admin_ai_profile_save'
+    modalType !== 'admin_ai_profile_save' &&
+    modalType !== 'admin_ai_selfie_appearance' &&
+    modalType !== 'admin_ai_selfie_costume'
   ) {
     return false;
   }
@@ -983,6 +1200,117 @@ export async function tryHandleAiMenuModal(
   }
 
   const cfg = ctx.repos.guildConfig.getOrCreate(guildId);
+
+  if (modalType === 'admin_ai_selfie_appearance') {
+    const name = interaction.fields.getTextInputValue('name').trim().slice(0, 40);
+    const cooldownSec = parseIntInRange(
+      interaction.fields.getTextInputValue('cooldownSec'),
+      0,
+      600,
+    );
+    const rawAppearance = interaction.fields.getTextInputValue('appearance').trim();
+    const silhouetteGuard = interaction.fields.getTextInputValue('silhouetteGuard').trim();
+
+    if (!name || cooldownSec === null || !rawAppearance) {
+      await respondFromModal(
+        interaction,
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'admin_ai', tab: 'selfie' },
+          { type: 'error', text: '参数无效：自设名称与外貌锚点不能为空，冷却需在 0 ~ 600 秒之间。' },
+        ),
+      );
+      return true;
+    }
+
+    const normalizedAppearance = normalizeOcAppearance(rawAppearance);
+    ctx.repos.guildConfig.updateAi(guildId, {
+      ...cfg.ai,
+      selfie: {
+        ...cfg.ai.selfie,
+        enabled: true,
+        ocPreset: 'custom',
+        cooldownSec,
+        customOc: {
+          ...cfg.ai.selfie.customOc,
+          name,
+          appearance: normalizedAppearance,
+          silhouetteGuard: silhouetteGuard.slice(0, 400),
+        },
+      },
+    });
+
+    await respondFromModal(
+      interaction,
+      buildMenuMessage(
+        ctx,
+        guildId,
+        actor,
+        { page: 'admin_ai', tab: 'selfie' },
+        {
+          type: 'success',
+          text: `已保存并启用自定义自设 **${name}**（冷却 **${cooldownSec}s**，外貌锚点已规范化）。`,
+        },
+      ),
+    );
+    return true;
+  }
+
+  if (modalType === 'admin_ai_selfie_costume') {
+    const rawPortrait = interaction.fields.getTextInputValue('costumePortrait').trim();
+    const rawUpper = interaction.fields.getTextInputValue('costumeUpper').trim();
+    const rawFull = interaction.fields.getTextInputValue('costumeFull').trim();
+
+    const portrait = normalizeOcCostumeTier(rawPortrait);
+    if (!portrait) {
+      await respondFromModal(
+        interaction,
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'admin_ai', tab: 'selfie' },
+          { type: 'error', text: '特写服饰（OC_COSTUME_PORTRAIT）不能为空。' },
+        ),
+      );
+      return true;
+    }
+
+    const upper = normalizeOcCostumeTier(rawUpper) || portrait;
+    const full = normalizeOcCostumeTier(rawFull) || upper;
+
+    ctx.repos.guildConfig.updateAi(guildId, {
+      ...cfg.ai,
+      selfie: {
+        ...cfg.ai.selfie,
+        enabled: true,
+        ocPreset: 'custom',
+        customOc: {
+          ...cfg.ai.selfie.customOc,
+          costumePortrait: portrait,
+          costumeUpper: upper,
+          costumeFull: full,
+        },
+      },
+    });
+
+    await respondFromModal(
+      interaction,
+      buildMenuMessage(
+        ctx,
+        guildId,
+        actor,
+        { page: 'admin_ai', tab: 'selfie' },
+        {
+          type: 'success',
+          text: `已更新自定义自设 **${cfg.ai.selfie.customOc.name}** 的三级景别服饰配置！`,
+        },
+      ),
+    );
+    return true;
+  }
 
   if (modalType === 'admin_ai_persona') {
     const personaName = interaction.fields.getTextInputValue('personaName').trim();

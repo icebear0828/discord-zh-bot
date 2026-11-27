@@ -1,3 +1,4 @@
+import path from 'node:path';
 import {
   DEFAULT_AI_CONFIG,
   type AiChannelOverride,
@@ -28,6 +29,17 @@ import {
   type PackHistoryEntry,
   type PresetPack,
 } from './aiPackStore.js';
+import {
+  AiOcPresetStore,
+  buildOcSelfieSkillPrompt,
+  compileOcSelfiePrompt,
+  extractSelfieSkillTag,
+  resolveActiveOcProfile,
+  stripSelfieSkillTags,
+  type AiOcProfile,
+  type AiSelfieConfig,
+  type CompiledOcSelfiePrompt,
+} from './aiOcSelfie.js';
 import {
   formatAiRelationLabel,
   MAX_AI_USER_PROFILES,
@@ -104,6 +116,7 @@ export interface GenerateAiReplyInput {
   userName: string;
   userHandle?: string;
   messageId: string;
+  messageTimestamp?: number;
   userContent: string;
   replyToAuthorId?: string;
   replyToAuthorName?: string;
@@ -129,6 +142,7 @@ export type GenerateAiReplyResult =
       chunks: string[];
       allowedMentionUserIds: string[];
       storedMemoryCount: number;
+      selfiePrompt?: CompiledOcSelfiePrompt;
       model: string;
       fallbackUsed?: boolean;
       attempts: number;
@@ -242,6 +256,70 @@ export function extractMemoryTags(raw: string): ExtractedMemoryTag[] {
   return results;
 }
 
+const minuteFormatterCache = new Map<string, Intl.DateTimeFormat>();
+
+function getMinuteFormatter(timezone: string): Intl.DateTimeFormat {
+  const key = timezone.trim() || 'Asia/Shanghai';
+  const cached = minuteFormatterCache.get(key);
+  if (cached) return cached;
+
+  let formatter: Intl.DateTimeFormat;
+  try {
+    formatter = new Intl.DateTimeFormat('en-CA', {
+      timeZone: key,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+      hourCycle: 'h23',
+    });
+  } catch {
+    formatter = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Shanghai',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+      hourCycle: 'h23',
+    });
+  }
+  minuteFormatterCache.set(key, formatter);
+  return formatter;
+}
+
+export function formatAiMinuteTimestamp(
+  timestampMs: number | undefined,
+  timezone = 'Asia/Shanghai',
+): string {
+  if (typeof timestampMs !== 'number' || !Number.isFinite(timestampMs) || timestampMs <= 0) {
+    return '';
+  }
+  const parts = getMinuteFormatter(timezone).formatToParts(new Date(timestampMs));
+  let year = '';
+  let month = '';
+  let day = '';
+  let hour = '';
+  let minute = '';
+  for (const part of parts) {
+    if (part.type === 'year') year = part.value;
+    else if (part.type === 'month') month = part.value;
+    else if (part.type === 'day') day = part.value;
+    else if (part.type === 'hour') hour = part.value === '24' ? '00' : part.value;
+    else if (part.type === 'minute') minute = part.value;
+  }
+  if (!year || !month || !day || !hour || !minute) {
+    return '';
+  }
+  return `${year}-${month}-${day} ${hour}:${minute}`;
+}
+
+const LEADING_TIMESTAMP_PREFIX_RE =
+  /^\[(?:\d{4}[-/])?\d{1,2}[-/]\d{1,2}\s+\d{1,2}:\d{2}(?::\d{2})?\]\s*(?:[:：]\s*)?/;
+
 function escapeRegExp(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -253,7 +331,12 @@ function stripLeadingSpeakerPrefix(text: string, personaName?: string): string {
     ? new RegExp(`^(?:${escapeRegExp(trimmedName)})\\s*[:：]\\s*`, 'i')
     : null;
 
-  for (let i = 0; i < 3; i++) {
+  for (let i = 0; i < 4; i++) {
+    const afterTimestamp = out.replace(LEADING_TIMESTAMP_PREFIX_RE, '');
+    if (afterTimestamp !== out) {
+      out = afterTimestamp.trimStart();
+      continue;
+    }
     const afterBracket = out.replace(/^\[[^\]\r\n]{1,32}\]\s*[:：]\s*/, '');
     if (afterBracket !== out) {
       out = afterBracket.trimStart();
@@ -277,7 +360,7 @@ export function cleanAiOutput(
   personaName?: string,
   regexRules?: ReadonlyArray<AiRegexRule>,
 ): string {
-  let out = raw;
+  let out = stripSelfieSkillTags(raw);
   out = out.replace(/\[MEMORY:[^\]]*\]/gi, '');
   out = out.replace(/\[VOICE:[^\]]*\]/gi, '');
   out = out.replace(/\[IMAGE:[^\]]*\]/gi, '');
@@ -292,6 +375,7 @@ export function cleanAiOutput(
 
 const EMPTY_AI_REPLY_FALLBACK = '嗯？刚才没听清，能再说一遍吗？';
 const EMPTY_AI_MEMORY_ONLY_FALLBACK = '嗯，我记下了。';
+const EMPTY_AI_SELFIE_ONLY_FALLBACK = '喏，刚拍好的。';
 const CODE_FENCE_OPEN_RE = /^```([^\s`]*)\s*$/;
 const CODE_FENCE_CLOSE_RE = /^```\s*$/;
 
@@ -413,7 +497,7 @@ export function shouldTriggerAi(params: {
 }
 
 export function containsPromptInjectionMemoryTag(text: string): boolean {
-  return /\[(MEMORY|VOICE|IMAGE|USAGE):/i.test(text);
+  return /\[(MEMORY|VOICE|IMAGE|USAGE|SELFIE|OC_IMAGE):/i.test(text);
 }
 
 export function findCollidingVipAlias(
@@ -798,6 +882,7 @@ export function mergeConversationHistory(params: {
   botId: string;
   resetAt: number;
   maxMessages: number;
+  timezone?: string;
   inputRegexRules?: ReadonlyArray<AiRegexRule>;
   userProfiles?: ReadonlyArray<AiUserProfile>;
 }): LlmChatMessage[] {
@@ -808,6 +893,7 @@ export function mergeConversationHistory(params: {
     botId,
     resetAt,
     maxMessages,
+    timezone = 'Asia/Shanghai',
     inputRegexRules,
     userProfiles = [],
   } = params;
@@ -877,10 +963,13 @@ export function mergeConversationHistory(params: {
   };
 
   for (const { msg, text } of selected) {
+    const minuteTs = formatAiMinuteTimestamp(msg.createdTimestamp, timezone);
+    const tsPrefix = minuteTs ? `[${minuteTs}] ` : '';
+
     if (msg.authorId === botId) {
       flushPendingUser();
       const assistantText = normalizeDiscordCustomEmojis(text);
-      result.push({ role: 'assistant', content: assistantText });
+      result.push({ role: 'assistant', content: `${tsPrefix}${assistantText}` });
       continue;
     }
 
@@ -910,7 +999,7 @@ export function mergeConversationHistory(params: {
       inputRegexRules && inputRegexRules.length > 0
         ? applyAiRegexRules(text, inputRegexRules, 'input')
         : text;
-    pendingUserLines.push(`[${authorLabel}${replyClause}]: ${normalizedText}`);
+    pendingUserLines.push(`${tsPrefix}[${authorLabel}${replyClause}]: ${normalizedText}`);
   }
 
   flushPendingUser();
@@ -989,6 +1078,7 @@ export interface PreviewCompiledPromptInput {
   userName: string;
   userHandle?: string;
   userContent: string;
+  messageTimestamp?: number;
 }
 
 export interface PreviewCompiledPromptOutput {
@@ -1068,6 +1158,7 @@ const MAX_DEBUG_TRACES = 200;
 
 export class AiService {
   private readonly debugTraces = new Map<string, ChannelDebugTrace>();
+  private readonly ocPresetStore?: AiOcPresetStore;
 
   constructor(
     private readonly guildConfigRepo: GuildConfigRepo,
@@ -1075,7 +1166,26 @@ export class AiService {
     private readonly llmClient: LlmClient,
     private readonly fetchFn: typeof fetch = fetch,
     private readonly packStore?: AiPackStore,
-  ) {}
+    private readonly isImageGenAvailable?: () => boolean,
+    private readonly timezone = 'Asia/Shanghai',
+  ) {
+    if (packStore) {
+      this.ocPresetStore = new AiOcPresetStore(path.join(packStore.getBaseDir(), 'oc-presets.json'));
+    }
+  }
+
+  listOcProfiles(): AiOcProfile[] {
+    return this.ocPresetStore?.listProfiles() ?? [];
+  }
+
+  resolveActiveOcProfile(selfieCfg?: AiSelfieConfig): AiOcProfile {
+    return resolveActiveOcProfile(selfieCfg, this.listOcProfiles());
+  }
+
+  isSelfieSkillAvailable(guildId: string): boolean {
+    const cfg = this.guildConfigRepo.getOrCreate(guildId);
+    return Boolean(cfg.modules.ai && cfg.ai.selfie.enabled && this.isImageGenAvailable?.());
+  }
 
   getPackStore(): AiPackStore | undefined {
     return this.packStore;
@@ -1541,13 +1651,23 @@ export class AiService {
       profile: currentUserProfile,
       vipAliases,
     });
-    const currentTurnLine = `[${speakerLabel}]: ${normalizedUserText}`;
+    const previewTs = formatAiMinuteTimestamp(input.messageTimestamp ?? Date.now(), this.timezone);
+    const currentTurnLine = `${previewTs ? `[${previewTs}] ` : ''}[${speakerLabel}]: ${normalizedUserText}`;
+
+    const selfieSkillEnabled = Boolean(aiCfg.selfie?.enabled && this.isImageGenAvailable?.());
+    const selfieSkillPrompt = selfieSkillEnabled
+      ? buildOcSelfieSkillPrompt({
+          oc: this.resolveActiveOcProfile(aiCfg.selfie),
+          allowNsfw: aiCfg.selfie.allowNsfw,
+        })
+      : null;
 
     const compiled = compileBreaklimitMessages({
       preset: resolved.preset,
       card: resolved.card,
       antiClichePromptEnabled: aiCfg.antiClichePromptEnabled !== false,
       memoryEnabled: aiCfg.memoryEnabled,
+      selfieSkillPrompt,
       guildMemories,
       channelMemories,
       userMemories,
@@ -2048,6 +2168,7 @@ export class AiService {
       botId,
       resetAt,
       maxMessages: aiCfg.contextWindowMessages,
+      timezone: this.timezone,
       inputRegexRules: effectiveRegexRules,
       userProfiles: aiCfg.userProfiles,
     });
@@ -2088,7 +2209,11 @@ export class AiService {
             .join('、')}）`
         : '';
 
-    const currentTurnLine = `[${currentSpeakerLabel}${currentReplyClause}]: ${normalizedUserText}${mentionHintLine}`;
+    const currentMinuteTs = formatAiMinuteTimestamp(
+      input.messageTimestamp ?? Date.now(),
+      this.timezone,
+    );
+    const currentTurnLine = `${currentMinuteTs ? `[${currentMinuteTs}] ` : ''}[${currentSpeakerLabel}${currentReplyClause}]: ${normalizedUserText}${mentionHintLine}`;
 
     // Merge trailing history user block into the final user turn so messages strictly alternate
     let combinedHistory = history;
@@ -2110,11 +2235,21 @@ export class AiService {
         ? [{ type: 'text', text: formattedText }, ...imageParts]
         : formattedText;
 
+    const selfieSkillEnabled = Boolean(aiCfg.selfie?.enabled && this.isImageGenAvailable?.());
+    const activeOc = this.resolveActiveOcProfile(aiCfg.selfie);
+    const selfieSkillPrompt = selfieSkillEnabled
+      ? buildOcSelfieSkillPrompt({
+          oc: activeOc,
+          allowNsfw: aiCfg.selfie.allowNsfw,
+        })
+      : null;
+
     const compiled = compileBreaklimitMessages({
       preset: resolved.preset,
       card: resolved.card,
       antiClichePromptEnabled: aiCfg.antiClichePromptEnabled !== false,
       memoryEnabled: aiCfg.memoryEnabled,
+      selfieSkillPrompt,
       guildMemories,
       channelMemories,
       userMemories,
@@ -2153,6 +2288,10 @@ export class AiService {
         }
       }
       const tags = extractMemoryTags(postCotText);
+      const selfieSpec =
+        selfieSkillEnabled && !containsPromptInjectionMemoryTag(rawUserText)
+          ? extractSelfieSkillTag(postCotText)
+          : null;
       const cleanedText = cleanAiOutput(
         postCotText,
         resolved.card.personaName,
@@ -2165,8 +2304,9 @@ export class AiService {
       return {
         cotStripped,
         tags,
+        selfieSpec,
         cleanedText,
-        isNonEmpty: cleanedText.length > 0 || hasSavableUserMemory,
+        isNonEmpty: cleanedText.length > 0 || hasSavableUserMemory || selfieSpec !== null,
       };
     };
 
@@ -2226,7 +2366,18 @@ export class AiService {
       }
       const latencyMs = Math.max(0, Date.now() - startedAt);
 
-      const { cotStripped, tags, cleanedText } = extractCleanedCompletion(response.content);
+      const { cotStripped, tags, selfieSpec, cleanedText } = extractCleanedCompletion(
+        response.content,
+      );
+      const compiledSelfiePrompt = selfieSpec
+        ? compileOcSelfiePrompt({
+            oc: activeOc,
+            spec: selfieSpec,
+            userContent: rawUserText,
+            allowNsfw: aiCfg.selfie.allowNsfw,
+            forceSpoiler: cfg.imageGen.forceSpoiler,
+          })
+        : undefined;
 
       this.saveChannelDebugTrace({
         guildId: input.guildId,
@@ -2280,7 +2431,11 @@ export class AiService {
       );
       const baseReplyText =
         cleanedText ||
-        (storedMemoryCount > 0 ? EMPTY_AI_MEMORY_ONLY_FALLBACK : EMPTY_AI_REPLY_FALLBACK);
+        (compiledSelfiePrompt
+          ? EMPTY_AI_SELFIE_ONLY_FALLBACK
+          : storedMemoryCount > 0
+            ? EMPTY_AI_MEMORY_ONLY_FALLBACK
+            : EMPTY_AI_REPLY_FALLBACK);
       const resolvedMentions = resolveOutgoingMentions(baseReplyText, mentionParticipants, 2);
       const finalReplyText = resolvedMentions.text;
       const chunks = splitDiscordMessage(finalReplyText);
@@ -2336,6 +2491,7 @@ export class AiService {
         chunks,
         allowedMentionUserIds: resolvedMentions.allowedMentionUserIds,
         storedMemoryCount,
+        ...(compiledSelfiePrompt ? { selfiePrompt: compiledSelfiePrompt } : {}),
         model: response.model,
         ...(fallbackUsed ? { fallbackUsed: true } : {}),
         attempts: response.attempts,

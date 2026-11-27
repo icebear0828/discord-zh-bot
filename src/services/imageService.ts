@@ -25,6 +25,21 @@ import {
   type ImagePromptProcessor,
 } from './imagePromptProcessor.js';
 
+export interface GenerateOcSelfieInput {
+  guildId: string;
+  channelId: string;
+  userId: string;
+  prompt: string;
+  negativePrompt: string;
+  charCaptions: readonly NaiCharCaption[];
+  aspectRatio: ImageAspectRatio;
+  steps?: number;
+  scale?: number;
+  cfgRescale?: number;
+  spoiler?: boolean;
+  isAdmin?: boolean;
+}
+
 export type ImageServiceErrorCode =
   | ImageErrorCode
   | 'module_disabled'
@@ -133,6 +148,7 @@ export function isValidImageAspectRatio(value: string): value is ImageAspectRati
 
 export class ImageService {
   private readonly userLastRunAt = new Map<string, number>();
+  private readonly selfieLastRunAt = new Map<string, number>();
   private readonly queue: QueuedImageJob[] = [];
   private readonly sleepFn: (ms: number) => Promise<void>;
   private readonly randomDelayMsFn: () => number;
@@ -646,5 +662,182 @@ export class ImageService {
       record: first.record,
       attempts: first.attempts,
     };
+  }
+
+  async generateOcSelfie(input: GenerateOcSelfieInput): Promise<GenerateImageResult> {
+    if (!this.imageClient.isConfigured()) {
+      return {
+        ok: false,
+        errorCode: 'not_configured',
+        errorMessage: '生图服务尚未配置完成，请联系管理员检查环境变量。',
+      };
+    }
+
+    const finalPrompt = input.prompt.trim().slice(0, MAX_PROMPT_LENGTH);
+    if (!finalPrompt) {
+      return {
+        ok: false,
+        errorCode: 'invalid_prompt',
+        errorMessage: '自设提示词为空，无法生成图片。',
+      };
+    }
+
+    const { cfg, imageCfg } = this.getEffectiveConfig(input.guildId);
+    if (!cfg.modules.ai || !cfg.ai.selfie.enabled) {
+      return {
+        ok: false,
+        errorCode: 'module_disabled',
+        errorMessage: '当前已关闭聊天自设生图。',
+      };
+    }
+
+    const nowMs = Date.now();
+    const cooldownKey = `${input.guildId}:${input.userId}`;
+    const cooldownMs = Math.max(0, cfg.ai.selfie.cooldownSec * 1000);
+    const prevTimestamp = this.selfieLastRunAt.get(cooldownKey);
+
+    if (!input.isAdmin && cooldownMs > 0 && prevTimestamp !== undefined) {
+      const elapsed = nowMs - prevTimestamp;
+      if (elapsed < cooldownMs) {
+        const retryAfterSec = Math.max(1, Math.ceil((cooldownMs - elapsed) / 1000));
+        return {
+          ok: false,
+          errorCode: 'cooldown',
+          retryAfterSec,
+          errorMessage: `相机刚拍完还在冷却中，请等待 **${retryAfterSec} 秒**后再拍。`,
+        };
+      }
+    }
+
+    const maxConcurrency = Math.max(1, Math.min(5, imageCfg.maxConcurrency));
+    const maxPending = Math.max(1, Math.min(20, imageCfg.maxPendingQueue));
+    if (this.activeCount >= maxConcurrency && this.queue.length >= maxPending) {
+      return {
+        ok: false,
+        errorCode: 'queue_full',
+        errorMessage: `当前生图排队已满（正在生成 ${this.activeCount} 张 / 排队 ${this.queue.length} 张），请稍后再试。`,
+      };
+    }
+
+    if (this.selfieLastRunAt.size > 1000) {
+      const ttl = Math.max(60_000, cooldownMs);
+      for (const [key, ts] of this.selfieLastRunAt.entries()) {
+        if (nowMs - ts >= ttl) {
+          this.selfieLastRunAt.delete(key);
+        }
+      }
+    }
+    this.selfieLastRunAt.set(cooldownKey, nowMs);
+
+    const aspectRatio = isValidImageAspectRatio(input.aspectRatio) ? input.aspectRatio : '1:1';
+    const steps = Math.max(1, Math.min(MAX_IMAGE_STEPS, Math.round(input.steps ?? 28)));
+    const scale = Math.max(1.0, Math.min(10.0, Number((input.scale ?? 5.0).toFixed(1))));
+    const cfgRescale = Math.max(0, Math.min(1.0, Number((input.cfgRescale ?? 0).toFixed(2))));
+    const finalNegativePrompt = input.negativePrompt.trim().slice(0, MAX_NEGATIVE_PROMPT_LENGTH);
+    const finalCharCaptions = [...input.charCaptions];
+    const spoiler = Boolean(imageCfg.forceSpoiler || input.spoiler);
+    const effectiveModel = imageCfg.modelOverride?.trim() || this.imageClient.getDefaultModel();
+
+    return new Promise<GenerateImageResult>((resolve) => {
+      const execute = async (): Promise<void> => {
+        const startedAt = Date.now();
+        try {
+          const genRes = await this.imageClient.generate({
+            model: effectiveModel || undefined,
+            prompt: finalPrompt,
+            negativePrompt: finalNegativePrompt || undefined,
+            aspectRatio,
+            steps,
+            scale,
+            cfgRescale,
+            charCaptions: finalCharCaptions.length > 0 ? finalCharCaptions : undefined,
+            useCoords: false,
+          });
+
+          const latencyMs = Math.max(0, Date.now() - startedAt);
+          const record = this.imageRepo.create({
+            guildId: input.guildId,
+            channelId: input.channelId,
+            userId: input.userId,
+            rawPrompt: finalPrompt,
+            finalPrompt,
+            negativePrompt: finalNegativePrompt,
+            charCaptions: finalCharCaptions,
+            useCoords: false,
+            aspectRatio,
+            steps,
+            scale,
+            seed: null,
+            spoiler,
+            ephemeral: false,
+            model: genRes.model,
+            status: 'ok',
+            errorCode: null,
+            latencyMs,
+          });
+
+          resolve({
+            ok: true,
+            buffer: genRes.buffer,
+            record,
+            attempts: genRes.attempts,
+          });
+        } catch (err) {
+          const latencyMs = Math.max(0, Date.now() - startedAt);
+          if (this.selfieLastRunAt.get(cooldownKey) === nowMs) {
+            if (prevTimestamp !== undefined) {
+              this.selfieLastRunAt.set(cooldownKey, prevTimestamp);
+            } else {
+              this.selfieLastRunAt.delete(cooldownKey);
+            }
+          }
+
+          const apiErr =
+            err instanceof ImageApiError
+              ? err
+              : new ImageApiError({
+                  code: 'unknown',
+                  attempts: 1,
+                  message: err instanceof Error ? err.message : String(err),
+                  userMessage: '自设生图服务暂时异常，请稍后重试。',
+                });
+
+          try {
+            this.imageRepo.create({
+              guildId: input.guildId,
+              channelId: input.channelId,
+              userId: input.userId,
+              rawPrompt: finalPrompt,
+              finalPrompt,
+              negativePrompt: finalNegativePrompt,
+              charCaptions: finalCharCaptions,
+              useCoords: false,
+              aspectRatio,
+              steps,
+              scale,
+              seed: null,
+              spoiler,
+              ephemeral: false,
+              model: effectiveModel || 'unknown',
+              status: 'error',
+              errorCode: apiErr.code,
+              latencyMs,
+            });
+          } catch {
+            // Best-effort logging
+          }
+
+          resolve({
+            ok: false,
+            errorCode: apiErr.code,
+            errorMessage: apiErr.userMessage,
+            errorDetail: apiErr.message,
+          });
+        }
+      };
+
+      this.queue.push({ run: execute });
+      this.drainQueue(maxConcurrency);
+    });
   }
 }

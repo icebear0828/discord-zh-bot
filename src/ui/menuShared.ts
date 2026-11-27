@@ -93,7 +93,7 @@ export type MenuView =
   | { page: 'admin_ops' }
   | {
       page: 'admin_ai';
-      tab?: 'basic' | 'channels' | 'regex' | 'usage' | 'profiles';
+      tab?: 'basic' | 'channels' | 'regex' | 'usage' | 'profiles' | 'selfie';
       regexPage?: number;
       profilePage?: number;
     }

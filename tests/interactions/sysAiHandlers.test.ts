@@ -1499,8 +1499,12 @@ describe('messageCreate isolation, world event guards, and AI safety/rate-limits
 
     expect(capturedMessages).toHaveLength(2);
     expect(capturedMessages[1]?.role).toBe('user');
-    expect(capturedMessages[1]?.content).toContain('[路人]: 刚才 @黑屌王 发红包了');
-    expect(capturedMessages[1]?.content).toContain('[路人甲]: 看看 @黑屌王 买草莓没');
+    expect(capturedMessages[1]?.content).toMatch(
+      /\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}\] \[路人\]: 刚才 @黑屌王 发红包了/,
+    );
+    expect(capturedMessages[1]?.content).toMatch(
+      /\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}\] \[路人甲\]: 看看 @黑屌王 买草莓没/,
+    );
     expect(capturedMessages[1]?.content).toContain('本句点名提到：@黑屌王');
     const replyPayload = (replyFn.mock.calls[0] as unknown as [{ content: string }])[0];
     expect(replyPayload.content).toBe('黑屌王这波特别稳，草莓留着自己吃');
