@@ -369,12 +369,22 @@ describe('env & database schema', () => {
     expect(repo.getOrCreate('g1').modules.creditLoan).toBe(true);
     expect(repo.getOrCreate('g1').modules.rpg).toBe(true);
     expect(repo.getOrCreate('g1').ai.preset).toBe('community');
+    expect(DEFAULT_NAI_POSITIVE_PROMPT).toBe('nsfw');
+    expect(DEFAULT_NAI_POSITIVE_PROMPT).not.toContain('rating:explicit');
+    expect(DEFAULT_NAI_NEGATIVE_PROMPT).toContain(
+      '2::extra characters, extra fingers, extra toes, logo, watermark, signature, deformed, ::, lowres, blurry',
+    );
+    expect(DEFAULT_NAI_NEGATIVE_PROMPT).toContain(
+      'censored, mosaic censoring, bar censor, light censor, pointillism censor',
+    );
+    expect(DEFAULT_NAI_NEGATIVE_PROMPT).not.toContain('{bad}');
+    expect(DEFAULT_NAI_NEGATIVE_PROMPT).not.toContain('[abstract]');
     expect(repo.getOrCreate('g1').imageGen).toEqual({
       modelOverride: null,
       defaultAspectRatio: '2:3',
       defaultSteps: 28,
       defaultScale: 5.0,
-      defaultCfgRescale: 0.3,
+      defaultCfgRescale: 0,
       defaultPositivePrompt: DEFAULT_NAI_POSITIVE_PROMPT,
       defaultNegativePrompt: DEFAULT_NAI_NEGATIVE_PROMPT,
       cooldownSec: 15,

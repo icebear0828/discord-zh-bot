@@ -38,6 +38,8 @@ export interface OcOutfitPreset {
   summaryZh: string;
   ootdEligible: boolean;
   hairAccessory?: string;
+  bodyAnchors?: string;
+  costumeNsfw?: string;
   costumePortrait: string;
   costumeUpper: string;
   costumeFull: string;
@@ -64,6 +66,8 @@ export interface AiOcProfile {
   baseAppearanceZh?: string;
   baseAppearance?: string;
   defaultHairAccessory?: string;
+  bodyAnchors?: string;
+  costumeNsfw?: string;
   appearance: string;
   costumePortrait: string;
   costumeUpper: string;
@@ -85,6 +89,8 @@ export interface SelfieSkillSpec {
   sentence?: string;
   animal?: string;
   outfit?: string;
+  partnerAction?: string;
+  partnerOutfit?: string;
   duo?: boolean;
   nsfw?: boolean;
 }
@@ -121,7 +127,11 @@ export const V5_STICKER_UC =
 const ANTI_CENSOR_UC_TAGS =
   'censored, mosaic censoring, bar censor, light censor, pointillism censor';
 
-const R18_POSITIVE_PREFIX = 'nsfw, rating:explicit, uncensored';
+const ANTI_CENSOR_NEG15_TERMS = 'censored, mosaic censoring, bar censor';
+
+const R18_POSITIVE_PREFIX = 'nsfw';
+
+const DEFAULT_NSFW_BODY_ANCHORS = 'smooth dewy skin, slender waist, curvy,';
 
 const VALID_OC_PRESET_ID_RE = /^[a-z0-9][a-z0-9_-]{0,47}$/i;
 
@@ -214,7 +224,7 @@ const VALID_PO_CLUSTERS: ReadonlySet<string> = new Set<OcPoseCluster>([
 ]);
 
 const EXPLICIT_USER_NSFW_RE =
-  /(?:\br18g?\b|\bnsfw\b|\bhentai\b|\bnude\b|\bnaked\b|\btopless\b|\bbottomless\b|\bsex\b|\berotic\b|\blewd\b|涩图|色图|瑟瑟|涩涩|黄图|裸体|全裸|半裸|脱光|脱衣|露奶|露点|露胸|露逼|露穴|露乳|白虎穴|私处|做爱|自慰|内射|口交|乳交|足交|情趣内衣|透视装|真空上阵|掀裙|走光|擦边)/i;
+  /(?:\br18g?\b|\bnsfw\b|\bhentai\b|\bnude\b|\bnaked\b|\btopless\b|\bbottomless\b|\bsex\b|\berotic\b|\blewd\b|涩图|色图|瑟瑟|涩涩|黄图|裸体|全裸|半裸|脱光|脱衣|脱掉|脱下|不穿|私房照|床照|福利图|色一点|涩一点|更色|更涩|过分一点|来点刺激|大尺度|尺度大|内衣照|无码|露奶|露点|露胸|露逼|露穴|露乳|白虎穴|私处|做爱|自慰|内射|口交|乳交|足交|情趣内衣|透视装|真空上阵|掀裙|走光|擦边)/i;
 
 const EXPLICIT_DUO_INTENT_RE =
   /(?:双人|合照|情侣照|双女主?|百合|\b2girls\b|\b1boy\b|和我一起|跟我一起|抱抱我|抱着你|抱着我|环抱你|从背后抱|背后环抱|坐我腿上|坐在?膝上|坐怀|公主抱|横抱你|壁咚|耳边低语|十指紧扣|相拥|贴脸依偎|同眠|抱着睡|骑乘位?|传教士|正常位|后入位?|侧入位?|双人瑟瑟|双人涩图|和我做爱|跟我做爱)/i;
@@ -260,9 +270,11 @@ export function normalizeOcAppearance(raw: string): string {
   const tags = splitTopLevelTags(sanitizeTagSegment(raw));
   let genderNoun: 'girl' | 'boy' | 'other' = 'girl';
   const filtered: string[] = [];
+  const seen = new Set<string>();
 
   for (const tag of tags) {
-    const lower = tag.trim().toLowerCase();
+    const trimmed = tag.trim();
+    const lower = trimmed.toLowerCase();
     if (!lower || lower === 'solo') continue;
     if (/^\d*girls?$/.test(lower) || lower === 'female' || lower === 'woman') {
       genderNoun = 'girl';
@@ -276,7 +288,9 @@ export function normalizeOcAppearance(raw: string): string {
       genderNoun = 'other';
       continue;
     }
-    filtered.push(tag.trim());
+    if (seen.has(lower)) continue;
+    seen.add(lower);
+    filtered.push(trimmed);
   }
 
   return ensureTrailingComma([genderNoun, ...filtered].join(', '));
@@ -391,6 +405,14 @@ function sanitizeExternalOutfitPreset(raw: unknown): OcOutfitPreset | null {
   const ootdEligible = typeof raw['ootdEligible'] === 'boolean' ? raw['ootdEligible'] : true;
   const rawHair = typeof raw['hairAccessory'] === 'string' ? raw['hairAccessory'].trim() : '';
   const hairAccessory = rawHair ? ensureTrailingComma(sanitizeTagSegment(rawHair.slice(0, 600))) : undefined;
+  const rawBodyAnchors = typeof raw['bodyAnchors'] === 'string' ? raw['bodyAnchors'].trim() : '';
+  const bodyAnchors = rawBodyAnchors
+    ? ensureTrailingComma(sanitizeTagSegment(rawBodyAnchors.slice(0, 800)))
+    : undefined;
+  const rawCostumeNsfw = typeof raw['costumeNsfw'] === 'string' ? raw['costumeNsfw'].trim() : '';
+  const costumeNsfw = rawCostumeNsfw
+    ? normalizeOcCostumeTier(rawCostumeNsfw.slice(0, 2000)) || undefined
+    : undefined;
   const rawGuard = typeof raw['silhouetteGuard'] === 'string' ? raw['silhouetteGuard'].trim() : '';
   const silhouetteGuard = rawGuard ? ensureTrailingComma(rawGuard.slice(0, 400)) : '';
   const themeHint =
@@ -410,6 +432,8 @@ function sanitizeExternalOutfitPreset(raw: unknown): OcOutfitPreset | null {
     summaryZh,
     ootdEligible,
     ...(hairAccessory ? { hairAccessory } : {}),
+    ...(bodyAnchors ? { bodyAnchors } : {}),
+    ...(costumeNsfw ? { costumeNsfw } : {}),
     costumePortrait,
     costumeUpper,
     costumeFull,
@@ -497,6 +521,14 @@ function sanitizeExternalOcProfile(raw: unknown): AiOcProfile | null {
   const defaultHairAccessory = rawDefaultHair
     ? ensureTrailingComma(sanitizeTagSegment(rawDefaultHair.slice(0, 600)))
     : undefined;
+  const rawBodyAnchors = typeof raw['bodyAnchors'] === 'string' ? raw['bodyAnchors'].trim() : '';
+  const bodyAnchors = rawBodyAnchors
+    ? ensureTrailingComma(sanitizeTagSegment(rawBodyAnchors.slice(0, 800)))
+    : undefined;
+  const rawCostumeNsfw = typeof raw['costumeNsfw'] === 'string' ? raw['costumeNsfw'].trim() : '';
+  const costumeNsfw = rawCostumeNsfw
+    ? normalizeOcCostumeTier(rawCostumeNsfw.slice(0, 2000)) || undefined
+    : undefined;
   const appearance = rawAppearance
     ? normalizeOcAppearance(rawAppearance.slice(0, 1500))
     : normalizeOcAppearance(
@@ -557,6 +589,8 @@ function sanitizeExternalOcProfile(raw: unknown): AiOcProfile | null {
     ...(baseAppearanceZh ? { baseAppearanceZh } : {}),
     ...(baseAppearance ? { baseAppearance } : {}),
     ...(defaultHairAccessory ? { defaultHairAccessory } : {}),
+    ...(bodyAnchors ? { bodyAnchors } : {}),
+    ...(costumeNsfw ? { costumeNsfw } : {}),
     appearance,
     costumePortrait,
     costumeUpper,
@@ -721,6 +755,8 @@ export function listOcOutfits(oc: AiOcProfile): readonly OcOutfitPreset[] {
       name: `${oc.name}·招牌穿搭`,
       summaryZh: oc.visualSummaryZh,
       ootdEligible: true,
+      ...(oc.bodyAnchors ? { bodyAnchors: oc.bodyAnchors } : {}),
+      ...(oc.costumeNsfw ? { costumeNsfw: oc.costumeNsfw } : {}),
       costumePortrait: oc.costumePortrait,
       costumeUpper: oc.costumeUpper,
       costumeFull: oc.costumeFull,
@@ -960,6 +996,14 @@ export function extractSelfieSkillTag(raw: string): SelfieSkillSpec | null {
       const sentence = cleanOptionalTextField(parsed['sentence'], 400);
       const animal = cleanOptionalTextField(parsed['animal'], 120);
       const outfit = cleanOptionalTextField(parsed['outfit'], 600);
+      const partnerAction = cleanOptionalTextField(
+        parsed['partnerAction'] ?? parsed['partner_action'],
+        500,
+      );
+      const partnerOutfit = cleanOptionalTextField(
+        parsed['partnerOutfit'] ?? parsed['partner_outfit'],
+        600,
+      );
       const duo = parsed['duo'] === true ? true : undefined;
       const nsfw = Boolean(parsed['nsfw']);
 
@@ -975,6 +1019,8 @@ export function extractSelfieSkillTag(raw: string): SelfieSkillSpec | null {
         ...(sentence ? { sentence } : {}),
         ...(animal ? { animal } : {}),
         ...(outfit ? { outfit } : {}),
+        ...(partnerAction ? { partnerAction } : {}),
+        ...(partnerOutfit ? { partnerOutfit } : {}),
         ...(duo ? { duo } : {}),
         nsfw,
       };
@@ -1219,11 +1265,14 @@ function selectCatalogPose(params: {
   }
 
   // 4. Default tier/framing rotation when requestedPose was blocked by safety gate or set to 'auto'
+  const nsfwSoloOnly = !allowDuo && effectiveNsfw ? allowedPool.filter((p) => p.tier === 'nsfw') : [];
   const preferredTierPool =
     allowDuo && effectiveNsfw
       ? allowedPool.filter((p) => p.tier === 'duo_nsfw')
       : !allowDuo && effectiveNsfw
-        ? allowedPool.filter((p) => p.tier === 'nsfw' || p.tier === 'spicy')
+        ? nsfwSoloOnly.length > 0
+          ? nsfwSoloOnly
+          : allowedPool.filter((p) => p.tier === 'spicy')
         : allowedPool.filter((p) => p.tier === (allowDuo ? 'duo_hug' : 'sfw'));
 
   const baseCandidates = preferredTierPool.length > 0 ? preferredTierPool : allowedPool;
@@ -1280,6 +1329,7 @@ export function compileOcSelfiePrompt(params: {
   poses?: readonly OcPosePreset[];
   spec: SelfieSkillSpec;
   userContent: string;
+  intentText?: string;
   allowNsfw: boolean;
   forceSpoiler?: boolean;
   rotationScopeKey?: string;
@@ -1290,10 +1340,12 @@ export function compileOcSelfiePrompt(params: {
     poses = BUILTIN_OC_POSES,
     spec,
     userContent,
+    intentText,
     allowNsfw,
     forceSpoiler = false,
     rotationScopeKey = 'default',
   } = params;
+  const effectiveIntentText = intentText ?? userContent;
   const requestedFraming: OcSelfieFraming = spec.framing ?? 'portrait';
 
   // Dual-gate NSFW check: requires config allowNsfw + LLM nsfw:true + explicit user NSFW intent
@@ -1302,7 +1354,7 @@ export function compileOcSelfiePrompt(params: {
       spec.nsfw === true &&
       requestedFraming !== 'chibi' &&
       requestedFraming !== 'sticker_pack' &&
-      hasExplicitUserNsfwIntent(userContent),
+      hasExplicitUserNsfwIntent(effectiveIntentText),
   );
   const stripExplicit = !effectiveNsfw;
 
@@ -1315,6 +1367,9 @@ export function compileOcSelfiePrompt(params: {
   });
   const sanitizedCustomOutfit = sanitizeFieldTags(spec.outfit, stripExplicit);
   const usingCustomOutfit = Boolean(sanitizedCustomOutfit);
+  const sanitizedExplicitAction = sanitizeFieldTags(spec.action, stripExplicit);
+  const sanitizedPartnerOutfit = sanitizeFieldTags(spec.partnerOutfit, stripExplicit);
+  const sanitizedPartnerAction = sanitizeFieldTags(spec.partnerAction, stripExplicit);
 
   // Dual-gate Duo check: requires BOTH explicit user duo request AND LLM agreeing via duo_* pose / duo:true
   const llmAgreedDuo = Boolean(
@@ -1324,16 +1379,16 @@ export function compileOcSelfiePrompt(params: {
     requestedFraming !== 'chibi' &&
       requestedFraming !== 'sticker_pack' &&
       llmAgreedDuo &&
-      hasExplicitDuoIntent(userContent),
+      hasExplicitDuoIntent(effectiveIntentText),
   );
   const allowSpicy = Boolean(
     effectiveNsfw ||
       selectedPresetOutfit.ootdEligible === false ||
-      SPICY_POSE_HINT_RE.test(userContent),
+      SPICY_POSE_HINT_RE.test(effectiveIntentText),
   );
 
   // Resolve catalog pose when `spec.pose` is specified, `allowDuo` is active, or free-form `spec.action` is omitted
-  const hasFreeformActionOnly = Boolean(spec.action?.trim() && !spec.pose?.trim() && !allowDuo);
+  const hasFreeformActionOnly = Boolean(sanitizedExplicitAction && !spec.pose?.trim() && !allowDuo);
   const selectedPose =
     requestedFraming === 'chibi' || requestedFraming === 'sticker_pack' || hasFreeformActionOnly
       ? undefined
@@ -1359,10 +1414,15 @@ export function compileOcSelfiePrompt(params: {
   const style: OcSelfieStyle =
     framing === 'chibi' || framing === 'sticker_pack' ? 'anime' : (spec.style ?? 'anime');
 
-  const effectiveAppearance = composeOcAppearanceForOutfit(
+  const baseEffectiveAppearance = composeOcAppearanceForOutfit(
     oc,
     usingCustomOutfit ? undefined : selectedPresetOutfit,
   );
+  const nsfwBodyAnchors =
+    selectedPresetOutfit.bodyAnchors || oc.bodyAnchors || DEFAULT_NSFW_BODY_ANCHORS;
+  const effectiveAppearance = effectiveNsfw
+    ? normalizeOcAppearance(`${baseEffectiveAppearance} ${nsfwBodyAnchors}`)
+    : baseEffectiveAppearance;
   const subjectGender = inferGenderSubject(effectiveAppearance);
   const countTag =
     subjectGender === 'boy' ? '1boy' : subjectGender === 'character' ? '1other' : '1girl';
@@ -1381,31 +1441,39 @@ export function compileOcSelfiePrompt(params: {
   const aspectRatio: ImageAspectRatio =
     framing === 'sticker_pack' ? '1:1' : (spec.aspect ?? defaultAspectByFraming[framing]);
 
-  // Select framing-matched Costume Tier (or custom outfit override when non-empty after sanitization)
+  // Select framing-matched Costume Tier (prefer costumeNsfw in NSFW mode when custom outfit is omitted)
+  const nsfwPresetCostume = effectiveNsfw
+    ? normalizeOcCostumeTier(selectedPresetOutfit.costumeNsfw || oc.costumeNsfw || '')
+    : '';
   const selectedCostumeLine = usingCustomOutfit
     ? ensureTrailingComma(sanitizedCustomOutfit)
-    : framing === 'portrait'
-      ? selectedPresetOutfit.costumePortrait
-      : framing === 'full' || framing === 'chibi'
-        ? selectedPresetOutfit.costumeFull
-        : selectedPresetOutfit.costumeUpper;
+    : nsfwPresetCostume ||
+      (framing === 'portrait'
+        ? selectedPresetOutfit.costumePortrait
+        : framing === 'full' || framing === 'chibi'
+          ? selectedPresetOutfit.costumeFull
+          : selectedPresetOutfit.costumeUpper);
 
   const primaryCharCaption = `${effectiveAppearance}\n${selectedCostumeLine}`.trim();
   const charCaptions: NaiCharCaption[] = [{ char_caption: primaryCharCaption }];
 
-  const isYuriDuo = isDuo && YURI_DUO_RE.test(userContent);
+  const isYuriDuo = isDuo && YURI_DUO_RE.test(effectiveIntentText);
   if (isDuo) {
     if (isYuriDuo) {
-      const partnerGirlCostume = effectiveNsfw
-        ? 'loosely draped white silk camisole slipping off shoulder,'
-        : 'simple cream knit cardigan, dark skirt,';
+      const partnerGirlCostume = sanitizedPartnerOutfit
+        ? ensureTrailingComma(sanitizedPartnerOutfit)
+        : effectiveNsfw
+          ? 'loosely draped white silk camisole slipping off shoulder,'
+          : 'simple cream knit cardigan, dark skirt,';
       charCaptions.push({
         char_caption: `girl, shoulder-length soft brown hair, gentle demeanor, face partially out of frame,\n${partnerGirlCostume}`,
       });
     } else {
-      const partnerBoyCostume = effectiveNsfw
-        ? 'unbuttoned open dark shirt, muscular shoulders,'
-        : 'casual dark button-up shirt with rolled sleeves, dark trousers,';
+      const partnerBoyCostume = sanitizedPartnerOutfit
+        ? ensureTrailingComma(sanitizedPartnerOutfit)
+        : effectiveNsfw
+          ? 'unbuttoned open dark shirt, muscular shoulders,'
+          : 'casual dark button-up shirt with rolled sleeves, dark trousers,';
       charCaptions.push({
         char_caption: `boy, faceless male, hair shadowing eyes, face out of frame, tall build,\n${partnerBoyCostume}`,
       });
@@ -1419,9 +1487,10 @@ export function compileOcSelfiePrompt(params: {
 
   const fallbackThemeHint = selectedPresetOutfit.themeHint || oc.defaultThemeHint;
   const sanitizedScene = sanitizeFieldTags(spec.scene, stripExplicit) || fallbackThemeHint;
-  const sanitizedAction = selectedPose
-    ? selectedPose.actionTags
-    : sanitizeFieldTags(spec.action, stripExplicit) || 'gentle smile, blush, looking at viewer';
+  const sanitizedAction =
+    sanitizedExplicitAction ||
+    selectedPose?.actionTags ||
+    'gentle smile, blush, looking at viewer';
 
   // Part 1: Count + Animal/Solo + Scene/Setting
   const headTags: string[] = [];
@@ -1496,16 +1565,16 @@ export function compileOcSelfiePrompt(params: {
       'Bottom-left chibi sticker: sipping happily from a warm teacup with closed-eyes smile,',
       'Bottom-right chibi sticker: surprised blushing face covering mouth with both tiny hands,',
     ].join('\n');
+  } else if (rawSentence) {
+    sentenceBlock = ensureTrailingComma(rawSentence.replace(/\.$/, ''));
   } else if (selectedPose) {
     sentenceBlock = ensureTrailingComma(selectedPose.sentence.replace(/\.$/, ''));
-  } else if (rawSentence) {
-    sentenceBlock = ensureTrailingComma(rawSentence);
   } else {
     const nounPhrase = subjectGender === 'boy' ? 'The boy' : 'The girl';
     sentenceBlock = `${nounPhrase} poses naturally (${sanitizedAction}) in ${sanitizedScene},`;
   }
 
-  // Part 4: Trailing negative weight guards (silhouette + pose + framing + style + animal)
+  // Part 4: Trailing negative weight guards (silhouette + pose + framing + style + animal + anti-censor)
   const negBlocks: string[] = [];
   if (style === 'impasto') {
     negBlocks.push(
@@ -1516,7 +1585,14 @@ export function compileOcSelfiePrompt(params: {
   const neg15Terms: string[] = [];
   const neg12Terms: string[] = [];
 
-  const activeGuard = usingCustomOutfit ? '' : selectedPresetOutfit.silhouetteGuard;
+  const usingProfileCostumeNsfw = Boolean(
+    effectiveNsfw && !usingCustomOutfit && !selectedPresetOutfit.costumeNsfw && oc.costumeNsfw,
+  );
+  const activeGuard = usingCustomOutfit
+    ? ''
+    : usingProfileCostumeNsfw
+      ? oc.silhouetteGuard
+      : selectedPresetOutfit.silhouetteGuard;
   if (activeGuard) {
     for (const block of extractGuardInnerTerms(activeGuard)) {
       if (block.weight === '-1.5') {
@@ -1529,7 +1605,7 @@ export function compileOcSelfiePrompt(params: {
     }
   }
 
-  if (selectedPose?.guard) {
+  if (selectedPose?.guard && !sanitizedExplicitAction) {
     for (const block of extractGuardInnerTerms(selectedPose.guard)) {
       if (block.weight === '-1.5') {
         neg15Terms.push(block.terms);
@@ -1553,6 +1629,9 @@ export function compileOcSelfiePrompt(params: {
       neg15Terms.push(`${species} ears on ${subjectGender}`);
     }
     neg15Terms.push(`animal ears on ${subjectGender}`, `tail on ${subjectGender}`);
+  }
+  if (effectiveNsfw) {
+    neg15Terms.push(ANTI_CENSOR_NEG15_TERMS);
   }
 
   if (style === 'watercolor') {
@@ -1580,11 +1659,15 @@ export function compileOcSelfiePrompt(params: {
   }
 
   if (isDuo && selectedPose) {
+    const primaryPrefix =
+      subjectGender === 'boy' ? 'boy' : subjectGender === 'character' ? 'other' : 'girl';
+    const primaryActions = sanitizedExplicitAction || selectedPose.actionTags;
     const partnerPrefix = isYuriDuo ? 'girl' : 'boy, faceless male';
-    const partnerActions = selectedPose.partnerActionTags ?? 'holding girl gently, mutual#hug';
+    const partnerActions =
+      sanitizedPartnerAction || selectedPose.partnerActionTags || 'holding girl gently, mutual#hug';
     promptLines.push(
       '',
-      `Character 1: girl, ${ensureTrailingComma(selectedPose.actionTags)}`,
+      `Character 1: ${primaryPrefix}, ${ensureTrailingComma(primaryActions)}`,
       `Character 2: ${partnerPrefix}, ${ensureTrailingComma(partnerActions)}`,
     );
   }
@@ -1638,11 +1721,11 @@ export function buildOcSelfieSkillPrompt(params: {
       : '';
 
   const poseClustersLine = allowNsfw
-    ? '- 姿势库（288组全量分级，`pose` 填簇名自动防重轮换）：日常特写上半身选 `cute_heart`(比心) / `cute_peace`(比耶敬礼) / `cute_face`(托腮捧脸挽发) / `cute_playful`(猫爪兔耳飞吻嘘) / `cute_shy`(捂嘴害羞伸懒腰)；全身选 `stand_casual`(站姿) / `stand_lookback`(回眸探身) / `sit_relaxed`(休闲坐晃腿) / `sit_girl`(女孩坐侧坐) / `squat_kneel`(蹲姿单膝跪) / `lie_casual`(趴卧侧躺)；曲线选 `spicy_upper` / `spicy_curve`；R18单人选 `nsfw_tease` / `nsfw_open`；当群友明确要双人合照且你愿意拍双人照时选 `duo_cuddle`（双人R18选 `duo_intimate`；若你拒绝双人互动只肯发单人照则选单人簇）。镜头 `angle` 可选 `front`/`three_quarter`/`high`(俯拍)/`low`(仰拍)/`side`。仅当群友指定摸猫、端茶等特殊库外动作时才省略 `pose` 改手写英文 `action` 与 `sentence`。'
-    : '- 姿势库（`pose` 填簇名自动防重轮换）：上半身特写选 `cute_heart`(比心) / `cute_peace`(比耶敬礼) / `cute_face`(托腮捧脸挽发) / `cute_playful`(猫爪兔耳飞吻嘘) / `cute_shy`(捂嘴害羞伸懒腰)；全身选 `stand_casual`(站姿) / `stand_lookback`(回眸探身) / `sit_relaxed`(休闲坐晃腿) / `sit_girl`(女孩坐侧坐) / `squat_kneel`(蹲姿单膝跪) / `lie_casual`(趴卧侧躺)；当群友明确要双人拥抱合照且你愿意配合时选 `duo_cuddle`（若拒绝双人互动只发单人照则选单人簇）。镜头 `angle` 可选 `front`/`three_quarter`/`high`/`low`/`side`。仅当群友指定库外动作时才省略 `pose` 改填英文 `action` 与 `sentence`。';
+    ? '- 姿势库（288组全量分级，`pose` 填簇名自动防重轮换）：日常特写上半身选 `cute_heart`(比心) / `cute_peace`(比耶敬礼) / `cute_face`(托腮捧脸挽发) / `cute_playful`(猫爪兔耳飞吻嘘) / `cute_shy`(捂嘴害羞伸懒腰)；全身选 `stand_casual`(站姿) / `stand_lookback`(回眸探身) / `sit_relaxed`(休闲坐晃腿) / `sit_girl`(女孩坐侧坐) / `squat_kneel`(蹲姿单膝跪) / `lie_casual`(趴卧侧躺)；曲线选 `spicy_upper` / `spicy_curve`；R18单人选 `nsfw_tease` / `nsfw_open`；当群友明确要双人合照且你愿意拍双人照时选 `duo_cuddle`（双人R18选 `duo_intimate`；若你拒绝双人互动只肯发单人照则选单人簇）。镜头 `angle` 可选 `front`/`three_quarter`/`high`(俯拍)/`low`(仰拍)/`side`。如需微调或自定义具体动作与画面叙事，可同时或单独传入英文 `"action"` 与 `"sentence"`（均优先于姿势库默认词）；双人同框还可用 `"partnerOutfit"` 与 `"partnerAction"` 定制对方衣着与 `source#`/`target#`/`mutual#` 互动标签。'
+    : '- 姿势库（`pose` 填簇名自动防重轮换）：上半身特写选 `cute_heart`(比心) / `cute_peace`(比耶敬礼) / `cute_face`(托腮捧脸挽发) / `cute_playful`(猫爪兔耳飞吻嘘) / `cute_shy`(捂嘴害羞伸懒腰)；全身选 `stand_casual`(站姿) / `stand_lookback`(回眸探身) / `sit_relaxed`(休闲坐晃腿) / `sit_girl`(女孩坐侧坐) / `squat_kneel`(蹲姿单膝跪) / `lie_casual`(趴卧侧躺)；当群友明确要双人拥抱合照且你愿意配合时选 `duo_cuddle`（若拒绝双人互动只发单人照则选单人簇）。镜头 `angle` 可选 `front`/`three_quarter`/`high`/`low`/`side`。仅当群友指定库外动作时填英文 `action` 与 `sentence`（双人可用 `partnerOutfit`/`partnerAction`）。';
 
   const nsfwLine = allowNsfw
-    ? '- 分级规则：日常拍照一律保持 `"nsfw": false`；仅当群友明确要求涩图/R18内容且符合你当前态度愿意发时，才可设 `"nsfw": true`（自动打模糊遮罩）。'
+    ? '- 分级与衣着覆盖：日常拍照一律保持 `"nsfw": false`；仅当群友明确要求涩图/大尺度/私房内容且符合你当前态度愿意发时，才可设 `"nsfw": true`（自动打模糊遮罩），此时支持在 `[SELFIE: {...}]` 中配合 `"outfit"`（例如浴巾、睡袍、轻解衣衫或褪下外衣的英文服装状态，替代默认日常 OOTD 外衣）、`"action"`、`"sentence"` 以及双人 `"partnerOutfit"` / `"partnerAction"` 定制符合语境的衣着与互动细节。'
     : '- 分级规则：仅支持健康日常向画面，固定 `"nsfw": false`，严禁输出裸露色情标签。';
 
   return [

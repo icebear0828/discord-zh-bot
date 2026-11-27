@@ -243,8 +243,9 @@ describe('DefaultImagePromptProcessor', () => {
     ).toEqual(['1.3::a, b::', '{c, d}', '[e, f]', 'g']);
   });
 
-  it('prepends default R18 uncensored tags at the front and respects deduplication & rating overrides', async () => {
+  it('prepends default nsfw tag, injects -1.5 anti-censor weight when NSFW is active, and respects deduplication & rating overrides', async () => {
     const processor = new DefaultImagePromptProcessor();
+    expect(DEFAULT_NAI_POSITIVE_PROMPT).toBe('nsfw');
 
     const standard = await processor.process({
       rawPrompt: '1girl, mature female',
@@ -252,33 +253,140 @@ describe('DefaultImagePromptProcessor', () => {
       defaultPositivePrompt: DEFAULT_NAI_POSITIVE_PROMPT,
       defaultNegativePrompt: DEFAULT_NAI_NEGATIVE_PROMPT,
     });
-    expect(standard.finalPrompt).toBe('nsfw, rating:explicit, uncensored, 1girl, mature female');
+    expect(standard.finalPrompt).toBe(
+      'nsfw, 1girl, mature female,\n-1.5::censored, mosaic censoring, bar censor::,',
+    );
+    expect(standard.finalPrompt).not.toContain('rating:explicit');
+    expect(standard.finalNegativePrompt).toContain('2::extra characters, extra fingers,');
 
+    // `uncensored` must NOT prevent `-1.5::censored, mosaic censoring, bar censor::,` injection
     const dedup = await processor.process({
-      rawPrompt: 'NSFW, 1girl, uncensored, rating:explicit, nude',
+      rawPrompt: 'NSFW, 1girl, uncensored, nude',
       userNegativePrompt: '',
       defaultPositivePrompt: DEFAULT_NAI_POSITIVE_PROMPT,
       defaultNegativePrompt: '',
     });
-    expect(dedup.finalPrompt).toBe('nsfw, rating:explicit, uncensored, 1girl, nude');
+    expect(dedup.finalPrompt).toBe(
+      'nsfw, 1girl, uncensored, nude,\n-1.5::censored, mosaic censoring, bar censor::,',
+    );
 
+    // User prompt with nsfw still triggers -1.5 anti-censor even when guild defaultPositivePrompt is empty
+    expect(mergePositivePrompts('', '1girl, nsfw, nude')).toBe(
+      '1girl, nsfw, nude,\n-1.5::censored, mosaic censoring, bar censor::,',
+    );
+
+    // Custom legacy defaultPositivePrompt with rating:explicit still respects rating:questionable
     const questionable = await processor.process({
-      rawPrompt: 'rating:questionable, 1girl, mature female, lingerie',
+      rawPrompt: 'rating:questionable, 1girl, lingerie',
       userNegativePrompt: '',
-      defaultPositivePrompt: DEFAULT_NAI_POSITIVE_PROMPT,
+      defaultPositivePrompt: 'nsfw, rating:explicit, uncensored',
       defaultNegativePrompt: '',
     });
     expect(questionable.finalPrompt).toBe(
-      'nsfw, uncensored, rating:questionable, 1girl, mature female, lingerie',
+      'nsfw, uncensored, rating:questionable, 1girl, lingerie,\n-1.5::censored, mosaic censoring, bar censor::,',
     );
     expect(questionable.finalPrompt).not.toContain('rating:explicit');
 
+    // Explicit rating:safe / rating:general skips both nsfw prefix and -1.5 anti-censor suffix
     expect(
       mergePositivePrompts(DEFAULT_NAI_POSITIVE_PROMPT, 'rating:safe, 1girl, school uniform'),
     ).toBe('rating:safe, 1girl, school uniform');
     expect(
       mergePositivePrompts(DEFAULT_NAI_POSITIVE_PROMPT, 'rating:general, scenery, sunset'),
     ).toBe('rating:general, scenery, sunset');
+  });
+
+  it('preserves V5 multi-paragraph breaks (\\n\\n), avoids duplicate anti-censor blocks, and keeps Character N action lines at the bottom', async () => {
+    const processor = new DefaultImagePromptProcessor();
+
+    const multiParagraphWithoutAntiCensor = [
+      '1girl, 1boy, hetero, nsfw, sex, vaginal, warm wood hotel room, soft warm ambient light, pov, cowboy shot,',
+      '',
+      'The girl presses both palms lightly against a tall sunset-lit window arching her slender back,',
+      'Warm golden-amber sunset light wraps softly around her hair and curved spine,',
+      '',
+      "Character 1: girl, standing sex, from behind, looking back, blushing, target#grabbing another's hip,",
+      "Character 2: boy, standing behind, pov, faceless male, source#grabbing another's hip,",
+    ].join('\n');
+
+    const res1 = await processor.process({
+      rawPrompt: multiParagraphWithoutAntiCensor,
+      userNegativePrompt: '',
+      defaultPositivePrompt: DEFAULT_NAI_POSITIVE_PROMPT,
+      defaultNegativePrompt: DEFAULT_NAI_NEGATIVE_PROMPT,
+    });
+
+    expect(res1.finalPrompt).toBe(
+      [
+        'nsfw, 1girl, 1boy, hetero, sex, vaginal, warm wood hotel room, soft warm ambient light, pov, cowboy shot,',
+        '',
+        'The girl presses both palms lightly against a tall sunset-lit window arching her slender back,',
+        'Warm golden-amber sunset light wraps softly around her hair and curved spine,',
+        '-1.5::censored, mosaic censoring, bar censor::,',
+        '',
+        "Character 1: girl, standing sex, from behind, looking back, blushing, target#grabbing another's hip,",
+        "Character 2: boy, standing behind, pov, faceless male, source#grabbing another's hip,",
+      ].join('\n'),
+    );
+
+    // Passing a prompt that already contains `-1.5::censored, mosaic censoring, bar censor::,` must be idempotent
+    const res2 = await processor.process({
+      rawPrompt: res1.finalPrompt,
+      userNegativePrompt: '',
+      defaultPositivePrompt: DEFAULT_NAI_POSITIVE_PROMPT,
+      defaultNegativePrompt: DEFAULT_NAI_NEGATIVE_PROMPT,
+    });
+    expect(res2.finalPrompt).toBe(res1.finalPrompt);
+    expect(res2.finalPrompt.match(/mosaic censoring/gi)).toHaveLength(1);
+  });
+
+  it('auto-strips extra characters from finalNegativePrompt on multi-character and multi-view prompts', async () => {
+    const processor = new DefaultImagePromptProcessor();
+
+    // 1. charCaptions.length >= 2 strips `extra characters` from `2::extra characters, extra fingers, ...::`
+    const byCharCount = await processor.process({
+      rawPrompt: 'rooftop, sunset',
+      userNegativePrompt: '',
+      defaultPositivePrompt: DEFAULT_NAI_POSITIVE_PROMPT,
+      defaultNegativePrompt: DEFAULT_NAI_NEGATIVE_PROMPT,
+      charCaptions: [
+        { char_caption: 'girl, silver hair' },
+        { char_caption: 'boy, faceless male, pov' },
+      ],
+    });
+    expect(byCharCount.finalNegativePrompt).not.toContain('extra characters');
+    expect(byCharCount.finalNegativePrompt.startsWith('2::extra fingers, extra toes,')).toBe(true);
+
+    // 2. Multi-person count/layout tags in base prompt strip `extra characters` even without charCaptions
+    for (const multiTagPrompt of [
+      '1girl, 1boy, warm hotel room, pov',
+      '1boy, 1girl, holding hands',
+      '2girls, yuri, bedroom',
+      '3boys, campfire',
+      '2others, fantasy tavern',
+      '1girl, multiple girls, mirror',
+      '1boy, multiple boys, locker room',
+      '1girl, chibi, multiple views, sticker',
+    ]) {
+      const res = await processor.process({
+        rawPrompt: multiTagPrompt,
+        userNegativePrompt: 'extra characters, 2::extra characters::',
+        defaultPositivePrompt: DEFAULT_NAI_POSITIVE_PROMPT,
+        defaultNegativePrompt: DEFAULT_NAI_NEGATIVE_PROMPT,
+      });
+      expect(res.finalNegativePrompt).not.toContain('extra characters');
+      expect(res.finalNegativePrompt.startsWith('2::extra fingers, extra toes,')).toBe(true);
+    }
+
+    // 3. Solo single-character prompt keeps `extra characters` in UC
+    const soloRes = await processor.process({
+      rawPrompt: '1girl, solo, warm bedroom',
+      userNegativePrompt: '',
+      defaultPositivePrompt: DEFAULT_NAI_POSITIVE_PROMPT,
+      defaultNegativePrompt: DEFAULT_NAI_NEGATIVE_PROMPT,
+      charCaptions: [{ char_caption: 'girl, silver hair' }],
+    });
+    expect(soloRes.finalNegativePrompt).toContain('2::extra characters, extra fingers,');
   });
 
   it('merges default anti-mosaic negative prompt with user negative prompt without duplicates', async () => {
@@ -389,12 +497,14 @@ describe('DefaultImagePromptProcessor', () => {
     expect(processed.finalPrompt.startsWith(`${DEFAULT_NAI_POSITIVE_PROMPT}, 2girls, rooftop`)).toBe(
       true,
     );
+    expect(processed.finalPrompt).toContain('-1.5::censored, mosaic censoring, bar censor::,');
     expect(processed.finalPrompt).toContain(
       "\n\nCharacter 1: girl, source#teasing, source#hand on another's face, smirk, looking at another,\nCharacter 2: girl, target#teasing, target#hand on another's face, blush, embarrassed,",
     );
     expect(processed.charCaptions).toEqual(parsed.charCaptions);
     expect(processed.charCaptions?.[0]?.char_caption).not.toContain('nsfw');
     expect(processed.useCoords).toBe(true);
+    expect(processed.finalNegativePrompt).not.toContain('extra characters');
     expect(processed.finalNegativePrompt).toContain('2::extra fingers, deformed, ::');
     expect(processed.finalNegativePrompt).toContain('watermark');
     expect(processed.finalNegativePrompt).toContain('mosaic censoring');
@@ -515,10 +625,10 @@ describe('ImageService', () => {
     expect(okRes.ok).toBe(true);
     expect(generateSpy).toHaveBeenLastCalledWith(
       expect.objectContaining({
-        prompt: `${DEFAULT_NAI_POSITIVE_PROMPT}, 1girl, mature female`,
+        prompt: `${DEFAULT_NAI_POSITIVE_PROMPT}, 1girl, mature female,\n-1.5::censored, mosaic censoring, bar censor::,`,
         negativePrompt: DEFAULT_NAI_NEGATIVE_PROMPT,
         steps: 28,
-        cfgRescale: 0.3,
+        cfgRescale: 0,
       }),
     );
     if (okRes.ok) {

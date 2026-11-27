@@ -1133,6 +1133,56 @@ function mergeRegexRuleLists(
   return merged;
 }
 
+function resolvePreviousSameUserTurnText(params: {
+  userId: string;
+  currentMessageId: string;
+  botId: string;
+  resetAt: number;
+  replyChain?: ReadonlyArray<RawContextMessage>;
+  channelWindow?: ReadonlyArray<RawContextMessage>;
+}): string {
+  const {
+    userId,
+    currentMessageId,
+    botId,
+    resetAt,
+    replyChain = [],
+    channelWindow = [],
+  } = params;
+
+  const isEligibleHumanMsg = (m: RawContextMessage): boolean => {
+    if (m.id === currentMessageId || m.createdTimestamp <= resetAt) return false;
+    if (m.isBot || m.authorId === botId) return false;
+    const stripped = stripBotMention(m.content, botId);
+    return Boolean(stripped && !containsPromptInjectionMemoryTag(stripped));
+  };
+
+  const validReplyHumans = replyChain
+    .filter(isEligibleHumanMsg)
+    .sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+  const lastReplyHuman = validReplyHumans[validReplyHumans.length - 1];
+  if (lastReplyHuman) {
+    return lastReplyHuman.authorId === userId
+      ? stripBotMention(lastReplyHuman.content, botId)
+      : '';
+  }
+
+  const byId = new Map<string, RawContextMessage>();
+  for (const m of channelWindow) {
+    if (isEligibleHumanMsg(m)) {
+      byId.set(m.id, m);
+    }
+  }
+  const sortedChannelHumans = [...byId.values()].sort(
+    (a, b) => a.createdTimestamp - b.createdTimestamp,
+  );
+  const lastChannelHuman = sortedChannelHumans[sortedChannelHumans.length - 1];
+  if (lastChannelHuman && lastChannelHuman.authorId === userId) {
+    return stripBotMention(lastChannelHuman.content, botId);
+  }
+  return '';
+}
+
 function formatSpeakerHeaderDesc(params: {
   currentUserName: string;
   currentUserHandle?: string;
@@ -2394,6 +2444,19 @@ export class AiService {
       const { cotStripped, tags, selfieSpec, cleanedText } = extractCleanedCompletion(
         response.content,
       );
+      const prevSameUserTurn = selfieSpec
+        ? resolvePreviousSameUserTurnText({
+            userId: input.userId,
+            currentMessageId: input.messageId,
+            botId,
+            resetAt,
+            replyChain: input.replyChain,
+            channelWindow: input.channelWindow,
+          })
+        : '';
+      const selfieIntentText = prevSameUserTurn
+        ? `${prevSameUserTurn}\n${rawUserText}`
+        : rawUserText;
       const compiledSelfiePrompt = selfieSpec
         ? compileOcSelfiePrompt({
             oc: activeOc,
@@ -2401,6 +2464,7 @@ export class AiService {
             poses: this.listOcPoses(),
             spec: selfieSpec,
             userContent: rawUserText,
+            intentText: selfieIntentText,
             allowNsfw: aiCfg.selfie.allowNsfw,
             forceSpoiler: cfg.imageGen.forceSpoiler,
             rotationScopeKey: `${input.guildId}:${input.channelId}`,

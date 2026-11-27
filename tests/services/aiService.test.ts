@@ -1532,4 +1532,130 @@ describe('aiService helpers & AiMemoryRepo', () => {
       db.close();
     }
   });
+
+  it('preserves explicit selfie intent across a 2-turn same-user follow-up while isolating across different users and channel resets', async () => {
+    const db = createDatabase(':memory:');
+    const guildConfigRepo = new GuildConfigRepo(db);
+    const aiMemoryRepo = new AiMemoryRepo(db);
+
+    const llmClient = new LlmClient(
+      {
+        baseUrl: 'https://gateway.local/v1',
+        apiKey: 'sk-test',
+        model: 'demo-model',
+        timeoutMs: 10_000,
+      },
+      {
+        fetchFn: async () =>
+          new Response(
+            JSON.stringify({
+              model: 'demo-model',
+              choices: [
+                {
+                  message: {
+                    content:
+                      '换个角度拍给你看。\n[SELFIE: {"framing":"upper","pose":"nsfw_tease","angle":"high","scene":"warm bedroom lamp","nsfw":true}]',
+                  },
+                },
+              ],
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          ),
+      },
+    );
+
+    const aiService = new AiService(
+      guildConfigRepo,
+      aiMemoryRepo,
+      llmClient,
+      fetch,
+      undefined,
+      () => true,
+      'Asia/Shanghai',
+    );
+
+    const channelHistoryAfterU1Request = [
+      {
+        id: 'm_u1_turn1',
+        authorId: 'u1',
+        authorName: 'Alice',
+        isBot: false,
+        content: '<@bot1> 做个招财猫手势发张私房照看看',
+        createdTimestamp: 10_000,
+      },
+      {
+        id: 'm_bot_turn1',
+        authorId: 'bot1',
+        authorName: '星奈',
+        isBot: true,
+        content: '拿去看吧。',
+        createdTimestamp: 11_000,
+      },
+    ];
+
+    // 1. Same user u1 sends natural 2-turn follow-up -> preserves NSFW intent, without locking onto turn-1 '招财猫' keyword
+    const sameUserFollowUp = await aiService.generateReply(
+      {
+        guildId: 'g1',
+        channelId: 'c1',
+        userId: 'u1',
+        userName: 'Alice',
+        messageId: 'm_u1_turn2',
+        messageTimestamp: 12_000,
+        userContent: '换个角度再来一张',
+        channelWindow: channelHistoryAfterU1Request,
+      },
+      'bot1',
+    );
+    expect(sameUserFollowUp.ok).toBe(true);
+    if (sameUserFollowUp.ok) {
+      expect(sameUserFollowUp.selfiePrompt).toBeDefined();
+      expect(sameUserFollowUp.selfiePrompt?.nsfw).toBe(true);
+      expect(sameUserFollowUp.selfiePrompt?.spoiler).toBe(true);
+      expect(sameUserFollowUp.selfiePrompt?.poseId).not.toBe('upper_p008');
+    }
+
+    // 2. Different user u2 sends follow-up right after u1's NSFW turn -> MUST NOT inherit u1's NSFW intent!
+    const otherUserFollowUp = await aiService.generateReply(
+      {
+        guildId: 'g1',
+        channelId: 'c1',
+        userId: 'u2',
+        userName: 'Bob',
+        messageId: 'm_u2_turn2',
+        messageTimestamp: 13_000,
+        userContent: '换个角度再来一张',
+        channelWindow: channelHistoryAfterU1Request,
+      },
+      'bot1',
+    );
+    expect(otherUserFollowUp.ok).toBe(true);
+    if (otherUserFollowUp.ok) {
+      expect(otherUserFollowUp.selfiePrompt).toBeDefined();
+      expect(otherUserFollowUp.selfiePrompt?.nsfw).toBe(false);
+      expect(otherUserFollowUp.selfiePrompt?.spoiler).toBe(false);
+    }
+
+    // 3. After channel context reset -> u1's pre-reset NSFW turn is ignored
+    aiService.resetChannelContext('g1', 'c1', 11_500);
+    const afterResetFollowUp = await aiService.generateReply(
+      {
+        guildId: 'g1',
+        channelId: 'c1',
+        userId: 'u1',
+        userName: 'Alice',
+        messageId: 'm_u1_turn3',
+        messageTimestamp: 14_000,
+        userContent: '换个角度再来一张',
+        channelWindow: channelHistoryAfterU1Request,
+      },
+      'bot1',
+    );
+    expect(afterResetFollowUp.ok).toBe(true);
+    if (afterResetFollowUp.ok) {
+      expect(afterResetFollowUp.selfiePrompt?.nsfw).toBe(false);
+    }
+
+    db.close();
+  });
 });

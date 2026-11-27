@@ -474,9 +474,12 @@ describe('OC Selfie Library & NovelAI V5 Pipeline SOP Compiler', () => {
     });
     expect(allowedR18.nsfw).toBe(true);
     expect(allowedR18.spoiler).toBe(true);
-    expect(allowedR18.prompt.startsWith('nsfw, rating:explicit, uncensored,')).toBe(true);
+    expect(allowedR18.prompt.startsWith('nsfw, 1girl, solo,')).toBe(true);
+    expect(allowedR18.prompt).not.toContain('rating:explicit');
+    expect(allowedR18.prompt).toContain('-1.5::censored, mosaic censoring, bar censor::');
     expect(allowedR18.negativePrompt).toContain('mosaic censoring');
     expect(allowedR18.charCaptions[0]?.char_caption).toContain(oc.appearance);
+    expect(allowedR18.charCaptions[0]?.char_caption).toContain('smooth dewy skin');
     expect(allowedR18.charCaptions[0]?.char_caption).toContain('open white lace lingerie');
     // Custom outfit should not include default silhouetteGuard
     expect(allowedR18.prompt).not.toContain('modern jacket');
@@ -827,7 +830,9 @@ describe('OC Selfie Library & NovelAI V5 Pipeline SOP Compiler', () => {
     });
     expect(nsfwDuo.nsfw).toBe(true);
     expect(nsfwDuo.spoiler).toBe(true);
-    expect(nsfwDuo.prompt.startsWith('nsfw, rating:explicit, uncensored, 1girl, 1boy,')).toBe(true);
+    expect(nsfwDuo.prompt.startsWith('nsfw, 1girl, 1boy,')).toBe(true);
+    expect(nsfwDuo.prompt).not.toContain('rating:explicit');
+    expect(nsfwDuo.prompt).toContain('censored, mosaic censoring, bar censor');
     expect(nsfwDuo.charCaptions).toHaveLength(2);
     expect(nsfwDuo.negativePrompt).not.toContain('extra characters');
     expect(nsfwDuo.negativePrompt).toContain('mosaic censoring');
@@ -979,6 +984,240 @@ describe('OC Selfie Library & NovelAI V5 Pipeline SOP Compiler', () => {
     });
     expect(nextDefaultShot.outfitId).toBe('sig_kimono');
     expect(nextDefaultShot.charCaptions[0]?.char_caption).toContain('gold suzu bell');
+  });
+
+  it('preserves costumeNsfw and bodyAnchors from external oc-presets.json and deduplicates appearance anchors in NSFW mode', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'oc-nsfw-schema-'));
+    tempDirs.push(tmpDir);
+    const presetFile = path.join(tmpDir, 'oc-presets.json');
+
+    fs.writeFileSync(
+      presetFile,
+      JSON.stringify({
+        schemaVersion: 1,
+        profiles: [
+          {
+            ...SAMPLE_OC_ALPHA,
+            appearance:
+              'girl, shoulder-length navy blue hair, bright amber eyes, fair skin, slender waist,',
+            bodyAnchors: 'smooth dewy skin, slender waist, toned midriff',
+            costumeNsfw: 'loosely draped silk bath towel, delicate silver choker',
+            outfits: [
+              {
+                id: 'day_uniform',
+                name: '学院日常服',
+                summaryZh: '日常白衬衫与百褶裙',
+                ootdEligible: true,
+                costumePortrait: SAMPLE_OC_ALPHA.costumePortrait,
+                costumeUpper: SAMPLE_OC_ALPHA.costumeUpper,
+                costumeFull: SAMPLE_OC_ALPHA.costumeFull,
+                silhouetteGuard: '-1.2::hoodie::,',
+              },
+              {
+                id: 'evening_robe',
+                name: '夜间丝绸睡袍',
+                summaryZh: '轻薄丝绸睡袍',
+                ootdEligible: false,
+                bodyAnchors: 'dewy collarbone, slender waist, soft curves',
+                costumeNsfw: 'unfastened sheer silk nightgown off shoulders, satin ribbon',
+                costumePortrait: 'silk nightgown collar,',
+                costumeUpper: 'silk nightgown, waist sash,',
+                costumeFull: 'silk nightgown, waist sash, bare feet,',
+                silhouetteGuard: '-1.2::shoes::,',
+              },
+            ],
+          },
+        ],
+      }),
+      'utf8',
+    );
+
+    const store = new AiOcPresetStore(presetFile);
+    const loadedOc = store.getProfile('azure_scholar');
+    expect(loadedOc).toBeDefined();
+    expect(loadedOc?.bodyAnchors).toBe('smooth dewy skin, slender waist, toned midriff,');
+    expect(loadedOc?.costumeNsfw).toBe('loosely draped silk bath towel, delicate silver choker,');
+    expect(loadedOc?.outfits?.[1]?.bodyAnchors).toBe(
+      'dewy collarbone, slender waist, soft curves,',
+    );
+    expect(loadedOc?.outfits?.[1]?.costumeNsfw).toBe(
+      'unfastened sheer silk nightgown off shoulders, satin ribbon,',
+    );
+
+    // 1. SFW shot keeps clothed tier and ignores costumeNsfw / bodyAnchors
+    const sfwShot = compileOcSelfiePrompt({
+      oc: loadedOc!,
+      spec: { framing: 'upper', outfitId: 'evening_robe', nsfw: false },
+      userContent: '看看你穿夜间睡袍的样子',
+      allowNsfw: true,
+    });
+    expect(sfwShot.nsfw).toBe(false);
+    expect(sfwShot.charCaptions[0]?.char_caption).toContain('silk nightgown, waist sash,');
+    expect(sfwShot.charCaptions[0]?.char_caption).not.toContain('unfastened sheer silk nightgown');
+    expect(sfwShot.charCaptions[0]?.char_caption).not.toContain('dewy collarbone');
+
+    // 2. NSFW shot on outfit WITH costumeNsfw & bodyAnchors -> prefers outfit's costumeNsfw & bodyAnchors, deduplicating 'slender waist'
+    const outfitNsfwShot = compileOcSelfiePrompt({
+      oc: loadedOc!,
+      spec: { framing: 'upper', outfitId: 'evening_robe', nsfw: true },
+      userContent: '发张大尺度私房照看看',
+      allowNsfw: true,
+    });
+    expect(outfitNsfwShot.nsfw).toBe(true);
+    const outfitCap = outfitNsfwShot.charCaptions[0]?.char_caption ?? '';
+    expect(outfitCap).toContain('unfastened sheer silk nightgown off shoulders, satin ribbon,');
+    expect(outfitCap).toContain('dewy collarbone');
+    expect(outfitCap).toContain('soft curves');
+    expect(outfitCap.match(/\bslender waist\b/gi)).toHaveLength(1);
+
+    // 3. NSFW shot on daywear outfit WITHOUT costumeNsfw -> falls back to oc.costumeNsfw & oc.bodyAnchors instead of fully clothed daywear
+    const profileFallbackNsfwShot = compileOcSelfiePrompt({
+      oc: loadedOc!,
+      spec: { framing: 'full', outfitId: 'day_uniform', nsfw: true },
+      userContent: '脱掉外套来张福利图',
+      allowNsfw: true,
+    });
+    expect(profileFallbackNsfwShot.nsfw).toBe(true);
+    const fallbackCap = profileFallbackNsfwShot.charCaptions[0]?.char_caption ?? '';
+    expect(fallbackCap).toContain('loosely draped silk bath towel, delicate silver choker,');
+    expect(fallbackCap).not.toContain('plaid pleated mini skirt');
+    expect(fallbackCap).toContain('toned midriff');
+    expect(fallbackCap.match(/\bslender waist\b/gi)).toHaveLength(1);
+  });
+
+  it('prioritizes explicit spec.sentence, spec.action, spec.partnerOutfit, and spec.partnerAction over catalog defaults and documents them in skill prompt', () => {
+    const rawTag = [
+      '[SELFIE: {',
+      '  "framing": "full",',
+      '  "pose": "duo_cuddle",',
+      '  "duo": true,',
+      '  "action": "sitting side by side on wooden bench, leaning head on shoulder, mutual#shoulder_rest",',
+      '  "sentence": "The girl leans her head peacefully against her companion shoulder under warm lantern light.",',
+      '  "partnerOutfit": "charcoal wool coat, knitted scarf",',
+      '  "partnerAction": "sitting beside girl, arm draped gently around her shoulder, mutual#shoulder_rest",',
+      '  "nsfw": false',
+      '}]',
+    ].join('\n');
+
+    const parsed = extractSelfieSkillTag(rawTag);
+    expect(parsed?.partnerOutfit).toBe('charcoal wool coat, knitted scarf');
+    expect(parsed?.partnerAction).toBe(
+      'sitting beside girl, arm draped gently around her shoulder, mutual#shoulder_rest',
+    );
+
+    // 1. Solo shot with BOTH pose and explicit action/sentence -> explicit action & sentence win over catalog pose defaults
+    const soloCustom = compileOcSelfiePrompt({
+      oc: SAMPLE_OC_ALPHA,
+      spec: {
+        framing: 'upper',
+        pose: 'sit_relaxed',
+        action: 'holding warm porcelain teacup, blowing gently over steam, soft smile',
+        sentence: 'The girl cradles a warm porcelain teacup by the window.',
+      },
+      userContent: '发张你坐着喝热茶的照片',
+      allowNsfw: true,
+    });
+    expect(soloCustom.poseId).toBeDefined();
+    expect(soloCustom.prompt).toContain(
+      'holding warm porcelain teacup, blowing gently over steam, soft smile',
+    );
+    expect(soloCustom.prompt).toContain(
+      'The girl cradles a warm porcelain teacup by the window,',
+    );
+
+    // 2. Duo shot with custom action, sentence, partnerOutfit, and partnerAction -> overrides hardcoded defaults
+    const duoCustom = compileOcSelfiePrompt({
+      oc: SAMPLE_OC_ALPHA,
+      spec: parsed!,
+      userContent: '拍一张我们两个并肩靠在一起的双人合照',
+      allowNsfw: true,
+    });
+    expect(duoCustom.charCaptions).toHaveLength(2);
+    expect(duoCustom.charCaptions[1]?.char_caption).toContain('charcoal wool coat, knitted scarf,');
+    expect(duoCustom.prompt).toContain(
+      'The girl leans her head peacefully against her companion shoulder under warm lantern light,',
+    );
+    expect(duoCustom.prompt).toContain(
+      'Character 1: girl, sitting side by side on wooden bench, leaning head on shoulder, mutual#shoulder_rest,',
+    );
+    expect(duoCustom.prompt).toContain(
+      'Character 2: boy, faceless male, sitting beside girl, arm draped gently around her shoulder, mutual#shoulder_rest,',
+    );
+
+    // 3. Skill prompt documents custom override fields when allowNsfw is true
+    const skillPrompt = buildOcSelfieSkillPrompt({
+      oc: SAMPLE_OC_ALPHA,
+      allowNsfw: true,
+    });
+    expect(skillPrompt).toContain('"outfit"');
+    expect(skillPrompt).toContain('"action"');
+    expect(skillPrompt).toContain('"sentence"');
+    expect(skillPrompt).toContain('"partnerOutfit"');
+    expect(skillPrompt).toContain('"partnerAction"');
+  });
+
+  it('reclassifies yoga/gymnastics poses full_sexy_p066..p080 as spicy tier and supports broadened NSFW intent + intentText window', () => {
+    const poses = listBuiltinOcPoses();
+    const yogaIds = Array.from({ length: 15 }, (_, idx) =>
+      `full_sexy_p${String(66 + idx).padStart(3, '0')}`,
+    );
+    for (const id of yogaIds) {
+      const found = poses.find((p) => p.id === id);
+      expect(found, `missing pose ${id}`).toBeDefined();
+      expect(found?.tier, `pose ${id} should be spicy`).toBe('spicy');
+    }
+
+    // Rolling 25 consecutive nsfw_open / default NSFW full-body shots never picks yoga poses p066..p080
+    const yogaSet = new Set(yogaIds);
+    for (let i = 0; i < 25; i++) {
+      const shot = compileOcSelfiePrompt({
+        oc: SAMPLE_OC_ALPHA,
+        spec: { framing: 'full', pose: 'nsfw_open', nsfw: true },
+        userContent: '来张大尺度私房照',
+        allowNsfw: true,
+        rotationScopeKey: 'yoga-check',
+      });
+      expect(yogaSet.has(shot.poseId ?? '')).toBe(false);
+    }
+
+    // Broadened natural Chinese NSFW expressions
+    const naturalNsfwPhrases = [
+      '把外套脱掉拍一张',
+      '裙子脱下看看',
+      '不穿外套拍张看看',
+      '发张私房照',
+      '来张床照',
+      '给点福利图',
+      '拍得色一点',
+      '再来张涩一点的',
+      '更色一点行不行',
+      '更涩一点',
+      '稍微过分一点',
+      '来点刺激的照片',
+      '大尺度自拍',
+      '尺度大一点',
+      '发张内衣照',
+      '半裸自拍',
+      '全裸写真',
+      '无码大图',
+    ];
+    for (const phrase of naturalNsfwPhrases) {
+      expect(hasExplicitUserNsfwIntent(phrase), `expected NSFW intent for: ${phrase}`).toBe(true);
+    }
+    expect(hasExplicitUserNsfwIntent('换个角度再来一张')).toBe(false);
+
+    // intentText unlocks 2-turn follow-up without leaking turn-1 pose keywords into turn-2 pose matching
+    const followUpShot = compileOcSelfiePrompt({
+      oc: SAMPLE_OC_ALPHA,
+      spec: { framing: 'upper', pose: 'nsfw_tease', nsfw: true },
+      userContent: '换个角度再来一张',
+      intentText: '做个招财猫手势发张私房照\n换个角度再来一张',
+      allowNsfw: true,
+    });
+    expect(followUpShot.nsfw).toBe(true);
+    expect(followUpShot.spoiler).toBe(true);
+    // Must NOT lock onto '招财猫' (upper_p008) from turn 1 when turn 2 userContent is '换个角度再来一张'
+    expect(followUpShot.poseId).not.toBe('upper_p008');
   });
 });
 

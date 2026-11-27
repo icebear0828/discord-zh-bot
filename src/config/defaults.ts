@@ -200,9 +200,9 @@ export const MAX_IMAGE_STEPS = 28;
 export const MAX_IMAGE_BATCH_COUNT = 5;
 export const VALID_IMAGE_BATCH_COUNTS = [1, 2, 3, 4, 5] as const;
 
-export const DEFAULT_NAI_POSITIVE_PROMPT = 'nsfw, rating:explicit, uncensored';
+export const DEFAULT_NAI_POSITIVE_PROMPT = 'nsfw';
 export const DEFAULT_NAI_NEGATIVE_PROMPT =
-  'lowres, {bad}, error, fewer, extra, missing, worst quality, jpeg artifacts, bad quality, watermark, unfinished, displeasing, chromatic aberration, signature, extra digits, artistic error, username, scan, [abstract], bad anatomy, bad hands, censored, mosaic censoring, bar censor, light censor, pointillism censor';
+  '2::extra characters, extra fingers, extra toes, logo, watermark, signature, deformed, ::, lowres, blurry, out of focus, overexposed, washed out, harsh spotlight, artistic error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, dithering, halftone, screentone, multiple views, too many watermarks, negative space, blank page, @_@, mismatched pupils, bad anatomy, censored, mosaic censoring, bar censor, light censor, pointillism censor';
 
 export interface ImageGenConfig {
   modelOverride: string | null;
@@ -440,7 +440,7 @@ export const DEFAULT_IMAGE_GEN_CONFIG: ImageGenConfig = {
   defaultAspectRatio: '2:3',
   defaultSteps: MAX_IMAGE_STEPS,
   defaultScale: 5.0,
-  defaultCfgRescale: 0.3,
+  defaultCfgRescale: 0.0,
   defaultPositivePrompt: DEFAULT_NAI_POSITIVE_PROMPT,
   defaultNegativePrompt: DEFAULT_NAI_NEGATIVE_PROMPT,
   cooldownSec: 15,

@@ -167,12 +167,12 @@ describe('/draw command & img:* interactions', () => {
     expect(deferReply).toHaveBeenCalledWith({});
     expect(generateSpy).toHaveBeenCalledWith(
       expect.objectContaining({
-        prompt: `${DEFAULT_NAI_POSITIVE_PROMPT}, 1girl, mature female, silver hair`,
-        negativePrompt: `${DEFAULT_NAI_NEGATIVE_PROMPT}, blurry`,
+        prompt: `${DEFAULT_NAI_POSITIVE_PROMPT}, 1girl, mature female, silver hair,\n-1.5::censored, mosaic censoring, bar censor::,`,
+        negativePrompt: DEFAULT_NAI_NEGATIVE_PROMPT,
         aspectRatio: '3:2',
         steps: 22,
         scale: 6.0,
-        cfgRescale: 0.3,
+        cfgRescale: 0,
         seed: 777,
       }),
     );
@@ -946,7 +946,7 @@ describe('/draw command & img:* interactions', () => {
 
     expect(generateSpy).toHaveBeenCalledTimes(1);
     expect(generateSpy.mock.calls[0]?.[0]).toMatchObject({
-      prompt: `${DEFAULT_NAI_POSITIVE_PROMPT}, 2girls, rooftop, sunset`,
+      prompt: `${DEFAULT_NAI_POSITIVE_PROMPT}, 2girls, rooftop, sunset,\n-1.5::censored, mosaic censoring, bar censor::,`,
       aspectRatio: '3:2',
       useCoords: true,
       charCaptions: [
@@ -1052,7 +1052,7 @@ describe('/draw command & img:* interactions', () => {
       ctx,
     );
     expect(generateSpy.mock.calls[2]?.[0]).toMatchObject({
-      prompt: `${DEFAULT_NAI_POSITIVE_PROMPT}, 2girls, classroom`,
+      prompt: `${DEFAULT_NAI_POSITIVE_PROMPT}, 2girls, classroom,\n-1.5::censored, mosaic censoring, bar censor::,`,
       aspectRatio: '16:9',
       steps: 24,
       scale: 6.0,
@@ -1102,7 +1102,7 @@ describe('/draw command & img:* interactions', () => {
       ctx,
     );
     expect(generateSpy.mock.calls[3]?.[0]).toMatchObject({
-      prompt: `${DEFAULT_NAI_POSITIVE_PROMPT}, 1girl, solo, bedroom, morning sunlight`,
+      prompt: `${DEFAULT_NAI_POSITIVE_PROMPT}, 1girl, solo, bedroom, morning sunlight,\n-1.5::censored, mosaic censoring, bar censor::,`,
       charCaptions: [{ char_caption: 'girl, white hair, red eyes, oversized shirt' }],
     });
     expect(
