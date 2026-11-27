@@ -78,6 +78,8 @@ export async function executeAndReplyImageBatch(params: {
 
   const res = await imageService.generateBatch({
     ...input,
+    authorName,
+    ...(authorAvatarUrl ? { authorAvatarUrl } : {}),
     count: requestedCount,
     onProgress:
       requestedCount > 1
@@ -104,6 +106,7 @@ export async function executeAndReplyImageBatch(params: {
     return;
   }
 
+  const galleryUrl = imageService.getGalleryUrl();
   const built = buildImageBatchResultMessages({
     items: res.items,
     requestedCount: res.requestedCount,
@@ -111,6 +114,7 @@ export async function executeAndReplyImageBatch(params: {
     lastErrorMessage: res.lastErrorMessage,
     authorName,
     authorAvatarUrl,
+    ...(galleryUrl ? { galleryUrl } : {}),
   });
 
   await params.interaction.editReply(built.primary);
@@ -567,7 +571,7 @@ export async function handleImageButton(
     await interaction.deferUpdate();
     const sent = await sendPublicBroadcast(
       interaction,
-      buildImageLobbyMessage(interaction.guild?.name),
+      buildImageLobbyMessage(interaction.guild?.name, ctx.services.image?.getGalleryUrl()),
     );
     const feedback: MenuFeedback = sent.sent
       ? { type: 'success', text: '📌 已在当前频道发送永久「打开我的绘图菜单」入口卡片！' }
@@ -1126,7 +1130,7 @@ export async function tryHandleAdminImageButton(
     await interaction.deferUpdate();
     const sent = await sendPublicBroadcast(
       interaction,
-      buildImageLobbyMessage(interaction.guild?.name),
+      buildImageLobbyMessage(interaction.guild?.name, ctx.services.image?.getGalleryUrl()),
     );
     const feedback: MenuFeedback = sent.sent
       ? { type: 'success', text: '📌 已在当前频道发送永久「打开我的绘图菜单」入口卡片！' }

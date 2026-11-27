@@ -24,6 +24,7 @@ export interface ImageEnvConfig {
   model: string;
   timeoutMs: number;
   maxRetries: number;
+  galleryUrl?: string;
 }
 
 export interface AppEnv {
@@ -102,6 +103,11 @@ export function parseEnv(source: Record<string, string | undefined>): AppEnv {
   const imageBaseUrlRaw = source.IMAGE_BASE_URL?.trim();
   const imageApiKey = source.IMAGE_API_KEY?.trim() ?? '';
   const imageModel = source.IMAGE_MODEL?.trim() || DEFAULT_IMAGE_MODEL;
+  const rawGalleryUrl = source.IMAGE_GALLERY_URL?.trim();
+  const galleryUrl =
+    rawGalleryUrl && /^https?:\/\/\S+$/i.test(rawGalleryUrl)
+      ? rawGalleryUrl.replace(/\/+$/, '')
+      : undefined;
   const image: ImageEnvConfig | undefined = imageBaseUrlRaw
     ? {
         baseUrl: imageBaseUrlRaw.replace(/\/+$/, ''),
@@ -119,6 +125,7 @@ export function parseEnv(source: Record<string, string | undefined>): AppEnv {
           0,
           8,
         ),
+        ...(galleryUrl ? { galleryUrl } : {}),
       }
     : undefined;
 

@@ -29,6 +29,8 @@ export interface GenerateOcSelfieInput {
   guildId: string;
   channelId: string;
   userId: string;
+  authorName?: string;
+  authorAvatarUrl?: string;
   prompt: string;
   negativePrompt: string;
   charCaptions: readonly NaiCharCaption[];
@@ -53,6 +55,8 @@ export interface GenerateImageInput {
   guildId: string;
   channelId: string;
   userId: string;
+  authorName?: string;
+  authorAvatarUrl?: string;
   prompt: string;
   aspectRatio?: ImageAspectRatio;
   negativePrompt?: string;
@@ -175,6 +179,10 @@ export class ImageService {
 
   getDefaultModel(): string {
     return this.imageClient.getDefaultModel();
+  }
+
+  getGalleryUrl(): string | undefined {
+    return this.imageClient.getGalleryUrl?.();
   }
 
   getEffectiveConfig(guildId: string): { cfg: GuildConfig; imageCfg: ImageGenConfig } {
@@ -526,6 +534,14 @@ export class ImageService {
               seed: itemSeed ?? undefined,
               charCaptions: finalCharCaptions.length > 0 ? finalCharCaptions : undefined,
               useCoords: finalUseCoords ? true : undefined,
+              galleryMeta: {
+                source: 'discord-draw',
+                authorId: input.userId,
+                ...(input.authorName ? { authorName: input.authorName } : {}),
+                ...(input.authorAvatarUrl ? { authorAvatar: input.authorAvatarUrl } : {}),
+                rawPrompt: effectiveRawPrompt,
+                skip: ephemeral,
+              },
             });
 
             const latencyMs = Math.max(0, Date.now() - itemStart);
@@ -752,6 +768,14 @@ export class ImageService {
             cfgRescale,
             charCaptions: finalCharCaptions.length > 0 ? finalCharCaptions : undefined,
             useCoords: false,
+            galleryMeta: {
+              source: 'discord-selfie',
+              authorId: input.userId,
+              ...(input.authorName ? { authorName: input.authorName } : {}),
+              ...(input.authorAvatarUrl ? { authorAvatar: input.authorAvatarUrl } : {}),
+              rawPrompt: finalPrompt,
+              skip: false,
+            },
           });
 
           const latencyMs = Math.max(0, Date.now() - startedAt);

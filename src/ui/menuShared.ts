@@ -161,6 +161,13 @@ export function makeButton(
     .setDisabled(disabled);
 }
 
+export function makeLinkButton(url: string, label: string): ButtonBuilder {
+  return new ButtonBuilder()
+    .setStyle(ButtonStyle.Link)
+    .setURL(url)
+    .setLabel(truncateText(label, 80));
+}
+
 export function buttonRow(...buttons: ButtonBuilder[]): ActionRowBuilder<ButtonBuilder> {
   return new ActionRowBuilder<ButtonBuilder>().addComponents(...buttons);
 }

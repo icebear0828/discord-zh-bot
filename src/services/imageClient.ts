@@ -45,6 +45,15 @@ export interface NaiCharCaption {
   centers?: readonly NaiCharCaptionCenter[];
 }
 
+export interface ImageGalleryMeta {
+  source: 'discord-draw' | 'discord-selfie';
+  authorId?: string;
+  authorName?: string;
+  authorAvatar?: string;
+  rawPrompt?: string;
+  skip?: boolean;
+}
+
 export interface ImageGenerateRequest {
   model?: string;
   prompt: string;
@@ -57,6 +66,7 @@ export interface ImageGenerateRequest {
   charCaptions?: readonly NaiCharCaption[];
   useCoords?: boolean;
   timeoutMs?: number;
+  galleryMeta?: ImageGalleryMeta;
 }
 
 export interface ImageGenerateResponse {
@@ -195,6 +205,10 @@ export class ImageClient {
     return this.config?.model ?? '';
   }
 
+  getGalleryUrl(): string | undefined {
+    return this.config?.galleryUrl;
+  }
+
   async generate(request: ImageGenerateRequest): Promise<ImageGenerateResponse> {
     if (!this.config || !this.config.baseUrl || !this.config.apiKey) {
       throw new ImageApiError({
@@ -257,12 +271,34 @@ export class ImageClient {
       const timer = setTimeout(() => controller.abort(), timeoutMs);
 
       try {
+        const headers: Record<string, string> = {
+          Authorization: `Bearer ${this.config.apiKey}`,
+          'Content-Type': 'application/json',
+        };
+        if (request.galleryMeta) {
+          const gm = request.galleryMeta;
+          if (gm.skip) {
+            headers['X-Gallery-Skip'] = '1';
+          } else {
+            headers['X-Gallery-Source'] = gm.source;
+            if (gm.authorId?.trim()) {
+              headers['X-Gallery-Author-Id'] = encodeURIComponent(gm.authorId.trim());
+            }
+            if (gm.authorName?.trim()) {
+              headers['X-Gallery-Author-Name'] = encodeURIComponent(gm.authorName.trim().slice(0, 80));
+            }
+            if (gm.authorAvatar?.trim()) {
+              headers['X-Gallery-Author-Avatar'] = encodeURIComponent(gm.authorAvatar.trim().slice(0, 500));
+            }
+            if (gm.rawPrompt?.trim()) {
+              headers['X-Gallery-Raw-Prompt'] = encodeURIComponent(gm.rawPrompt.trim().slice(0, 1500));
+            }
+          }
+        }
+
         const res = await this.fetchFn(url, {
           method: 'POST',
-          headers: {
-            Authorization: `Bearer ${this.config.apiKey}`,
-            'Content-Type': 'application/json',
-          },
+          headers,
           body: JSON.stringify(payload),
           signal: controller.signal,
         });

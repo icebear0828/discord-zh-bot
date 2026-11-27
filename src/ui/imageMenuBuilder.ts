@@ -19,6 +19,7 @@ import { COLORS, type AppContext } from './embeds.js';
 import {
   buttonRow,
   makeButton,
+  makeLinkButton,
   resolveColor,
   truncateText,
   withFeedback,
@@ -43,7 +44,7 @@ export const IMAGE_RATIO_CHOICES: ReadonlyArray<{
   { value: '16:9', label: '🎬 16:9 宽屏横图', description: '适合大场景壁纸与电影级构图 (1344x768)' },
 ];
 
-export function buildImageLobbyMessage(guildName?: string): BuiltButtonMessage {
+export function buildImageLobbyMessage(guildName?: string, galleryUrl?: string): BuiltButtonMessage {
   const prefix = guildName ? `${guildName} · ` : '';
   const embed = new EmbedBuilder()
     .setColor(COLORS.FUN)
@@ -62,11 +63,14 @@ export function buildImageLobbyMessage(guildName?: string): BuiltButtonMessage {
     .setFooter({ text: '提示：NAI V5 Full 独立生图模型 · 点击按钮即可开启专属工作台' })
     .setTimestamp();
 
+  const lobbyButtons = [makeButton('img:open_workbench', '🎨 打开我的绘图菜单', ButtonStyle.Primary)];
+  if (galleryUrl) {
+    lobbyButtons.push(makeLinkButton(galleryUrl, '🖼️ 在线图库'));
+  }
+
   return {
     embeds: [embed],
-    components: [
-      buttonRow(makeButton('img:open_workbench', '🎨 打开我的绘图菜单', ButtonStyle.Primary)),
-    ],
+    components: [buttonRow(...lobbyButtons)],
   };
 }
 
@@ -148,6 +152,7 @@ export function buildImageBatchResultMessages(params: {
   lastErrorMessage?: string;
   authorName: string;
   authorAvatarUrl?: string;
+  galleryUrl?: string;
 }): BuiltImageBatchResultMessages {
   const { items, authorName, authorAvatarUrl } = params;
   const requestedCount = Math.max(1, Math.round(params.requestedCount));
@@ -262,6 +267,9 @@ export function buildImageBatchResultMessages(params: {
     makeButton(`img:edit:${record.id}${countSuffix}`, '✏️ 改词/调参', ButtonStyle.Secondary),
     makeButton('img:open_workbench', '🎛️ 绘图菜单', ButtonStyle.Secondary),
   ];
+  if (params.galleryUrl && !record.ephemeral) {
+    buttons.push(makeLinkButton(params.galleryUrl, '🖼️ 图库'));
+  }
   if (!record.ephemeral) {
     buttons.push(makeButton(`img:del:${record.id}`, '🗑️ 撤回', ButtonStyle.Danger));
   }
@@ -466,6 +474,10 @@ export function buildUserImageMenuView(
     makeButton('img:pref_reset', '♻️ 重置偏好', ButtonStyle.Secondary),
     makeButton('menu:nav:home', '🏠 互动主菜单', ButtonStyle.Secondary),
   ];
+  const galleryUrl = imageSvc?.getGalleryUrl();
+  if (galleryUrl) {
+    navButtons.push(makeLinkButton(galleryUrl, '🖼️ 在线图库'));
+  }
   if (actor.isAdmin) {
     navButtons.push(
       makeButton('menu:nav:admin_image', '⚙️ 生图后台', ButtonStyle.Primary),

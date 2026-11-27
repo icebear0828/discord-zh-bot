@@ -229,6 +229,61 @@ describe('ImageClient', () => {
       authClient.generate({ prompt: 'test', aspectRatio: '1:1', steps: 28, scale: 5 }),
     ).rejects.toBeInstanceOf(ImageApiError);
   });
+
+  it('attaches ASCII-safe URL-encoded X-Gallery-* attribution headers and X-Gallery-Skip on private draws', async () => {
+    const capturedHeaders: Array<Record<string, string>> = [];
+    const fetchSpy = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      capturedHeaders.push((init?.headers ?? {}) as Record<string, string>);
+      return new Response(JSON.stringify({ data: [{ b64_json: TINY_PNG_B64 }] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+
+    const client = new ImageClient(
+      {
+        baseUrl: 'https://img.example.com/v1',
+        apiKey: 'sk-img',
+        model: 'nai/nai-diffusion-5-full',
+        timeoutMs: 30_000,
+        maxRetries: 1,
+        galleryUrl: 'https://gallery.example.com',
+      },
+      { fetchFn: fetchSpy as unknown as typeof fetch, sleepFn: async () => undefined },
+    );
+
+    expect(client.getGalleryUrl()).toBe('https://gallery.example.com');
+
+    await client.generate({
+      prompt: 'nsfw, 1girl',
+      aspectRatio: '2:3',
+      steps: 28,
+      scale: 5.0,
+      galleryMeta: {
+        source: 'discord-draw',
+        authorId: '1001',
+        authorName: '小虎画师',
+        rawPrompt: '1girl, 银发',
+      },
+    });
+    expect(capturedHeaders[0]?.['X-Gallery-Source']).toBe('discord-draw');
+    expect(capturedHeaders[0]?.['X-Gallery-Author-Id']).toBe('1001');
+    expect(decodeURIComponent(capturedHeaders[0]?.['X-Gallery-Author-Name'] ?? '')).toBe('小虎画师');
+    expect(decodeURIComponent(capturedHeaders[0]?.['X-Gallery-Raw-Prompt'] ?? '')).toBe('1girl, 银发');
+    expect(capturedHeaders[0]?.['X-Gallery-Skip']).toBeUndefined();
+
+    await client.generate({
+      prompt: 'nsfw, 1girl',
+      aspectRatio: '2:3',
+      steps: 28,
+      scale: 5.0,
+      galleryMeta: {
+        source: 'discord-draw',
+        skip: true,
+      },
+    });
+    expect(capturedHeaders[1]?.['X-Gallery-Skip']).toBe('1');
+  });
 });
 
 describe('DefaultImagePromptProcessor', () => {
@@ -944,6 +999,75 @@ describe('ImageService', () => {
     });
     expect(totalFailRes).toMatchObject({ ok: false, errorCode: 'service_unavailable' });
     expect(service.getUserCooldownRemainingSec('g1', 'u-fail')).toBe(0);
+
+    db.close();
+  });
+
+  it('forwards galleryMeta for public draw, private skip, and OC selfie', async () => {
+    const { db, guildConfigRepo, generateSpy, service } = setupService();
+    const cfg = guildConfigRepo.getOrCreate('g1');
+    guildConfigRepo.updateImageGen('g1', { ...cfg.imageGen, cooldownSec: 0 });
+    guildConfigRepo.updateAi('g1', {
+      ...cfg.ai,
+      selfie: { ...cfg.ai.selfie, enabled: true, cooldownSec: 0 },
+    });
+
+    await service.generateImage({
+      guildId: 'g1',
+      channelId: 'c1',
+      userId: 'u-pub',
+      authorName: '群友甲',
+      prompt: '1girl, beach',
+      ephemeral: false,
+    });
+    expect(generateSpy).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        galleryMeta: expect.objectContaining({
+          source: 'discord-draw',
+          authorId: 'u-pub',
+          authorName: '群友甲',
+          rawPrompt: '1girl, beach',
+          skip: false,
+        }),
+      }),
+    );
+
+    await service.generateImage({
+      guildId: 'g1',
+      channelId: 'c1',
+      userId: 'u-priv',
+      prompt: '1girl, secret',
+      ephemeral: true,
+    });
+    expect(generateSpy).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        galleryMeta: expect.objectContaining({
+          source: 'discord-draw',
+          skip: true,
+        }),
+      }),
+    );
+
+    await service.generateOcSelfie({
+      guildId: 'g1',
+      channelId: 'c1',
+      userId: 'u-selfie',
+      authorName: '白虎姬',
+      prompt: '1girl, tiger ears',
+      negativePrompt: 'lowres',
+      charCaptions: [{ char_caption: 'girl, white hair' }],
+      aspectRatio: '2:3',
+    });
+    expect(generateSpy).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        galleryMeta: expect.objectContaining({
+          source: 'discord-selfie',
+          authorId: 'u-selfie',
+          authorName: '白虎姬',
+          skip: false,
+        }),
+      }),
+    );
 
     db.close();
   });

@@ -264,10 +264,16 @@ async function executeAiTask(task: QueuedAiTask): Promise<void> {
     let selfieAttachment: AttachmentBuilder | null = null;
     let selfieFallbackNotice = '';
     if (res.selfiePrompt && ctx.services.image?.isConfigured()) {
+      const authorAvatarUrl =
+        typeof message.author.displayAvatarURL === 'function'
+          ? message.author.displayAvatarURL()
+          : undefined;
       const selfieRes = await ctx.services.image.generateOcSelfie({
         guildId,
         channelId: message.channelId,
         userId: message.author.id,
+        authorName: userDisplayName,
+        ...(authorAvatarUrl ? { authorAvatarUrl } : {}),
         prompt: res.selfiePrompt.prompt,
         negativePrompt: res.selfiePrompt.negativePrompt,
         charCaptions: res.selfiePrompt.charCaptions,
