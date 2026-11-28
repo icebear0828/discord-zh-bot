@@ -3,6 +3,20 @@ import {
   DEFAULT_LLM_RATE_LIMIT_MAX_RETRIES,
   type LlmEnvConfig,
 } from '../config/env.js';
+import {
+  extractResponseContent,
+  extractSseErrorStatus,
+  extractTextFromContentField,
+  extractUsage,
+  isContextTooLong,
+  isRecord,
+  isRetryableHttpStatus,
+  mergeLlmUsage,
+  resolveReturnedModelName,
+  type LlmUsage,
+} from './ai/llmParsingAndUsage.js';
+
+export { mergeLlmUsage, type LlmUsage } from './ai/llmParsingAndUsage.js';
 
 export interface LlmTextPart {
   type: 'text';
@@ -41,12 +55,6 @@ export interface LlmChatRequest {
   refusalRetryMessages?: LlmChatMessage[];
 }
 
-export interface LlmUsage {
-  promptTokens?: number;
-  completionTokens?: number;
-  totalTokens?: number;
-}
-
 export interface LlmChatResponse {
   content: string;
   model: string;
@@ -72,6 +80,7 @@ export class LlmError extends Error {
   readonly status?: number;
   readonly attempts: number;
   readonly userMessage: string;
+  readonly usage?: LlmUsage;
 
   constructor(params: {
     code: LlmErrorCode;
@@ -79,6 +88,7 @@ export class LlmError extends Error {
     userMessage: string;
     attempts: number;
     status?: number;
+    usage?: LlmUsage;
   }) {
     super(params.message);
     this.name = 'LlmError';
@@ -86,6 +96,7 @@ export class LlmError extends Error {
     this.status = params.status;
     this.attempts = params.attempts;
     this.userMessage = params.userMessage;
+    this.usage = params.usage;
   }
 }
 
@@ -159,170 +170,18 @@ export function parseRetryAfterMs(
   return null;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function extractUsage(rawUsage: unknown): LlmUsage | undefined {
-  if (!isRecord(rawUsage)) return undefined;
-  const promptTokens =
-    typeof rawUsage.prompt_tokens === 'number'
-      ? rawUsage.prompt_tokens
-      : typeof rawUsage.input_tokens === 'number'
-        ? rawUsage.input_tokens
-        : undefined;
-  const completionTokens =
-    typeof rawUsage.completion_tokens === 'number'
-      ? rawUsage.completion_tokens
-      : typeof rawUsage.output_tokens === 'number'
-        ? rawUsage.output_tokens
-        : undefined;
-  const totalTokens =
-    typeof rawUsage.total_tokens === 'number'
-      ? rawUsage.total_tokens
-      : promptTokens !== undefined || completionTokens !== undefined
-        ? (promptTokens ?? 0) + (completionTokens ?? 0)
-        : undefined;
-
-  if (
-    promptTokens === undefined &&
-    completionTokens === undefined &&
-    totalTokens === undefined
-  ) {
-    return undefined;
-  }
-
-  return {
-    ...(promptTokens !== undefined ? { promptTokens } : {}),
-    ...(completionTokens !== undefined ? { completionTokens } : {}),
-    ...(totalTokens !== undefined ? { totalTokens } : {}),
-  };
-}
-
-function extractTextFromContentField(rawContent: unknown): string {
-  if (typeof rawContent === 'string') {
-    return rawContent;
-  }
-  if (Array.isArray(rawContent)) {
-    const texts: string[] = [];
-    for (const part of rawContent) {
-      if (isRecord(part) && part.type === 'text' && typeof part.text === 'string') {
-        texts.push(part.text);
-      }
-    }
-    return texts.join('');
-  }
-  return '';
-}
-
-function extractResponseContent(data: unknown): {
-  content: string;
-  model?: string;
-  usage?: LlmUsage;
-  finishReason?: string;
-} {
-  if (!isRecord(data)) {
-    return { content: '' };
-  }
-
-  const model = typeof data.model === 'string' ? data.model : undefined;
-  const usage = extractUsage(data.usage);
-
-  const choices = data.choices;
-  if (!Array.isArray(choices) || choices.length === 0) {
-    return { content: '', model, usage };
-  }
-
-  const first = choices[0];
-  if (!isRecord(first)) {
-    return { content: '', model, usage };
-  }
-
-  const finishReason =
-    typeof first.finish_reason === 'string' && first.finish_reason.trim()
-      ? first.finish_reason.trim()
-      : undefined;
-
-  const msg = first.message;
-  if (!isRecord(msg)) {
-    return { content: '', model, usage, finishReason };
-  }
-
-  const text = extractTextFromContentField(msg.content).trim();
-  return { content: text, model, usage, finishReason };
-}
-
-function isContextTooLong(status: number, bodyText: string): boolean {
-  const lower = bodyText.toLowerCase();
-  return (
-    status === 413 ||
-    (status === 400 &&
-      (lower.includes('context_length') ||
-        lower.includes('maximum context') ||
-        lower.includes('too many tokens') ||
-        lower.includes('token limit')))
-  );
-}
-
-function isUpstreamPoolError(bodyText: string): boolean {
-  const lower = bodyText.toLowerCase();
-  return (
-    lower.includes('upstream_http_error') ||
-    lower.includes('upstream error') ||
-    lower.includes('上游 http') ||
-    lower.includes('上游错误') ||
-    lower.includes('no available account') ||
-    lower.includes('account_unavailable') ||
-    lower.includes('channel_error')
-  );
-}
-
-function isRetryableHttpStatus(status: number, bodyText: string): boolean {
-  if (isContextTooLong(status, bodyText)) {
-    return false;
-  }
-  if (status === 429 || status === 408 || status === 409 || status === 425 || status >= 500) {
-    return true;
-  }
-  if ((status === 400 || status === 401 || status === 403) && isUpstreamPoolError(bodyText)) {
-    return true;
-  }
-  return false;
-}
-
-function extractSseErrorStatus(errObj: Record<string, unknown>): number {
-  if (typeof errObj.status === 'number' && Number.isFinite(errObj.status)) {
-    return errObj.status;
-  }
-  if (typeof errObj.status_code === 'number' && Number.isFinite(errObj.status_code)) {
-    return errObj.status_code;
-  }
-  const msg = typeof errObj.message === 'string' ? errObj.message : '';
-  const code = typeof errObj.code === 'string' ? errObj.code : '';
-  const httpMatch = /HTTP\s+(\d{3})/i.exec(msg);
-  if (httpMatch?.[1]) {
-    const parsed = Number(httpMatch[1]);
-    if (Number.isFinite(parsed) && parsed >= 400 && parsed <= 599) {
-      return parsed;
-    }
-  }
-  const combined = `${code} ${msg}`.toLowerCase();
-  if (combined.includes('rate_limit') || combined.includes('too many requests') || combined.includes('429')) {
-    return 429;
-  }
-  return 502;
-}
-
 function mapHttpError(
   status: number,
   bodyText: string,
   attempts: number,
+  usage?: LlmUsage,
 ): LlmError {
   if (status === 429) {
     return new LlmError({
       code: 'rate_limited',
       status,
       attempts,
+      ...(usage ? { usage } : {}),
       message: `LLM HTTP 429: ${bodyText.slice(0, 200)}`,
       userMessage: 'AI 当前请求人数较多（429 限流），已自动重试仍未成功，请稍等几秒再试。',
     });
@@ -332,6 +191,7 @@ function mapHttpError(
       code: 'service_unavailable',
       status,
       attempts,
+      ...(usage ? { usage } : {}),
       message: `LLM HTTP ${status}: ${bodyText.slice(0, 200)}`,
       userMessage: `AI 服务高峰繁忙或网关暂时不可用（HTTP ${status}），已自动重试仍失败，请稍后再试。`,
     });
@@ -341,6 +201,7 @@ function mapHttpError(
       code: 'auth_error',
       status,
       attempts,
+      ...(usage ? { usage } : {}),
       message: `LLM HTTP ${status}: ${bodyText.slice(0, 200)}`,
       userMessage: 'AI 网关鉴权失败（401/403），请联系管理员检查服务配置。',
     });
@@ -350,6 +211,7 @@ function mapHttpError(
       code: 'context_too_long',
       status,
       attempts,
+      ...(usage ? { usage } : {}),
       message: `LLM HTTP ${status}: ${bodyText.slice(0, 200)}`,
       userMessage: '当前对话上下文过长，请发送 `/ai 重置` 清空历史上下文后再试。',
     });
@@ -359,6 +221,7 @@ function mapHttpError(
       code: 'bad_request',
       status,
       attempts,
+      ...(usage ? { usage } : {}),
       message: `LLM HTTP ${status}: ${bodyText.slice(0, 200)}`,
       userMessage: `AI 请求参数或模型配置异常（HTTP ${status}），请检查模型名称或输入内容。`,
     });
@@ -367,6 +230,7 @@ function mapHttpError(
     code: 'unknown',
     status,
     attempts,
+    ...(usage ? { usage } : {}),
     message: `LLM HTTP ${status}: ${bodyText.slice(0, 200)}`,
     userMessage: `AI 服务返回未知异常（HTTP ${status}），请稍后再试。`,
   });
@@ -593,6 +457,7 @@ export class LlmClient {
     const startedAt = this.nowFn();
     let rateLimitRetriesUsed = 0;
     let refusalRetriesUsed = 0;
+    let accumulatedUsage: LlmUsage | undefined;
 
     const canRetryAfterDelay = (attempt: number, delayMs: number): boolean => {
       if (attempt >= totalAttempts) return false;
@@ -659,7 +524,7 @@ export class LlmClient {
               }
             }
           }
-          throw mapHttpError(res.status, bodyText, attempt);
+          throw mapHttpError(res.status, bodyText, attempt, accumulatedUsage);
         }
 
         const contentType = (res.headers.get('content-type') ?? '').toLowerCase();
@@ -682,6 +547,8 @@ export class LlmClient {
           }
         }
 
+        accumulatedUsage = mergeLlmUsage(accumulatedUsage, extracted.usage);
+
         const isValid =
           Boolean(extracted.content) &&
           (!request.validateContent || request.validateContent(extracted.content));
@@ -698,6 +565,7 @@ export class LlmClient {
             code: 'empty_response',
             status: res.status,
             attempts: attempt,
+            ...(accumulatedUsage ? { usage: accumulatedUsage } : {}),
             message: extracted.content
               ? `LLM returned empty content after CoT/output validation${finishPart}`
               : `LLM returned empty content${finishPart}`,
@@ -718,6 +586,7 @@ export class LlmClient {
             code: 'content_refusal',
             status: res.status,
             attempts: attempt,
+            ...(accumulatedUsage ? { usage: accumulatedUsage } : {}),
             message: `LLM returned safety policy refusal: ${extracted.content.slice(0, 200)}`,
             userMessage: 'AI 触发了上游内容安全拦截，主备模型均无法生成回复，请换个表达方式再试。',
           });
@@ -725,9 +594,9 @@ export class LlmClient {
 
         return {
           content: extracted.content,
-          model: extracted.model ?? model,
+          model: resolveReturnedModelName(model, extracted.model),
           attempts: attempt,
-          ...(extracted.usage ? { usage: extracted.usage } : {}),
+          ...(accumulatedUsage ? { usage: accumulatedUsage } : {}),
         };
       } catch (err) {
         if (ttfbTimer !== undefined) {
@@ -756,7 +625,7 @@ export class LlmClient {
               }
             }
           }
-          throw mapHttpError(err.status, err.bodyText, attempt);
+          throw mapHttpError(err.status, err.bodyText, attempt, accumulatedUsage);
         }
 
         const isTimedOut = timedOut || isTimeoutError(err);
@@ -769,6 +638,7 @@ export class LlmClient {
           throw new LlmError({
             code: 'timeout',
             attempts: attempt,
+            ...(accumulatedUsage ? { usage: accumulatedUsage } : {}),
             message: `LLM request timed out after ${timeoutMs}ms`,
             userMessage: 'AI 响应超时，已自动重试仍未完成，请稍后再试。',
           });
@@ -777,6 +647,7 @@ export class LlmClient {
         throw new LlmError({
           code: 'network_error',
           attempts: attempt,
+          ...(accumulatedUsage ? { usage: accumulatedUsage } : {}),
           message: `LLM network error: ${detail}`,
           userMessage: '连接 AI 网关失败（网络波动或服务暂不可达），请稍后再试。',
         });
@@ -786,6 +657,7 @@ export class LlmClient {
     throw new LlmError({
       code: 'unknown',
       attempts: totalAttempts,
+      ...(accumulatedUsage ? { usage: accumulatedUsage } : {}),
       message: 'Unexpected retry loop termination',
       userMessage: 'AI 请求失败，请稍后再试。',
     });

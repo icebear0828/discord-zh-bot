@@ -1,4 +1,7 @@
+import { isFreeTierAiModel } from '../../db/repositories/aiMemoryRepo.js';
 import type { LlmChatMessage, LlmChatResponse } from '../llmClient.js';
+
+export { isFreeTierAiModel } from '../../db/repositories/aiMemoryRepo.js';
 
 const MAX_SAFETY_REFUSAL_LEN = 1200;
 
@@ -172,12 +175,14 @@ export function computeReplyUsage(params: {
     ? (reportedTotal ?? promptTokens + completionTokens)
     : promptTokens + completionTokens;
   const estimated = !hasReportedUsage;
-  const costUsd = calculateUsageCostUsd(
-    promptTokens,
-    completionTokens,
-    inputPricePer1MUsd,
-    outputPricePer1MUsd,
-  );
+  const costUsd = isFreeTierAiModel(response.model)
+    ? 0
+    : calculateUsageCostUsd(
+        promptTokens,
+        completionTokens,
+        inputPricePer1MUsd,
+        outputPricePer1MUsd,
+      );
   return { promptTokens, completionTokens, totalTokens, estimated, costUsd };
 }
 

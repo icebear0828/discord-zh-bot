@@ -1,6 +1,12 @@
 import { compileBreaklimitMessages, stripCotBlocks } from '../aiCompiler.js';
 import { normalizeChatInputSegment } from './aiInputSanitizer.js';
-import { LlmError, type LlmChatResponse, type LlmErrorCode } from '../llmClient.js';
+import {
+  LlmError,
+  mergeLlmUsage,
+  type LlmChatResponse,
+  type LlmErrorCode,
+  type LlmUsage,
+} from '../llmClient.js';
 import { resolveActiveOcOutfit, resolveActiveOcProfile } from './selfie/selfieOutfitsAndOotd.js';
 import { listBuiltinOcPoses } from './selfie/selfiePresetStore.js';
 import { compileOcSelfiePrompt } from './selfie/selfiePromptCompiler.js';
@@ -15,8 +21,10 @@ import { prepareReplyTurnContext } from './aiHistoryAndVision.js';
 import { resolveEffectiveBindingOp } from './aiPackBindingOps.js';
 import {
   buildRefusalSoftLandingMessages,
+  calculateUsageCostUsd,
   computeReplyUsage,
   containsPromptInjectionMemoryTag,
+  isFreeTierAiModel,
   isSafetyRefusalReply,
 } from './aiSafetyAndTokens.js';
 import {
@@ -199,6 +207,7 @@ export async function generateAiReplyOp(
 
   const startedAt = Date.now();
   let primaryAttempts = 0;
+  let primaryFailedUsage: LlmUsage | undefined;
   let fallbackStarted = false;
   let fallbackUsed = false;
   try {
@@ -235,6 +244,7 @@ export async function generateAiReplyOp(
     } catch (primaryErr) {
       const primaryCode: LlmErrorCode = primaryErr instanceof LlmError ? primaryErr.code : 'unknown';
       primaryAttempts = primaryErr instanceof LlmError ? primaryErr.attempts : 1;
+      primaryFailedUsage = primaryErr instanceof LlmError ? primaryErr.usage : undefined;
       const fallbackModel = resolved.effectiveFallbackModel;
       if (
         !fallbackModel ||
@@ -263,9 +273,11 @@ export async function generateAiReplyOp(
         maxRefusalRetries: 2,
       });
       fallbackUsed = true;
+      const mergedUsage = mergeLlmUsage(primaryFailedUsage, fallbackResponse.usage);
       response = {
         ...fallbackResponse,
         attempts: primaryAttempts + fallbackResponse.attempts,
+        ...(mergedUsage ? { usage: mergedUsage } : {}),
       };
     }
     const latencyMs = Math.max(0, Date.now() - startedAt);
@@ -423,11 +435,25 @@ export async function generateAiReplyOp(
     const latencyMs = Math.max(0, Date.now() - startedAt);
     const errorCode: LlmErrorCode = err instanceof LlmError ? err.code : 'unknown';
     const errAttempts = err instanceof LlmError ? err.attempts : 1;
+    const errUsage = err instanceof LlmError ? err.usage : undefined;
+    const failedUsage = fallbackStarted ? mergeLlmUsage(primaryFailedUsage, errUsage) : errUsage;
+    const failedPromptTokens = failedUsage?.promptTokens ?? 0;
+    const failedCompletionTokens = failedUsage?.completionTokens ?? 0;
+    const failedTotalTokens =
+      failedUsage?.totalTokens ?? failedPromptTokens + failedCompletionTokens;
     const attempts = fallbackStarted ? primaryAttempts + errAttempts : errAttempts;
     const failedModel =
       fallbackStarted && resolved.effectiveFallbackModel
         ? resolved.effectiveFallbackModel
         : effectiveModel;
+    const failedCostUsd = isFreeTierAiModel(failedModel)
+      ? 0
+      : calculateUsageCostUsd(
+          failedPromptTokens,
+          failedCompletionTokens,
+          aiCfg.inputPricePer1MUsd,
+          aiCfg.outputPricePer1MUsd,
+        );
     try {
       deps.aiMemoryRepo.recordUsageLog({
         guildId: input.guildId,
@@ -437,11 +463,11 @@ export async function generateAiReplyOp(
         status: 'error',
         errorCode,
         attempts,
-        promptTokens: 0,
-        completionTokens: 0,
-        totalTokens: 0,
+        promptTokens: failedPromptTokens,
+        completionTokens: failedCompletionTokens,
+        totalTokens: failedTotalTokens,
         usageEstimated: false,
-        estimatedCostUsd: 0,
+        estimatedCostUsd: failedCostUsd,
         latencyMs,
         createdAt: Date.now(),
       });

@@ -970,6 +970,138 @@ describe('aiService helpers & AiMemoryRepo', () => {
     db.close();
   });
 
+  it('accumulates billed tokens across primary+fallback refusal retries and excludes free-tier prefixes (pg/*) from USD cost', async () => {
+    const db = createDatabase(':memory:');
+    const guildConfigRepo = new GuildConfigRepo(db);
+    const aiMemoryRepo = new AiMemoryRepo(db);
+
+    const refusalMsg =
+      '您的请求试图继续进行露骨的色情角色扮演。根据安全准则，我无法生成露骨的性描写或色情互动内容。';
+    let turnMode: 'fallback_ok' | 'both_refuse' | 'pg_free' = 'fallback_ok';
+    let callSeq = 0;
+
+    const llmClient = new LlmClient(
+      {
+        baseUrl: 'https://gateway.local/v1',
+        apiKey: 'sk-test',
+        model: 'paid/gemini-4-argon',
+        fallbackModel: 'paid/gemini-4-carbon',
+        timeoutMs: 10_000,
+      },
+      {
+        sleepFn: async () => undefined,
+        fetchFn: async (_url, init) => {
+          callSeq++;
+          const body = JSON.parse(String(init?.body)) as { model: string };
+          if (turnMode === 'pg_free') {
+            return new Response(
+              JSON.stringify({
+                model: 'pg/gemini-4-argon',
+                choices: [{ message: { content: '免费网页渠道回复' } }],
+                usage: { prompt_tokens: 50_000, completion_tokens: 10_000, total_tokens: 60_000 },
+              }),
+              { status: 200, headers: { 'Content-Type': 'application/json' } },
+            );
+          }
+          if (turnMode === 'fallback_ok' && body.model === 'paid/gemini-4-carbon') {
+            return new Response(
+              JSON.stringify({
+                model: 'gemini-4-carbon',
+                choices: [{ message: { content: '别闹啦，先哄我开心再说～' } }],
+                usage: { prompt_tokens: 2000, completion_tokens: 1000, total_tokens: 3000 },
+              }),
+              { status: 200, headers: { 'Content-Type': 'application/json' } },
+            );
+          }
+          return new Response(
+            JSON.stringify({
+              model: body.model.replace(/^paid\//, ''),
+              choices: [{ message: { content: refusalMsg } }],
+              usage: { prompt_tokens: 2000, completion_tokens: 500, total_tokens: 2500 },
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          );
+        },
+      },
+    );
+
+    const aiService = new AiService(guildConfigRepo, aiMemoryRepo, llmClient);
+    aiService.updatePricing('g1', 2, 10); // $2/1M input, $10/1M output
+
+    // 1) Primary refuses 3x (3 * 2000 in + 3 * 500 out) -> Fallback succeeds 1x (2000 in + 1000 out)
+    // Total = 8000 prompt ($0.016) + 2500 completion ($0.025) = $0.041
+    const okFallback = await aiService.generateReply({
+      guildId: 'g1',
+      channelId: 'c1',
+      userId: 'u1',
+      userName: 'Alice',
+      messageId: 'm_fb_ok',
+      userContent: '继续',
+    });
+    expect(okFallback.ok).toBe(true);
+    expect(callSeq).toBe(4);
+    if (okFallback.ok) {
+      expect(okFallback.model).toBe('paid/gemini-4-carbon');
+      expect(okFallback.attempts).toBe(4);
+      expect(okFallback.usage.promptTokens).toBe(8000);
+      expect(okFallback.usage.completionTokens).toBe(2500);
+      expect(okFallback.usage.costUsd).toBeCloseTo(0.041, 6);
+    }
+
+    // 2) Both primary (3x) and fallback (3x) refuse -> 6 attempts total: 12000 prompt ($0.024) + 3000 completion ($0.030) = $0.054
+    callSeq = 0;
+    turnMode = 'both_refuse';
+    const allRefused = await aiService.generateReply({
+      guildId: 'g1',
+      channelId: 'c1',
+      userId: 'u1',
+      userName: 'Alice',
+      messageId: 'm_fb_err',
+      userContent: '再来',
+    });
+    expect(allRefused.ok).toBe(false);
+    expect(callSeq).toBe(6);
+
+    // 3) Free Playground model override (pg/gemini-4-argon) -> tokens counted, USD cost = $0
+    turnMode = 'pg_free';
+    const curCfg = guildConfigRepo.getOrCreate('g1');
+    guildConfigRepo.updateAi('g1', { ...curCfg.ai, modelOverride: 'pg/gemini-4-argon' });
+    const freeRes = await aiService.generateReply({
+      guildId: 'g1',
+      channelId: 'c1',
+      userId: 'u2',
+      userName: 'Bob',
+      messageId: 'm_pg',
+      userContent: '你好',
+    });
+    expect(freeRes.ok).toBe(true);
+    if (freeRes.ok) {
+      expect(freeRes.usage.costUsd).toBe(0);
+    }
+
+    const summary = aiService.getUsageSummary('g1', 24);
+    expect(summary.totalCalls).toBe(3);
+    expect(summary.okCalls).toBe(2);
+    expect(summary.errorCalls).toBe(1);
+    // Total tokens = (8000+2500) + (12000+3000) + (50000+10000) = 85500
+    expect(summary.totalTokens).toBe(85_500);
+    // Billable USD = $0.041 + $0.054 + $0 (pg/* excluded!) = $0.095
+    expect(summary.estimatedCostUsd).toBeCloseTo(0.095, 6);
+    expect(summary.recordedCostUsd).toBeCloseTo(0.095, 6);
+
+    const pgModelEntry = summary.byModel.find((m) => m.model === 'pg/gemini-4-argon');
+    expect(pgModelEntry?.costUsd).toBe(0);
+    const paidModelEntry = summary.byModel.find((m) => m.model === 'paid/gemini-4-carbon');
+    expect(paidModelEntry?.costUsd).toBeCloseTo(0.095, 6);
+
+    const bobTop = summary.topUsers.find((u) => u.userId === 'u2');
+    expect(bobTop?.costUsd).toBe(0);
+    const aliceTop = summary.topUsers.find((u) => u.userId === 'u1');
+    expect(aliceTop?.costUsd).toBeCloseTo(0.095, 6);
+
+    db.close();
+  });
+
   it('normalizes Discord custom emojis, preserves reply targets, and coalesces consecutive user turns', () => {
     expect(normalizeDiscordCustomEmojis('笑死 <:emoji_61:157300000000000001> <a:dance:157300000000000002>')).toBe(
       '笑死 :emoji_61: :dance:',

@@ -649,4 +649,103 @@ describe('LlmClient', () => {
       message: expect.stringContaining('finish_reason=length'),
     });
   });
+
+  it('accumulates token usage across refusal/empty retries, preserves paid/ prefix, and attaches usage to LlmError on failure', async () => {
+    const refusalText = '根据安全准则，我无法继续生成露骨的性互动内容。';
+    let attemptCount = 0;
+    const okClient = new LlmClient(
+      {
+        baseUrl: 'https://gateway.local/v1',
+        apiKey: 'sk-test',
+        model: 'paid/gemini-4-argon',
+        timeoutMs: 10_000,
+      },
+      {
+        sleepFn: async () => undefined,
+        fetchFn: async () => {
+          attemptCount++;
+          if (attemptCount === 1) {
+            return makeJsonResponse({
+              model: 'gemini-4-argon',
+              choices: [{ message: { content: refusalText } }],
+              usage: {
+                prompt_tokens: 2000,
+                completion_tokens: 850,
+                total_tokens: 2850,
+                completion_tokens_details: { reasoning_tokens: 800 },
+              },
+            });
+          }
+          return makeJsonResponse({
+            model: 'gemini-4-argon',
+            choices: [{ message: { content: '哼，这还差不多' } }],
+            usage: {
+              prompt_tokens: 2100,
+              completion_tokens: 1260,
+              total_tokens: 3360,
+              completion_tokens_details: { reasoning_tokens: 1200 },
+            },
+          });
+        },
+      },
+    );
+
+    const okRes = await okClient.chat({
+      messages: [{ role: 'user', content: 'hi' }],
+      isRefusalContent: (raw) => raw.includes('根据安全准则'),
+      maxRefusalRetries: 2,
+    });
+    expect(okRes.attempts).toBe(2);
+    expect(okRes.model).toBe('paid/gemini-4-argon');
+    expect(okRes.usage).toEqual({
+      promptTokens: 4100,
+      completionTokens: 2110,
+      totalTokens: 6210,
+      reasoningTokens: 2000,
+    });
+
+    // Exhausting refusal retries must attach accumulated usage onto thrown LlmError
+    const failClient = new LlmClient(
+      {
+        baseUrl: 'https://gateway.local/v1',
+        apiKey: 'sk-test',
+        model: 'paid/gemini-4-argon',
+        timeoutMs: 10_000,
+      },
+      {
+        sleepFn: async () => undefined,
+        fetchFn: async () =>
+          makeJsonResponse({
+            model: 'gemini-4-argon',
+            choices: [{ message: { content: refusalText } }],
+            usage: {
+              prompt_tokens: 1500,
+              completion_tokens: 600,
+              total_tokens: 2100,
+              completion_tokens_details: { reasoning_tokens: 550 },
+            },
+          }),
+      },
+    );
+
+    try {
+      await failClient.chat({
+        messages: [{ role: 'user', content: 'hi' }],
+        isRefusalContent: (raw) => raw.includes('根据安全准则'),
+        maxRefusalRetries: 2,
+      });
+      expect.unreachable('should have thrown content_refusal');
+    } catch (err) {
+      expect(err).toBeInstanceOf(LlmError);
+      const llmErr = err as LlmError;
+      expect(llmErr.code).toBe('content_refusal');
+      expect(llmErr.attempts).toBe(3);
+      expect(llmErr.usage).toEqual({
+        promptTokens: 4500,
+        completionTokens: 1800,
+        totalTokens: 6300,
+        reasoningTokens: 1650,
+      });
+    }
+  });
 });

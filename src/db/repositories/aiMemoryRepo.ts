@@ -5,6 +5,22 @@ export type AiUsageStatus = 'ok' | 'error';
 
 export const MAX_AI_USAGE_LOGS_PER_GUILD = 5000;
 
+export const FREE_TIER_AI_MODEL_PREFIXES = [
+  'pg/',
+  'free/',
+  'gemini-free/',
+  'opal/',
+  'agy/',
+  'antigravity/',
+  'webctl/',
+] as const;
+
+export function isFreeTierAiModel(model: string): boolean {
+  const normalized = model.trim().toLowerCase();
+  if (!normalized) return false;
+  return FREE_TIER_AI_MODEL_PREFIXES.some((prefix) => normalized.startsWith(prefix));
+}
+
 export interface AiUsageLogRecord {
   id: number;
   guildId: string;
@@ -467,10 +483,17 @@ export class AiMemoryRepo {
 
     const inputRate = Math.max(0, pricing?.inputPricePer1MUsd ?? 0);
     const outputRate = Math.max(0, pricing?.outputPricePer1MUsd ?? 0);
-    const computeCost = (promptTok: number, completionTok: number, recorded: number): number =>
-      pricing
+    const computeCost = (
+      model: string,
+      promptTok: number,
+      completionTok: number,
+      recorded: number,
+    ): number => {
+      if (isFreeTierAiModel(model)) return 0;
+      return pricing
         ? (promptTok / 1_000_000) * inputRate + (completionTok / 1_000_000) * outputRate
         : recorded;
+    };
 
     const modelRows = this.db
       .prepare(
@@ -495,10 +518,11 @@ export class AiMemoryRepo {
       recorded_cost_usd: number;
     }>;
 
-    const userRows = this.db
+    const userModelRows = this.db
       .prepare(
         `SELECT
           user_id,
+          model,
           COUNT(*) AS calls,
           COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
           COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
@@ -506,18 +530,64 @@ export class AiMemoryRepo {
           COALESCE(SUM(estimated_cost_usd), 0) AS recorded_cost_usd
          FROM ai_usage_logs
          WHERE guild_id = ? AND created_at >= ?
-         GROUP BY user_id
-         ORDER BY total_tokens DESC, calls DESC
-         LIMIT 5`,
+         GROUP BY user_id, model`,
       )
       .all(guildId, sinceMs) as Array<{
       user_id: string;
+      model: string;
       calls: number;
       prompt_tokens: number;
       completion_tokens: number;
       total_tokens: number;
       recorded_cost_usd: number;
     }>;
+
+    const byModel = modelRows.map((m) => ({
+      model: m.model,
+      calls: m.calls,
+      promptTokens: m.prompt_tokens,
+      completionTokens: m.completion_tokens,
+      totalTokens: m.total_tokens,
+      costUsd: computeCost(m.model, m.prompt_tokens, m.completion_tokens, m.recorded_cost_usd),
+    }));
+
+    let billableRecordedCostUsd = 0;
+    let billableEstimatedCostUsd = 0;
+    for (let i = 0; i < modelRows.length; i++) {
+      const m = modelRows[i];
+      const computed = byModel[i];
+      if (m && computed && !isFreeTierAiModel(m.model)) {
+        billableRecordedCostUsd += m.recorded_cost_usd;
+        billableEstimatedCostUsd += computed.costUsd;
+      }
+    }
+
+    const userAgg = new Map<string, AiUsageUserBreakdown>();
+    for (const row of userModelRows) {
+      const rowCost = computeCost(
+        row.model,
+        row.prompt_tokens,
+        row.completion_tokens,
+        row.recorded_cost_usd,
+      );
+      const existing = userAgg.get(row.user_id);
+      if (existing) {
+        existing.calls += row.calls;
+        existing.totalTokens += row.total_tokens;
+        existing.costUsd += rowCost;
+      } else {
+        userAgg.set(row.user_id, {
+          userId: row.user_id,
+          calls: row.calls,
+          totalTokens: row.total_tokens,
+          costUsd: rowCost,
+        });
+      }
+    }
+
+    const topUsers = [...userAgg.values()]
+      .sort((a, b) => b.totalTokens - a.totalTokens || b.calls - a.calls)
+      .slice(0, 5);
 
     return {
       totalCalls: totalsRow.total_calls,
@@ -528,26 +598,10 @@ export class AiMemoryRepo {
       completionTokens: totalsRow.completion_tokens,
       totalTokens: totalsRow.total_tokens,
       avgLatencyMs: Math.round(totalsRow.avg_latency_ms),
-      recordedCostUsd: totalsRow.recorded_cost_usd,
-      estimatedCostUsd: computeCost(
-        totalsRow.prompt_tokens,
-        totalsRow.completion_tokens,
-        totalsRow.recorded_cost_usd,
-      ),
-      byModel: modelRows.map((m) => ({
-        model: m.model,
-        calls: m.calls,
-        promptTokens: m.prompt_tokens,
-        completionTokens: m.completion_tokens,
-        totalTokens: m.total_tokens,
-        costUsd: computeCost(m.prompt_tokens, m.completion_tokens, m.recorded_cost_usd),
-      })),
-      topUsers: userRows.map((u) => ({
-        userId: u.user_id,
-        calls: u.calls,
-        totalTokens: u.total_tokens,
-        costUsd: computeCost(u.prompt_tokens, u.completion_tokens, u.recorded_cost_usd),
-      })),
+      recordedCostUsd: billableRecordedCostUsd,
+      estimatedCostUsd: billableEstimatedCostUsd,
+      byModel,
+      topUsers,
     };
   }
 
