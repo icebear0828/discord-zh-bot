@@ -312,4 +312,99 @@ describe('AI Breaklimit Compilation Engine, Byte-for-Byte Legacy Parity & Channe
 
     db.close();
   });
+
+  it('preserves custom persona sharing personaName with a builtin disk card across migrateLegacyGuildConfigToPacks and saveCustomPersona', async () => {
+    const db = createDatabase(':memory:');
+    const guildConfigRepo = new GuildConfigRepo(db);
+    const aiMemoryRepo = new AiMemoryRepo(db);
+    const packStore = new AiPackStore(tmpDir);
+    packStore.ensureInitialized();
+
+    // Disk already has 'community' card named '白虎姬' with conservative text
+    expect(
+      packStore.saveCard({
+        ...createBuiltinDefaultCard(),
+        id: 'community',
+        name: '默认白虎姬',
+        personaName: '白虎姬',
+        identityPrompt: '旧版保守设定：只当普通网友。',
+        soulPrompt: '- 不给媚态和暧昧。',
+      }).ok,
+    ).toBe(true);
+
+    const capturedSystemPrompts: string[] = [];
+    const llmClient = new LlmClient(
+      {
+        baseUrl: 'https://gateway.local/v1',
+        apiKey: 'sk-test',
+        model: 'demo-model',
+        timeoutMs: 10_000,
+      },
+      {
+        fetchFn: async (_url, init) => {
+          const body = JSON.parse(String(init?.body)) as {
+            messages: Array<{ role: string; content: string }>;
+          };
+          capturedSystemPrompts.push(body.messages[0]?.content ?? '');
+          return new Response(
+            JSON.stringify({
+              model: 'demo-model',
+              choices: [{ message: { content: '收到啦冰哥~' } }],
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          );
+        },
+      },
+    );
+
+    const aiService = new AiService(guildConfigRepo, aiMemoryRepo, llmClient, fetch, packStore);
+
+    // 1. Self-heals already-clobbered custom config (preset: 'custom', activeCardId: 'community')
+    const cfg = guildConfigRepo.getOrCreate('g_prod');
+    guildConfigRepo.updateAi('g_prod', {
+      ...cfg.ai,
+      preset: 'custom',
+      activeCardId: 'community',
+      personaName: '白虎姬',
+      identityPrompt: '2300字双正主加强设定：面对冰吊王与黑屌王坦然直白配合。',
+      soulPrompt: '类型E：收起嘴硬防线，顺势迎合升温，不推拒驳回。',
+      worldbook: '黑吊国专属世界书。',
+    });
+
+    // Simulate bot restart running migrateLegacyGuildConfigToPacks
+    aiService.migrateLegacyGuildConfigToPacks('g_prod');
+
+    const bindingAfterMigrate = aiService.resolveEffectiveBinding('g_prod');
+    expect(bindingAfterMigrate.card.id).not.toBe('community');
+    expect(bindingAfterMigrate.card.identityPrompt).toContain('2300字双正主加强设定');
+    expect(bindingAfterMigrate.card.soulPrompt).toContain('顺势迎合升温');
+
+    const reply1 = await aiService.generateReply({
+      guildId: 'g_prod',
+      channelId: 'c_test',
+      userId: 'u_vip',
+      userName: 'icebear',
+      messageId: 'm_1',
+      userContent: '出来陪我',
+    });
+    expect(reply1.ok).toBe(true);
+    expect(capturedSystemPrompts[0]).toContain('2300字双正主加强设定');
+    expect(capturedSystemPrompts[0]).not.toContain('旧版保守设定');
+
+    // 2. Updating via saveCustomPersona persists directly to disk card and survives another restart
+    const savedCustom = aiService.saveCustomPersona('g_prod', {
+      personaName: '白虎姬',
+      identityPrompt: '二次编辑加强版设定：双正主深度偏爱。',
+      soulPrompt: '二次编辑文风：自然直白不催睡。',
+      worldbook: '更新后的世界书。',
+    });
+    expect(savedCustom.activeCardId).toBeTruthy();
+    aiService.migrateLegacyGuildConfigToPacks('g_prod');
+    const bindingAfterSave = aiService.resolveEffectiveBinding('g_prod');
+    expect(bindingAfterSave.card.identityPrompt).toBe('二次编辑加强版设定：双正主深度偏爱。');
+    expect(bindingAfterSave.card.soulPrompt).toBe('二次编辑文风：自然直白不催睡。');
+    expect(bindingAfterSave.card.worldbook).toBe('更新后的世界书。');
+
+    db.close();
+  });
 });

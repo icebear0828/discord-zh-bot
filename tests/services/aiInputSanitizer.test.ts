@@ -287,6 +287,10 @@ describe('aiInputSanitizer: deterministic input-only softening', () => {
     expect(steered1[2]?.role).toBe('system');
     expect(String(steered1[2]?.content)).toContain('白虎姬');
     expect(String(steered1[2]?.content)).toContain('侧面留白');
+    expect(String(steered1[2]?.content)).toContain('绝不推拒');
+    expect(String(steered1[2]?.content)).not.toContain('转移注意力');
+    expect(String(steered1[2]?.content)).not.toContain('先哄自己开心');
+    expect(String(steered1[2]?.content)).not.toContain('日常情感互动范围内');
 
     const baseWithPrefill: LlmChatMessage[] = [
       { role: 'system', content: '你是白虎姬' },

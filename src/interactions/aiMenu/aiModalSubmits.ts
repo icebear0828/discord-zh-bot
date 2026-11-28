@@ -294,10 +294,7 @@ export async function tryHandleAiMenuModal(
       return true;
     }
 
-    ctx.repos.guildConfig.updateAi(guildId, {
-      ...cfg.ai,
-      preset: 'custom',
-      activeCardId: null,
+    ctx.services.ai.saveCustomPersona(guildId, {
       personaName,
       identityPrompt,
       soulPrompt,

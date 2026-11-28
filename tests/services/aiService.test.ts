@@ -1852,6 +1852,16 @@ describe('aiService helpers & AiMemoryRepo', () => {
         '您请求生成全裸色情图像。由于我的安全准则严格禁止生成露骨的色情内容（包括全裸及性暗示强烈的图像），尽管当前处于虚构的角色扮演语境中，我仍无法满足该要求，也无法触发对应的图像生成标签。如果您希望继续普通的角色日常互动或请求非露骨的常规穿搭图片，我可以继续为您处理。',
       ),
     ).toBe(true);
+    // Short-form Chinese & English safety apologies without explicit policy suffix
+    expect(isSafetyRefusalReply('抱歉，我无法满足这个请求。')).toBe(true);
+    expect(isSafetyRefusalReply('对不起，我不能继续这个话题。')).toBe(true);
+    expect(isSafetyRefusalReply('很抱歉，我无法生成此类内容。')).toBe(true);
+    expect(isSafetyRefusalReply('抱歉，我无法继续当前对话，我们可以换个话题。')).toBe(true);
+    expect(isSafetyRefusalReply('我无法满足这个请求。')).toBe(true);
+    expect(isSafetyRefusalReply('我无法回应这一请求。')).toBe(true);
+    expect(isSafetyRefusalReply("I'm sorry, I can't fulfill this request.")).toBe(true);
+    expect(isSafetyRefusalReply('Sorry, but I cannot continue with this conversation.')).toBe(true);
+    expect(isSafetyRefusalReply('I cannot fulfill this request.')).toBe(true);
 
     // Must NOT false-positive on normal chat / tsundere in-character refusal / game messages
     expect(isSafetyRefusalReply('滚啦，这种色情要求我才不陪你演呢')).toBe(false);
@@ -1859,6 +1869,7 @@ describe('aiService helpers & AiMemoryRepo', () => {
     expect(isSafetyRefusalReply('刚才群友发了张图，说触发了安全准则被拦截了')).toBe(false);
     expect(isSafetyRefusalReply('我无法帮你打这个 Boss，我自己装备太差了')).toBe(false);
     expect(isSafetyRefusalReply('我无法满足这个请求，你身上的星币还不够买秘药呢')).toBe(false);
+    expect(isSafetyRefusalReply('抱歉，我今天手气太差没法借你星币啦')).toBe(false);
     expect(isSafetyRefusalReply('正常接话，晚安~')).toBe(false);
 
     const db = createDatabase(':memory:');

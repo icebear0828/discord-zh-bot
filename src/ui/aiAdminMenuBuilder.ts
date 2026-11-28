@@ -502,10 +502,10 @@ export function buildAdminAiView(
     `📌 **白名单限定频道**：${allowedText}`,
     `🔕 **屏蔽频道**：${ignoredText}`,
     '',
-    `> **人设简介**：${truncateText(ai.identityPrompt, 90)}`,
-    `> **说话风格**：${truncateText(ai.soulPrompt, 90)}`,
-    ...(ai.worldbook.trim()
-      ? [`> **世界书**：${truncateText(ai.worldbook.trim(), 90)}`]
+    `> **人设简介**：${truncateText(resolvedBinding.card.identityPrompt, 90)}`,
+    `> **说话风格**：${truncateText(resolvedBinding.card.soulPrompt, 90)}`,
+    ...(resolvedBinding.card.worldbook.trim()
+      ? [`> **世界书**：${truncateText(resolvedBinding.card.worldbook.trim(), 90)}`]
       : []),
   ].join('\n');
 

@@ -292,6 +292,57 @@ export function clearChannelOverrideOp(
   return true;
 }
 
+export function saveCustomPersonaOp(
+  deps: Pick<AiServiceRuntimeDeps, 'guildConfigRepo' | 'packStore'>,
+  guildId: string,
+  input: {
+    personaName: string;
+    identityPrompt: string;
+    soulPrompt: string;
+    worldbook: string;
+  },
+): { activeCardId: string | null } {
+  const cfg = deps.guildConfigRepo.getOrCreate(guildId);
+  let nextActiveCardId: string | null = null;
+
+  if (deps.packStore) {
+    const customCardId = slugifyPackId(`custom-guild-${guildId.slice(-6)}`, 'custom-card');
+    const existing = deps.packStore.getCard(customCardId);
+    const saved = deps.packStore.saveCard({
+      schemaVersion: 1,
+      kind: 'card',
+      id: customCardId,
+      name: `✍️ ${input.personaName}（自定义人设）`,
+      version: existing?.version ?? '1.0.0',
+      personaName: input.personaName,
+      identityPrompt: input.identityPrompt,
+      soulPrompt: input.soulPrompt,
+      exampleDialogue: existing?.exampleDialogue ?? '',
+      ...(existing?.postHistoryInstructions
+        ? { postHistoryInstructions: existing.postHistoryInstructions }
+        : {}),
+      worldbook: input.worldbook,
+      lorebookEntries: existing?.lorebookEntries ?? [],
+      regexRules: existing?.regexRules ?? [],
+    });
+    if (saved.ok) {
+      nextActiveCardId = saved.pack.id;
+    }
+  }
+
+  deps.guildConfigRepo.updateAi(guildId, {
+    ...cfg.ai,
+    preset: 'custom',
+    activeCardId: nextActiveCardId,
+    personaName: input.personaName,
+    identityPrompt: input.identityPrompt,
+    soulPrompt: input.soulPrompt,
+    worldbook: input.worldbook,
+  });
+
+  return { activeCardId: nextActiveCardId };
+}
+
 export function migrateLegacyGuildConfigToPacksOp(
   deps: Pick<AiServiceRuntimeDeps, 'guildConfigRepo' | 'packStore'>,
   guildId: string,
@@ -299,38 +350,58 @@ export function migrateLegacyGuildConfigToPacksOp(
   if (!deps.packStore) return;
   const cfg = deps.guildConfigRepo.getOrCreate(guildId);
   const aiCfg = cfg.ai;
-  if (aiCfg.activeCardId && deps.packStore.getCard(aiCfg.activeCardId)) {
+  const currentBoundCard = aiCfg.activeCardId ? deps.packStore.getCard(aiCfg.activeCardId) : null;
+  const isClobberedCustomConfig =
+    aiCfg.preset === 'custom' &&
+    currentBoundCard !== null &&
+    !currentBoundCard.id.startsWith('custom-guild-') &&
+    (currentBoundCard.identityPrompt.trim() !== aiCfg.identityPrompt.trim() ||
+      currentBoundCard.soulPrompt.trim() !== aiCfg.soulPrompt.trim());
+  if (currentBoundCard && !isClobberedCustomConfig) {
     return;
   }
 
-  // Check if an existing card on disk already matches personaName
-  const matchedDiskCard = deps.packStore
-    .listCards()
-    .find((c) => c.personaName === aiCfg.personaName);
-  if (matchedDiskCard) {
-    deps.guildConfigRepo.updateAi(guildId, {
-      ...aiCfg,
-      activeCardId: matchedDiskCard.id,
-      activePresetId: aiCfg.activePresetId || DEFAULT_PACK_PRESET_ID,
-    });
-    return;
+  // Only bind an existing disk card when preset is NOT 'custom' and prompts match identically
+  if (aiCfg.preset !== 'custom') {
+    const matchedDiskCard = deps.packStore
+      .listCards()
+      .find(
+        (c) =>
+          c.personaName === aiCfg.personaName &&
+          c.identityPrompt.trim() === aiCfg.identityPrompt.trim() &&
+          c.soulPrompt.trim() === aiCfg.soulPrompt.trim(),
+      );
+    if (matchedDiskCard) {
+      deps.guildConfigRepo.updateAi(guildId, {
+        ...aiCfg,
+        activeCardId: matchedDiskCard.id,
+        activePresetId: aiCfg.activePresetId || DEFAULT_PACK_PRESET_ID,
+      });
+      return;
+    }
   }
 
   const isNonDefault =
+    aiCfg.preset === 'custom' ||
     aiCfg.personaName !== DEFAULT_AI_CONFIG.personaName ||
     aiCfg.identityPrompt !== DEFAULT_AI_CONFIG.identityPrompt ||
     aiCfg.soulPrompt !== DEFAULT_AI_CONFIG.soulPrompt;
   if (!isNonDefault) return;
 
   const cardId =
-    isValidPackId(aiCfg.preset) && aiCfg.preset !== 'custom'
+    isValidPackId(aiCfg.preset) &&
+    aiCfg.preset !== 'custom' &&
+    !deps.packStore.getCard(aiCfg.preset)
       ? aiCfg.preset
-      : slugifyPackId(`guild-${guildId.slice(-6)}`, 'migrated-card');
+      : slugifyPackId(`custom-guild-${guildId.slice(-6)}`, 'migrated-card');
   const saved = deps.packStore.saveCard({
     schemaVersion: 1,
     kind: 'card',
     id: cardId,
-    name: `${aiCfg.personaName}（存量自动迁入）`,
+    name:
+      aiCfg.preset === 'custom'
+        ? `✍️ ${aiCfg.personaName}（自定义人设）`
+        : `${aiCfg.personaName}（存量自动迁入）`,
     version: '1.0.0',
     personaName: aiCfg.personaName,
     identityPrompt: aiCfg.identityPrompt,

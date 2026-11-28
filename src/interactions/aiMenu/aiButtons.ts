@@ -77,7 +77,16 @@ export async function tryHandleAiMenuButton(
     }
     const cfg = ctx.repos.guildConfig.getOrCreate(guildId);
     if (parts[2] === 'admin_ai_persona') {
-      await interaction.showModal(buildAiPersonaModal(cfg.ai));
+      const resolved = ctx.services.ai.resolveEffectiveBinding(guildId);
+      await interaction.showModal(
+        buildAiPersonaModal({
+          ...cfg.ai,
+          personaName: resolved.card.personaName,
+          identityPrompt: resolved.card.identityPrompt,
+          soulPrompt: resolved.card.soulPrompt,
+          worldbook: resolved.card.worldbook,
+        }),
+      );
     } else if (parts[2] === 'admin_ai_params') {
       await interaction.showModal(
         buildAiParamsModal(

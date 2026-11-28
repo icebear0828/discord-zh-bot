@@ -68,6 +68,7 @@ import {
   resolveEffectiveBindingOp,
   rollbackCardOp,
   rollbackPresetOp,
+  saveCustomPersonaOp,
   setChannelOverrideOp,
   setGuildActiveCardOp,
   setGuildActivePresetOp,
@@ -302,6 +303,18 @@ export class AiService {
 
   migrateLegacyGuildConfigToPacks(guildId: string): void {
     migrateLegacyGuildConfigToPacksOp(this.deps, guildId);
+  }
+
+  saveCustomPersona(
+    guildId: string,
+    input: {
+      personaName: string;
+      identityPrompt: string;
+      soulPrompt: string;
+      worldbook: string;
+    },
+  ): { activeCardId: string | null } {
+    return saveCustomPersonaOp(this.deps, guildId, input);
   }
 
   resolveEffectiveBinding(guildId: string, channelId?: string): ResolvedAiBinding {
