@@ -1652,6 +1652,224 @@ describe('OC Selfie Library & NovelAI V5 Pipeline SOP Compiler', () => {
 
     db.close();
   });
+
+  it('supports partial legwear/barefoot swaps (换黑丝/白丝/网袜/光脚), garment-first selfie triggers, case-insensitive JK keywords, and multi-turn roleplay outfit continuity (#文爱区 regression)', async () => {
+    const beretOutfit: OcOutfitPreset = {
+      id: 'crimson_urban_beret',
+      name: '🏙️ 绯樱贝雷针织都市私服',
+      summaryZh: '斜戴酒红贝雷帽，米白露肩毛衣、黑皮百褶短裙与酒红过膝袜厚底短靴',
+      ootdEligible: true,
+      keywordsZh: ['都市私服', '贝雷帽', '毛衣私服'],
+      hairAccessory: 'crimson-burgundy wool beret tilted on head,',
+      costumePortrait: 'off-shoulder ivory-cream cable-knit sweater,',
+      costumeUpper:
+        'off-shoulder ivory-cream cable-knit sweater, high-waisted matte black leather pleated mini skirt, deep burgundy thighhigh socks,',
+      costumeFull:
+        'off-shoulder ivory-cream cable-knit sweater, high-waisted matte black leather pleated mini skirt, deep burgundy thighhigh socks, black lace-up platform ankle boots,',
+      silhouetteGuard: '-1.2::kimono, detached sleeves, black legwear::,',
+    };
+    const jkOutfit: OcOutfitPreset = {
+      id: 'crimson_jk_uniform',
+      name: '🎀 黑金赤结定制水手服',
+      summaryZh: '黑底金双线水手服与白及膝袜',
+      ootdEligible: true,
+      keywordsZh: ['水手服', 'JK', '校服'],
+      costumePortrait: 'jet-black serafuku top,',
+      costumeUpper: 'jet-black serafuku top, plaid pleated mini skirt, crisp white knee-high socks,',
+      costumeFull:
+        'jet-black serafuku top, plaid pleated mini skirt, crisp white knee-high socks, black leather loafers,',
+      silhouetteGuard: '-1.2::bare shoulders::,',
+    };
+    const testOc: AiOcProfile = {
+      ...SAMPLE_OC_ALPHA,
+      id: 'crimson_camellia',
+      costumeNsfw:
+        'five-petal gold blossom clasp at throat, completely nude torso and hips, topless, bare breasts, pink nipples, no bra, no panties, white thighhighs with small crimson ribbon bows at the front tops,',
+      outfits: [beretOutfit, jkOutfit],
+    };
+
+    // 1. Garment-first trigger phrases & follow-up outfit swaps must trigger hasExplicitSelfieRequest
+    const swapTriggers = [
+      '换黑丝给我看看',
+      '换上黑丝看看',
+      '穿白丝让我看一眼',
+      '换条网袜拍张照',
+      '换jk拍张照看看',
+      '脱掉袜子光脚给我看看',
+    ];
+    for (const phrase of swapTriggers) {
+      expect(hasExplicitSelfieRequest(phrase), `must trigger on: ${phrase}`).toBe(true);
+    }
+    // Follow-up short swap right after a photo turn triggers, but standalone chat without prior photo does NOT
+    expect(hasExplicitSelfieRequest('换黑丝', '发张自拍看看')).toBe(true);
+    expect(hasExplicitSelfieRequest('换成白丝', '看看照片')).toBe(true);
+    expect(hasExplicitSelfieRequest('好的（给你套上丝袜）')).toBe(false);
+
+    // 2. Single-turn "换黑丝给我看看" preserves beret + sweater + skirt, replaces burgundy socks with sheer black pantyhose, strips conflicting guard, and upgrades framing to full (2:3)
+    const blackTightsSpec = inferOcSelfieSpecFromTurn({
+      oc: testOc,
+      activeOutfit: beretOutfit,
+      userContent: '换黑丝给我看看',
+      assistantReply: '这就去把酒红袜子换下来，套上超薄黑丝拍给你看~',
+      allowNsfw: true,
+    });
+    expect(blackTightsSpec).not.toBeNull();
+    expect(blackTightsSpec?.framing).toBe('full');
+    const blackTightsCompiled = compileOcSelfiePrompt({
+      oc: testOc,
+      activeOutfit: beretOutfit,
+      spec: blackTightsSpec!,
+      userContent: '换黑丝给我看看',
+      allowNsfw: true,
+    });
+    const cap1 = blackTightsCompiled.charCaptions[0]?.char_caption ?? '';
+    expect(blackTightsCompiled.framing).toBe('full');
+    expect(blackTightsCompiled.aspectRatio).toBe('2:3');
+    expect(cap1).toContain('off-shoulder ivory-cream cable-knit sweater');
+    expect(cap1).toContain('sheer black pantyhose');
+    expect(cap1).not.toContain('burgundy thighhigh socks');
+    expect(blackTightsCompiled.prompt).not.toContain('black legwear');
+
+    // 3. Case-insensitive lowercase "jk" + combined legwear ("换jk配黑丝拍一张") swaps BOTH outfit and stockings!
+    const jkBlackSpec = inferOcSelfieSpecFromTurn({
+      oc: testOc,
+      activeOutfit: beretOutfit,
+      userContent: '换jk配黑丝拍一张',
+      assistantReply: '换好啦，看吧。',
+      allowNsfw: true,
+    });
+    const jkBlackCompiled = compileOcSelfiePrompt({
+      oc: testOc,
+      activeOutfit: beretOutfit,
+      spec: jkBlackSpec!,
+      userContent: '换jk配黑丝拍一张',
+      allowNsfw: true,
+    });
+    expect(jkBlackCompiled.outfitId).toBe('crimson_jk_uniform');
+    const capJk = jkBlackCompiled.charCaptions[0]?.char_caption ?? '';
+    expect(capJk).toContain('jet-black serafuku top');
+    expect(capJk).toContain('sheer black pantyhose');
+    expect(capJk).not.toContain('white knee-high socks');
+
+    // 4. Barefoot swap ("把黑丝脱掉光脚给我看看") removes both socks and boots
+    const barefootSpec = inferOcSelfieSpecFromTurn({
+      oc: testOc,
+      activeOutfit: beretOutfit,
+      userContent: '把袜子脱掉光脚给我看看',
+      assistantReply: '靴子和袜子都脱啦，给你看。',
+      allowNsfw: true,
+    });
+    const barefootCompiled = compileOcSelfiePrompt({
+      oc: testOc,
+      activeOutfit: beretOutfit,
+      spec: barefootSpec!,
+      userContent: '把袜子脱掉光脚给我看看',
+      allowNsfw: true,
+    });
+    const capBare = barefootCompiled.charCaptions[0]?.char_caption ?? '';
+    expect(capBare).toContain('barefoot');
+    expect(capBare).not.toContain('burgundy thighhigh socks');
+    expect(capBare).not.toContain('ankle boots');
+
+    // 5. Exact #文爱区 oc-selfie-266 multi-turn regression via AiService.generateReply:
+    // User roleplayed putting on stockings in earlier turns, then says "别急 看看照片" -> MUST compile sheer black pantyhose in full framing!
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-wenai-stockings-'));
+    tempDirs.push(tmpDir);
+    const packStore = new AiPackStore(tmpDir);
+    packStore.ensureInitialized();
+    fs.writeFileSync(
+      path.join(tmpDir, 'oc-presets.json'),
+      JSON.stringify({ schemaVersion: 2, profiles: [testOc] }),
+      'utf8',
+    );
+
+    const db = createDatabase(':memory:');
+    try {
+      const gRepo = new GuildConfigRepo(db);
+      const mRepo = new AiMemoryRepo(db);
+      const cfg = gRepo.getOrCreate('g_wenai');
+      gRepo.updateAi('g_wenai', {
+        ...cfg.ai,
+        selfie: {
+          ...cfg.ai.selfie,
+          enabled: true,
+          ocPreset: 'crimson_camellia',
+          outfitMode: 'crimson_urban_beret',
+          allowNsfw: true,
+        },
+      });
+      const llmClient = new LlmClient(
+        { baseUrl: 'https://llm.local/v1', apiKey: 'sk-test', model: 'demo-llm', timeoutMs: 5000 },
+        {
+          fetchFn: async () =>
+            new Response(
+              JSON.stringify({
+                model: 'demo-llm',
+                choices: [
+                  {
+                    message: {
+                      content:
+                        '这不就趁热乎拍给主人验收了嘛，刚被你亲手拉到大腿根的黑丝连褶子都没多一个呢，这次可是真真切切的超薄黑丝了~',
+                    },
+                  },
+                ],
+              }),
+              { status: 200, headers: { 'Content-Type': 'application/json' } },
+            ),
+        },
+      );
+      const aiSvc = new AiService(gRepo, mRepo, llmClient, fetch, packStore, () => true);
+      const baseTs = 1_700_000_000_000;
+      const replyRes = await aiSvc.generateReply(
+        {
+          guildId: 'g_wenai',
+          channelId: 'c_wenai',
+          userId: 'u_vip',
+          userName: '草莓布丁酱',
+          messageId: 'm_turn_4',
+          messageTimestamp: baseTs + 40_000,
+          userContent: '别急 看看照片',
+          channelWindow: [
+            {
+              id: 'm_turn_1',
+              authorId: 'bot1',
+              authorName: '白虎姬',
+              isBot: true,
+              content: '要不你把这双酒红袜子扒下来，再亲手帮我把那条超薄黑丝套上去好不好？',
+              createdTimestamp: baseTs + 10_000,
+            },
+            {
+              id: 'm_turn_2',
+              authorId: 'u_vip',
+              authorName: '草莓布丁酱',
+              isBot: false,
+              content: '好的（给你套上丝袜）',
+              createdTimestamp: baseTs + 20_000,
+            },
+            {
+              id: 'm_turn_3',
+              authorId: 'bot1',
+              authorName: '白虎姬',
+              isBot: true,
+              content: '这下总算如主人的愿换上黑丝啦~',
+              createdTimestamp: baseTs + 30_000,
+            },
+          ],
+        },
+        'bot1',
+      );
+      expect(replyRes.ok).toBe(true);
+      if (replyRes.ok) {
+        expect(replyRes.selfiePrompt).toBeDefined();
+        expect(replyRes.selfiePrompt?.framing).toBe('full');
+        const multiTurnCap = replyRes.selfiePrompt?.charCaptions[0]?.char_caption ?? '';
+        expect(multiTurnCap).toContain('sheer black pantyhose');
+        expect(multiTurnCap).not.toContain('burgundy thighhigh socks');
+      }
+    } finally {
+      db.close();
+    }
+  });
 });
 
 function sigOrOther(list: readonly OcOutfitPreset[], id: string): OcOutfitPreset {

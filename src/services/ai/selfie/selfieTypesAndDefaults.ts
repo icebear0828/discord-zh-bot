@@ -87,6 +87,9 @@ export interface SelfieSkillSpec {
   sentence?: string;
   animal?: string;
   outfit?: string;
+  legwear?: string;
+  footwear?: string;
+  barefoot?: boolean;
   partnerAction?: string;
   partnerOutfit?: string;
   duo?: boolean;
@@ -163,6 +166,7 @@ export const DEFAULT_CUSTOM_OC_WARDROBE: readonly OcOutfitPreset[] = [
     name: '🎀 经典开衫学院服',
     summaryZh: '白衬衫配深色丝带领结、修身针织开衫与百褶短裙乐福鞋',
     ootdEligible: true,
+    keywordsZh: ['学院服', '校服', '白衬衫', '百褶裙'],
     costumePortrait: DEFAULT_CUSTOM_OC_CONFIG.costumePortrait,
     costumeUpper: DEFAULT_CUSTOM_OC_CONFIG.costumeUpper,
     costumeFull: DEFAULT_CUSTOM_OC_CONFIG.costumeFull,
@@ -173,6 +177,7 @@ export const DEFAULT_CUSTOM_OC_WARDROBE: readonly OcOutfitPreset[] = [
     name: '🏙️ 假日针织贝雷私服',
     summaryZh: '软呢贝雷帽、米白露肩针织衫与高腰短裙短靴',
     ootdEligible: true,
+    keywordsZh: ['都市私服', '私服', '贝雷帽', '针织衫', '露肩毛衣'],
     hairAccessory: 'wool beret tilted slightly on head,',
     costumePortrait: 'cream off-shoulder ribbed knit sweater, delicate silver pendant necklace,',
     costumeUpper:
@@ -186,6 +191,7 @@ export const DEFAULT_CUSTOM_OC_WARDROBE: readonly OcOutfitPreset[] = [
     name: '🛋️ 暖绒宽松居家服',
     summaryZh: '柔顺披肩散发、丝质吊带配宽松针织长开衫与家居短裤',
     ootdEligible: true,
+    keywordsZh: ['居家服', '睡衣', '家居短裤', '慵懒开衫'],
     costumePortrait: 'soft pastel camisole top, oversized cream knit lounge cardigan,',
     costumeUpper:
       'soft pastel camisole top, oversized cream knit lounge cardigan, matching lounge shorts,',

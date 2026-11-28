@@ -32,7 +32,13 @@ import {
   type OcSelfieStyle,
   type SelfieSkillSpec,
 } from './selfieTypesAndDefaults.js';
-import { composeOcAppearanceForOutfit, findShotOutfitPreset } from './selfieOutfitsAndOotd.js';
+import {
+  applyGarmentModsToCostume,
+  composeOcAppearanceForOutfit,
+  filterConflictingGarmentGuardTerms,
+  findShotOutfitPreset,
+  inferGarmentModsFromText,
+} from './selfieOutfitsAndOotd.js';
 import {
   extractAnimalSpeciesWord,
   extractGuardInnerTerms,
@@ -193,7 +199,7 @@ export function compileOcSelfiePrompt(params: {
     ? normalizeOcCostumeTier(selectedPresetOutfit.costumeNsfw || oc.costumeNsfw || '') ||
       DEFAULT_COSTUME_NSFW
     : '';
-  const selectedCostumeLine = usingCustomOutfit
+  const baseCostumeLine = usingCustomOutfit
     ? ensureTrailingComma(sanitizedCustomOutfit)
     : effectiveNsfw
       ? nsfwPresetCostume
@@ -202,6 +208,15 @@ export function compileOcSelfiePrompt(params: {
         : framing === 'full' || framing === 'chibi'
           ? selectedPresetOutfit.costumeFull
           : selectedPresetOutfit.costumeUpper;
+  const effectiveGarmentMods =
+    spec.legwear || spec.footwear || spec.barefoot
+      ? {
+          ...(spec.legwear ? { legwear: sanitizeFieldTags(spec.legwear, true) } : {}),
+          ...(spec.footwear ? { footwear: sanitizeFieldTags(spec.footwear, true) } : {}),
+          ...(spec.barefoot ? { barefoot: true } : {}),
+        }
+      : inferGarmentModsFromText(userContent);
+  const selectedCostumeLine = applyGarmentModsToCostume(baseCostumeLine, effectiveGarmentMods);
   const hasExplicitToplessCue =
     effectiveNsfw && /\b(?:topless|bare\s+breasts?)\b/i.test(selectedCostumeLine);
 
@@ -345,12 +360,14 @@ export function compileOcSelfiePrompt(params: {
   const activeGuard = effectiveNsfw || usingCustomOutfit ? '' : selectedPresetOutfit.silhouetteGuard;
   if (activeGuard) {
     for (const block of extractGuardInnerTerms(activeGuard)) {
+      const filteredTerms = filterConflictingGarmentGuardTerms(block.terms, effectiveGarmentMods);
+      if (!filteredTerms) continue;
       if (block.weight === '-1.5') {
-        neg15Terms.push(block.terms);
+        neg15Terms.push(filteredTerms);
       } else if (block.weight === '-1.2') {
-        neg12Terms.push(block.terms);
+        neg12Terms.push(filteredTerms);
       } else {
-        negBlocks.push(`${block.weight}::${block.terms}::`);
+        negBlocks.push(`${block.weight}::${filteredTerms}::`);
       }
     }
   }

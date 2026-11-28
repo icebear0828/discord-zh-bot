@@ -7,6 +7,7 @@ import { compileOcSelfiePrompt } from './selfie/selfiePromptCompiler.js';
 import { extractSelfieSkillTag } from './selfie/selfieTagParser.js';
 import {
   buildOcChatStatusPrompt,
+  extractRecentSelfieContextTurns,
   hasExplicitSelfieRequest,
   inferOcSelfieSpecFromTurn,
 } from './selfie/selfieTurnInference.js';
@@ -273,6 +274,16 @@ export async function generateAiReplyOp(
       response.content,
     );
     const activePoses = deps.ocPresetStore?.listPoses() ?? listBuiltinOcPoses();
+    const recentSelfieTurns =
+      selfieSkillEnabled && !hasPromptInjectionTag
+        ? extractRecentSelfieContextTurns({
+            currentMessageId: input.messageId,
+            botId,
+            resetAt,
+            replyChain: input.replyChain,
+            channelWindow: input.channelWindow,
+          })
+        : [];
     const effectiveSelfieSpec =
       selfieSpec ??
       (selfieSkillEnabled && !hasPromptInjectionTag
@@ -282,6 +293,7 @@ export async function generateAiReplyOp(
             poses: activePoses,
             userContent: rawUserText,
             previousSameUserTurn: prevSameUserTurn,
+            recentContextTurns: recentSelfieTurns,
             assistantReply: cleanedText,
             allowNsfw: aiCfg.selfie.allowNsfw,
           })
