@@ -19,10 +19,11 @@ import {
   type AiRegexRule,
   type AiRegexRuleInput,
 } from '../aiRegex.js';
+import { sanitizeLlmInputText } from './aiInputSanitizer.js';
 import type { AiServiceRuntimeDeps } from './aiTypes.js';
 
 type MemConfigDeps = Pick<AiServiceRuntimeDeps, 'guildConfigRepo' | 'aiMemoryRepo'>;
-type ConfigOnlyDeps = Pick<AiServiceRuntimeDeps, 'guildConfigRepo'>;
+type ConfigOnlyDeps = Pick<AiServiceRuntimeDeps, 'guildConfigRepo' | 'inputSanitizerStore'>;
 type MemOnlyDeps = Pick<AiServiceRuntimeDeps, 'aiMemoryRepo'>;
 
 export function getChannelResetAtOp(deps: MemOnlyDeps, guildId: string, channelId: string): number {
@@ -172,6 +173,7 @@ export function resetRegexRulesOp(deps: ConfigOnlyDeps, guildId: string): AiRege
   deps.guildConfigRepo.updateAi(guildId, {
     ...cfg.ai,
     antiClichePromptEnabled: true,
+    inputSanitizerEnabled: true,
     regexRules: defaults,
   });
   return defaults;
@@ -187,6 +189,16 @@ export function toggleAntiClichePromptOp(deps: ConfigOnlyDeps, guildId: string):
   return next;
 }
 
+export function toggleInputSanitizerOp(deps: ConfigOnlyDeps, guildId: string): boolean {
+  const cfg = deps.guildConfigRepo.getOrCreate(guildId);
+  const next = cfg.ai.inputSanitizerEnabled === false;
+  deps.guildConfigRepo.updateAi(guildId, {
+    ...cfg.ai,
+    inputSanitizerEnabled: next,
+  });
+  return next;
+}
+
 export function previewRegexRulesOp(
   deps: ConfigOnlyDeps,
   guildId: string,
@@ -194,7 +206,11 @@ export function previewRegexRulesOp(
   stage: 'input' | 'output',
 ): { before: string; after: string; changed: boolean } {
   const cfg = deps.guildConfigRepo.getOrCreate(guildId);
-  const after = applyAiRegexRules(text, cfg.ai.regexRules, stage, {
+  const baseText =
+    stage === 'input' && cfg.ai.inputSanitizerEnabled !== false
+      ? sanitizeLlmInputText(text, { store: deps.inputSanitizerStore })
+      : text;
+  const after = applyAiRegexRules(baseText, cfg.ai.regexRules, stage, {
     preserveCodeBlocks: stage === 'output',
   });
   return {

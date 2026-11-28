@@ -5,6 +5,7 @@ import type { GuildConfigRepo } from '../../db/repositories/guildConfigRepo.js';
 import type { LlmChatMessage, LlmClient, LlmErrorCode } from '../llmClient.js';
 import type { AiPackStore } from './packs/packDiskStore.js';
 import type { CharacterCardPack, PresetPack } from './packs/packTypesAndBuiltins.js';
+import type { AiInputSanitizerStore } from './aiInputSanitizer.js';
 import type { AiOcPresetStore } from './selfie/selfiePresetStore.js';
 import type { CompiledOcSelfiePrompt } from './selfie/selfieTypesAndDefaults.js';
 
@@ -169,6 +170,7 @@ export interface AiServiceRuntimeDeps {
   fetchFn: typeof fetch;
   packStore?: AiPackStore;
   ocPresetStore?: AiOcPresetStore;
+  inputSanitizerStore?: AiInputSanitizerStore;
   isImageGenAvailable?: () => boolean;
   timezone: string;
   debugTraces: Map<string, ChannelDebugTrace>;

@@ -47,10 +47,12 @@ import {
   resetChannelContextOp,
   resetRegexRulesOp,
   toggleAntiClichePromptOp,
+  toggleInputSanitizerOp,
   toggleRegexRuleOp,
   updatePricingOp,
   upsertUserProfileOp,
 } from './ai/aiMemoryRegexProfileOps.js';
+import { AiInputSanitizerStore } from './ai/aiInputSanitizer.js';
 import {
   clearChannelOverrideOp,
   downloadTextAttachmentOp,
@@ -134,6 +136,7 @@ export {
 export class AiService {
   private readonly debugTraces = new Map<string, ChannelDebugTrace>();
   private readonly ocPresetStore?: AiOcPresetStore;
+  private readonly inputSanitizerStore?: AiInputSanitizerStore;
   private readonly deps: AiServiceRuntimeDeps;
 
   constructor(
@@ -149,6 +152,9 @@ export class AiService {
       this.ocPresetStore = new AiOcPresetStore(
         path.join(packStore.getBaseDir(), 'oc-presets.json'),
       );
+      this.inputSanitizerStore = new AiInputSanitizerStore(
+        path.join(packStore.getBaseDir(), 'input-sanitizer.json'),
+      );
     }
     this.deps = {
       guildConfigRepo: this.guildConfigRepo,
@@ -157,6 +163,7 @@ export class AiService {
       fetchFn: this.fetchFn,
       ...(this.packStore ? { packStore: this.packStore } : {}),
       ...(this.ocPresetStore ? { ocPresetStore: this.ocPresetStore } : {}),
+      ...(this.inputSanitizerStore ? { inputSanitizerStore: this.inputSanitizerStore } : {}),
       ...(this.isImageGenAvailable ? { isImageGenAvailable: this.isImageGenAvailable } : {}),
       timezone: this.timezone,
       debugTraces: this.debugTraces,
@@ -415,6 +422,10 @@ export class AiService {
 
   toggleAntiClichePrompt(guildId: string): boolean {
     return toggleAntiClichePromptOp(this.deps, guildId);
+  }
+
+  toggleInputSanitizer(guildId: string): boolean {
+    return toggleInputSanitizerOp(this.deps, guildId);
   }
 
   previewRegexRules(

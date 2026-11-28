@@ -3,11 +3,14 @@ import type { AiMemoryRecord, AiMemoryRepo } from '../../db/repositories/aiMemor
 import { buildDefaultGroupRulesLines, compileBreaklimitMessages } from '../aiCompiler.js';
 import { formatAiRelationLabel, type AiUserProfile } from '../aiProfiles.js';
 import {
-  applyAiRegexRules,
   GLOBAL_ANTI_CLICHE_PROMPT,
   normalizeDiscordCustomEmojis,
   type AiRegexRule,
 } from '../aiRegex.js';
+import {
+  normalizeChatInputSegment,
+  type AiInputSanitizerStore,
+} from './aiInputSanitizer.js';
 import { resolveActiveOcOutfit, resolveActiveOcProfile } from './selfie/selfieOutfitsAndOotd.js';
 import {
   buildOcChatStatusPrompt,
@@ -119,6 +122,8 @@ export function loadNormalizedScopeMemories(params: {
   memoryEnabled: boolean;
   maxMemoriesPerScope: number;
   effectiveRegexRules: ReadonlyArray<AiRegexRule>;
+  inputSanitizerEnabled?: boolean;
+  sanitizerStore?: AiInputSanitizerStore;
 }): {
   guildMemories: AiMemoryRecord[];
   channelMemories: AiMemoryRecord[];
@@ -132,6 +137,8 @@ export function loadNormalizedScopeMemories(params: {
     memoryEnabled,
     maxMemoriesPerScope,
     effectiveRegexRules,
+    inputSanitizerEnabled = true,
+    sanitizerStore,
   } = params;
   if (!memoryEnabled) {
     return { guildMemories: [], channelMemories: [], userMemories: [] };
@@ -140,7 +147,13 @@ export function loadNormalizedScopeMemories(params: {
   const normalizeMemories = (records: AiMemoryRecord[]): AiMemoryRecord[] =>
     records.map((m) => ({
       ...m,
-      content: applyAiRegexRules(m.content, effectiveRegexRules, 'input').trim() || m.content,
+      content:
+        normalizeChatInputSegment({
+          text: m.content,
+          inputSanitizerEnabled,
+          sanitizerStore,
+          regexRules: effectiveRegexRules,
+        }).trim() || m.content,
     }));
 
   return {
@@ -266,6 +279,7 @@ export function previewCompiledPromptOp(
     aiCfg.regexRules,
   );
 
+  const inputSanitizerEnabled = aiCfg.inputSanitizerEnabled !== false;
   const { guildMemories, channelMemories, userMemories } = loadNormalizedScopeMemories({
     aiMemoryRepo: deps.aiMemoryRepo,
     guildId,
@@ -274,18 +288,35 @@ export function previewCompiledPromptOp(
     memoryEnabled: aiCfg.memoryEnabled,
     maxMemoriesPerScope: aiCfg.maxMemoriesPerScope,
     effectiveRegexRules,
+    inputSanitizerEnabled,
+    sanitizerStore: deps.inputSanitizerStore,
   });
 
+  const cleanUserName = normalizeDiscordCustomEmojis(input.userName);
   const effectiveUserName =
-    applyAiRegexRules(
-      normalizeDiscordCustomEmojis(input.userName),
-      effectiveRegexRules,
-      'input',
-    ).trim() || normalizeDiscordCustomEmojis(input.userName);
+    normalizeChatInputSegment({
+      text: cleanUserName,
+      inputSanitizerEnabled,
+      sanitizerStore: deps.inputSanitizerStore,
+      regexRules: effectiveRegexRules,
+    }).trim() || cleanUserName;
+  const effectiveUserHandle = input.userHandle?.trim()
+    ? normalizeChatInputSegment({
+        text: normalizeDiscordCustomEmojis(input.userHandle.trim()),
+        inputSanitizerEnabled,
+        sanitizerStore: deps.inputSanitizerStore,
+        regexRules: effectiveRegexRules,
+      }).trim() || input.userHandle.trim()
+    : undefined;
 
   const rawUserText = normalizeDiscordCustomEmojis(input.userContent.trim()) || '你好';
   const normalizedUserText =
-    applyAiRegexRules(rawUserText, effectiveRegexRules, 'input').trim() || rawUserText;
+    normalizeChatInputSegment({
+      text: rawUserText,
+      inputSanitizerEnabled,
+      sanitizerStore: deps.inputSanitizerStore,
+      regexRules: effectiveRegexRules,
+    }).trim() || rawUserText;
 
   const profileByUserId = new Map<string, AiUserProfile>(
     aiCfg.userProfiles.map((p) => [p.userId, p]),
@@ -301,7 +332,7 @@ export function previewCompiledPromptOp(
 
   const speakerDesc = formatSpeakerHeaderDesc({
     currentUserName: effectiveUserName,
-    currentUserHandle: input.userHandle,
+    currentUserHandle: effectiveUserHandle,
     currentUserProfile,
     vipAliases,
   });

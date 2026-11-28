@@ -186,6 +186,7 @@ export interface AiConfig {
   inputPricePer1MUsd: number;
   outputPricePer1MUsd: number;
   antiClichePromptEnabled: boolean;
+  inputSanitizerEnabled: boolean;
   regexRules: AiRegexRule[];
   userProfiles: AiUserProfile[];
   selfie: AiSelfieConfig;
@@ -424,12 +425,10 @@ export const DEFAULT_AI_CONFIG: AiConfig = {
   inputPricePer1MUsd: 0,
   outputPricePer1MUsd: 0,
   antiClichePromptEnabled: true,
+  inputSanitizerEnabled: true,
   regexRules: cloneDefaultAiRegexRules(),
   userProfiles: [],
-  selfie: {
-    ...DEFAULT_AI_SELFIE_CONFIG,
-    customOc: { ...DEFAULT_CUSTOM_OC_CONFIG },
-  },
+  selfie: { ...DEFAULT_AI_SELFIE_CONFIG, customOc: { ...DEFAULT_CUSTOM_OC_CONFIG } },
   freeChatChannelIds: [],
   allowedChannelIds: [],
   ignoredChannelIds: [],

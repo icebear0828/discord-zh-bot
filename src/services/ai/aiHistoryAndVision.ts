@@ -1,11 +1,14 @@
 import type { AiConfig } from '../../config/defaults.js';
 import type { AiUserProfile } from '../aiProfiles.js';
 import {
-  applyAiRegexRules,
   normalizeDiscordCustomEmojis,
   type AiRegexRule,
 } from '../aiRegex.js';
 import type { LlmChatMessage, LlmContentPart, LlmImageUrlPart } from '../llmClient.js';
+import {
+  normalizeChatInputSegment,
+  type AiInputSanitizerStore,
+} from './aiInputSanitizer.js';
 import {
   formatAiMinuteTimestamp,
   isSafetyRefusalReply,
@@ -44,6 +47,8 @@ export function mergeConversationHistory(params: {
   maxMessages: number;
   timezone?: string;
   inputRegexRules?: ReadonlyArray<AiRegexRule>;
+  inputSanitizerEnabled?: boolean;
+  sanitizerStore?: AiInputSanitizerStore;
   userProfiles?: ReadonlyArray<AiUserProfile>;
 }): LlmChatMessage[] {
   const {
@@ -55,6 +60,8 @@ export function mergeConversationHistory(params: {
     maxMessages,
     timezone = 'Asia/Shanghai',
     inputRegexRules,
+    inputSanitizerEnabled = false,
+    sanitizerStore,
     userProfiles = [],
   } = params;
   if (maxMessages <= 0) return [];
@@ -114,10 +121,14 @@ export function mergeConversationHistory(params: {
 
   const normalizeName = (rawName: string): string => {
     const clean = normalizeDiscordCustomEmojis(rawName);
-    if (inputRegexRules && inputRegexRules.length > 0) {
-      return applyAiRegexRules(clean, inputRegexRules, 'input').trim() || clean;
-    }
-    return clean;
+    return (
+      normalizeChatInputSegment({
+        text: clean,
+        inputSanitizerEnabled,
+        sanitizerStore,
+        regexRules: inputRegexRules,
+      }).trim() || clean
+    );
   };
 
   // Coalesce consecutive non-bot messages into a single role:'user' block
@@ -164,10 +175,12 @@ export function mergeConversationHistory(params: {
       }
     }
 
-    const normalizedText =
-      inputRegexRules && inputRegexRules.length > 0
-        ? applyAiRegexRules(text, inputRegexRules, 'input')
-        : text;
+    const normalizedText = normalizeChatInputSegment({
+      text,
+      inputSanitizerEnabled,
+      sanitizerStore,
+      regexRules: inputRegexRules,
+    });
     pendingUserLines.push(`${tsPrefix}[${authorLabel}${replyClause}]: ${normalizedText}`);
   }
 
@@ -242,13 +255,31 @@ export async function prepareReplyTurnContext(params: {
   resetAt: number;
   timezone: string;
   effectiveRegexRules: ReadonlyArray<AiRegexRule>;
+  sanitizerStore?: AiInputSanitizerStore;
   fetchFn: typeof fetch;
 }): Promise<PreparedReplyTurnContext> {
-  const { input, aiCfg, botId, resetAt, timezone, effectiveRegexRules, fetchFn } = params;
+  const {
+    input,
+    aiCfg,
+    botId,
+    resetAt,
+    timezone,
+    effectiveRegexRules,
+    sanitizerStore,
+    fetchFn,
+  } = params;
+  const inputSanitizerEnabled = aiCfg.inputSanitizerEnabled !== false;
 
   const normalizeName = (rawName: string): string => {
     const clean = normalizeDiscordCustomEmojis(rawName);
-    return applyAiRegexRules(clean, effectiveRegexRules, 'input').trim() || clean;
+    return (
+      normalizeChatInputSegment({
+        text: clean,
+        inputSanitizerEnabled,
+        sanitizerStore,
+        regexRules: effectiveRegexRules,
+      }).trim() || clean
+    );
   };
 
   const profileByUserId = new Map<string, AiUserProfile>(
@@ -310,48 +341,42 @@ export async function prepareReplyTurnContext(params: {
   const rawUserText =
     normalizeDiscordCustomEmojis(input.userContent.trim()) ||
     (imageParts.length > 0 ? '请看看这张图片。' : '你好');
-  const normalizedUserText =
-    applyAiRegexRules(rawUserText, effectiveRegexRules, 'input').trim() || rawUserText;
+  const sanitizeSeg = (text: string): string =>
+    normalizeChatInputSegment({
+      text,
+      inputSanitizerEnabled,
+      sanitizerStore,
+      regexRules: effectiveRegexRules,
+    });
+  const normalizedUserText = sanitizeSeg(rawUserText).trim() || rawUserText;
   const effectiveUserName = normalizeName(input.userName);
+  const effectiveUserHandle = input.userHandle?.trim() ? normalizeName(input.userHandle.trim()) : undefined;
 
-  const scanTextsForProfiles: string[] = [
-    normalizedUserText.toLowerCase(),
-    effectiveUserName.toLowerCase(),
-  ];
-  if (input.userHandle?.trim()) {
-    scanTextsForProfiles.push(input.userHandle.trim().toLowerCase());
-  }
+  const scanTextsForProfiles: string[] = [normalizedUserText.toLowerCase(), effectiveUserName.toLowerCase()];
+  if (effectiveUserHandle) scanTextsForProfiles.push(effectiveUserHandle.toLowerCase());
   if (input.replyToAuthorName?.trim()) {
     scanTextsForProfiles.push(normalizeName(input.replyToAuthorName).toLowerCase());
   }
   for (const m of input.mentionedUsers ?? []) {
-    if (m.id !== botId) {
-      scanTextsForProfiles.push(normalizeName(m.name).toLowerCase());
-    }
+    if (m.id !== botId) scanTextsForProfiles.push(normalizeName(m.name).toLowerCase());
   }
   for (const ctxMsg of [...(input.replyChain ?? []), ...(input.channelWindow ?? [])]) {
     if (ctxMsg.id === input.messageId || ctxMsg.createdTimestamp <= resetAt) continue;
     const isBotCtx = ctxMsg.isBot || ctxMsg.authorId === botId;
     if (isBotCtx && ctxMsg.hasEmbeds) continue;
-    const strippedCtx = stripBotMention(ctxMsg.content, botId);
-    const emojiNormCtx = normalizeDiscordCustomEmojis(strippedCtx);
+    const emojiNormCtx = normalizeDiscordCustomEmojis(stripBotMention(ctxMsg.content, botId));
     const effectiveCtxText = isBotCtx ? sanitizeBotContextContent(emojiNormCtx) : emojiNormCtx;
     if (isBotCtx && !effectiveCtxText) continue;
-    if (ctxMsg.authorName.trim()) {
-      scanTextsForProfiles.push(normalizeName(ctxMsg.authorName).toLowerCase());
-    }
-    if (effectiveCtxText && effectiveCtxText.trim()) {
-      const normCtx = applyAiRegexRules(effectiveCtxText, effectiveRegexRules, 'input');
-      if (normCtx.trim()) {
-        scanTextsForProfiles.push(normCtx.toLowerCase());
-      }
+    if (ctxMsg.authorName.trim()) scanTextsForProfiles.push(normalizeName(ctxMsg.authorName).toLowerCase());
+    if (effectiveCtxText?.trim()) {
+      const normCtx = isBotCtx ? effectiveCtxText : sanitizeSeg(effectiveCtxText);
+      if (normCtx.trim()) scanTextsForProfiles.push(normCtx.toLowerCase());
     }
   }
 
   for (const p of aiCfg.userProfiles) {
     const aliasLower = p.alias.trim().toLowerCase();
-    if (aliasLower.length < 2) continue;
-    if (scanTextsForProfiles.some((txt) => txt.includes(aliasLower))) {
+    if (aliasLower.length >= 2 && scanTextsForProfiles.some((txt) => txt.includes(aliasLower))) {
       activeProfileIds.add(p.userId);
     }
   }
@@ -360,7 +385,7 @@ export async function prepareReplyTurnContext(params: {
   const currentUserProfile = profileByUserId.get(input.userId);
   const speakerDesc = formatSpeakerHeaderDesc({
     currentUserName: effectiveUserName,
-    currentUserHandle: input.userHandle,
+    currentUserHandle: effectiveUserHandle,
     currentUserProfile,
     vipAliases,
   });
@@ -374,6 +399,8 @@ export async function prepareReplyTurnContext(params: {
     maxMessages: aiCfg.contextWindowMessages,
     timezone,
     inputRegexRules: effectiveRegexRules,
+    inputSanitizerEnabled,
+    sanitizerStore,
     userProfiles: aiCfg.userProfiles,
   });
 

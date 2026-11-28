@@ -386,6 +386,10 @@ export class GuildConfigRepo {
               typeof rawAiObj['antiClichePromptEnabled'] === 'boolean'
                 ? rawAiObj['antiClichePromptEnabled']
                 : true,
+            inputSanitizerEnabled:
+              typeof rawAiObj['inputSanitizerEnabled'] === 'boolean'
+                ? rawAiObj['inputSanitizerEnabled']
+                : true,
             regexRules: parsedRules !== undefined ? parsedRules : cloneDefaultAiRegexRules(),
             userProfiles: parsedProfiles,
             selfie: sanitizeStoredAiSelfieConfig(rawAiObj['selfie']),

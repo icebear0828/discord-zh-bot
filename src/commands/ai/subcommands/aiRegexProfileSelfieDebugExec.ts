@@ -35,8 +35,10 @@ export async function executeAiRegexGroup(
   }
 
   if (sub === 'list') {
-    const rules = ctx.repos.guildConfig.getOrCreate(guildId).ai.regexRules;
-    const antiCliche = ctx.repos.guildConfig.getOrCreate(guildId).ai.antiClichePromptEnabled;
+    const ai = ctx.repos.guildConfig.getOrCreate(guildId).ai;
+    const rules = ai.regexRules;
+    const antiCliche = ai.antiClichePromptEnabled;
+    const inputSanitizer = ai.inputSanitizerEnabled !== false;
     const lines =
       rules.length > 0
         ? rules.map((r) => {
@@ -51,7 +53,11 @@ export async function executeAiRegexGroup(
         createInfoEmbed(
           `🔧 AI 正则规则列表（共 ${rules.length} 条）`,
           truncateText(
-            [`🧹 反八股系统提示词：${antiCliche ? '✅ 开启' : '⛔ 关闭'}`, '', ...lines].join('\n'),
+            [
+              `🛡️ 输入敏感词软化：${inputSanitizer ? '✅ 开启' : '⛔ 关闭'} ｜ 🧹 反八股系统提示词：${antiCliche ? '✅ 开启' : '⛔ 关闭'}`,
+              '',
+              ...lines,
+            ].join('\n'),
             4096,
           ),
         ),

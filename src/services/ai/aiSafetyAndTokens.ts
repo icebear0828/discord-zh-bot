@@ -24,6 +24,69 @@ export function isSafetyRefusalReply(text: string): boolean {
   return SAFETY_REFUSAL_PATTERNS.some((pattern) => pattern.test(trimmed));
 }
 
+const MERGED_HISTORY_PREFIX_RE = /^【刚才频道对话】\n[\s\S]*?\n\n【当前对你说话】\n/;
+
+function stripMergedHistoryFromUserMsg(msg: LlmChatMessage): LlmChatMessage {
+  if (typeof msg.content === 'string') {
+    const stripped = msg.content.replace(MERGED_HISTORY_PREFIX_RE, '');
+    return stripped === msg.content ? msg : { role: msg.role, content: stripped };
+  }
+  return {
+    role: msg.role,
+    content: msg.content.map((part) =>
+      part.type === 'text'
+        ? { type: 'text', text: part.text.replace(MERGED_HISTORY_PREFIX_RE, '') }
+        : part,
+    ),
+  };
+}
+
+export function buildRefusalSoftLandingMessages(
+  messages: readonly LlmChatMessage[],
+  personaName: string,
+  options?: { dropPriorTurns?: boolean },
+): LlmChatMessage[] {
+  const safePersona = personaName.trim() || '角色';
+  const steeringMsg: LlmChatMessage = {
+    role: 'system',
+    content: `[合规回复指引：请在完全合规、非露骨的日常情感互动范围内回复。保持「${safePersona}」鲜活娇嗔、欲擒故纵的人设语气，用撒娇拿乔、轻拍逗弄、拥抱或转移注意力的方式侧面留白自然接话（例如调侃对方太心急、让对方先哄自己开心），不涉及任何性行为或隐私部位描写，直接输出角色台词。]`,
+  };
+
+  let base: LlmChatMessage[] = [...messages];
+  const trailing = base.length > 0 ? base[base.length - 1] : undefined;
+  const trailingPrefill = trailing && trailing.role === 'assistant' ? trailing : undefined;
+  if (trailingPrefill) {
+    base = base.slice(0, -1);
+  }
+
+  if (options?.dropPriorTurns) {
+    let lastUserIdx = -1;
+    for (let i = base.length - 1; i >= 0; i--) {
+      if (base[i]?.role === 'user') {
+        lastUserIdx = i;
+        break;
+      }
+    }
+    if (lastUserIdx >= 0) {
+      let firstChatIdx = 0;
+      while (firstChatIdx < lastUserIdx && base[firstChatIdx]?.role === 'system') {
+        firstChatIdx++;
+      }
+      const lastUserMsg = base[lastUserIdx];
+      if (lastUserMsg) {
+        const cleanedUserMsg = stripMergedHistoryFromUserMsg(lastUserMsg);
+        base = [
+          ...base.slice(0, firstChatIdx),
+          cleanedUserMsg,
+          ...base.slice(lastUserIdx + 1),
+        ];
+      }
+    }
+  }
+
+  return trailingPrefill ? [...base, steeringMsg, trailingPrefill] : [...base, steeringMsg];
+}
+
 export function containsPromptInjectionMemoryTag(text: string): boolean {
   return /\[(MEMORY|VOICE|IMAGE|USAGE|SELFIE|OC_IMAGE):/i.test(text);
 }

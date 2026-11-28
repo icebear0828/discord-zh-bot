@@ -110,6 +110,7 @@ export async function tryHandleAiMenuButton(
       'ai_clear_allowed',
       'ai_reset_config',
       'ai_toggle_cliche_prompt',
+      'ai_toggle_input_sanitizer',
       'ai_regex_reset',
       'ai_clear_usage',
     ]);
@@ -284,6 +285,7 @@ export async function tryHandleAiMenuButton(
       ctx.repos.guildConfig.updateAi(guildId, {
         ...DEFAULT_AI_CONFIG,
         antiClichePromptEnabled: true,
+        inputSanitizerEnabled: true,
         regexRules: cloneDefaultAiRegexRules(),
         userProfiles: cfg.ai.userProfiles,
         selfie: {
@@ -303,6 +305,23 @@ export async function tryHandleAiMenuButton(
           {
             type: 'success',
             text: '已将 AI 人设、正则与频道配置恢复为默认设置（人物档案与历史记忆库已保留）。',
+          },
+        ),
+      );
+      return true;
+    }
+
+    if (action === 'ai_toggle_input_sanitizer') {
+      const next = ctx.services.ai.toggleInputSanitizer(guildId);
+      await interaction.update(
+        buildMenuMessage(
+          ctx,
+          guildId,
+          actor,
+          { page: 'admin_ai', tab: 'regex', regexPage: 1 },
+          {
+            type: 'success',
+            text: `AI 输入敏感词软化已切换为：**${next ? '开启' : '关闭'}**（仅作用于喂给聊天模型的输入，不影响 AI 输出与生图原词）。`,
           },
         ),
       );

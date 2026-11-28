@@ -1,5 +1,5 @@
 import { compileBreaklimitMessages, stripCotBlocks } from '../aiCompiler.js';
-import { applyAiRegexRules } from '../aiRegex.js';
+import { normalizeChatInputSegment } from './aiInputSanitizer.js';
 import { LlmError, type LlmChatResponse, type LlmErrorCode } from '../llmClient.js';
 import { resolveActiveOcOutfit, resolveActiveOcProfile } from './selfie/selfieOutfitsAndOotd.js';
 import { listBuiltinOcPoses } from './selfie/selfiePresetStore.js';
@@ -13,6 +13,7 @@ import {
 import { prepareReplyTurnContext } from './aiHistoryAndVision.js';
 import { resolveEffectiveBindingOp } from './aiPackBindingOps.js';
 import {
+  buildRefusalSoftLandingMessages,
   computeReplyUsage,
   containsPromptInjectionMemoryTag,
   isSafetyRefusalReply,
@@ -79,6 +80,7 @@ export async function generateAiReplyOp(
     aiCfg.regexRules,
   );
 
+  const inputSanitizerEnabled = aiCfg.inputSanitizerEnabled !== false;
   const { guildMemories, channelMemories, userMemories } = loadNormalizedScopeMemories({
     aiMemoryRepo: deps.aiMemoryRepo,
     guildId: input.guildId,
@@ -87,6 +89,8 @@ export async function generateAiReplyOp(
     memoryEnabled: aiCfg.memoryEnabled,
     maxMemoriesPerScope: aiCfg.maxMemoriesPerScope,
     effectiveRegexRules,
+    inputSanitizerEnabled,
+    sanitizerStore: deps.inputSanitizerStore,
   });
 
   const resetAt = deps.aiMemoryRepo.getChannelResetAt(input.guildId, input.channelId);
@@ -97,6 +101,7 @@ export async function generateAiReplyOp(
     resetAt,
     timezone: deps.timezone,
     effectiveRegexRules,
+    sanitizerStore: deps.inputSanitizerStore,
     fetchFn: deps.fetchFn,
   });
   const { rawUserText } = turnCtx;
@@ -196,8 +201,13 @@ export async function generateAiReplyOp(
   let fallbackStarted = false;
   let fallbackUsed = false;
   try {
+    const softLandingMessages = buildRefusalSoftLandingMessages(
+      messages,
+      resolved.card.personaName,
+    );
     const baseRequest = {
       messages,
+      refusalRetryMessages: softLandingMessages,
       temperature: effectiveTemperature,
       maxTokens: effectiveMaxTokens,
       ...(resolved.preset.sampling.topP !== undefined
@@ -236,8 +246,17 @@ export async function generateAiReplyOp(
         `[ai:fallback] from=${effectiveModel} to=${fallbackModel} reason=${primaryCode} primaryAttempts=${primaryAttempts} guild=${input.guildId} channel=${input.channelId}`,
       );
       fallbackStarted = true;
+      const fallbackMessages =
+        primaryCode === 'content_refusal'
+          ? buildRefusalSoftLandingMessages(messages, resolved.card.personaName, {
+              dropPriorTurns: true,
+            })
+          : messages;
       const fallbackResponse = await deps.llmClient.chat({
         ...baseRequest,
+        messages: fallbackMessages,
+        refusalRetryMessages:
+          primaryCode === 'content_refusal' ? fallbackMessages : softLandingMessages,
         model: fallbackModel,
         maxRetries: 3,
         maxRefusalRetries: 2,
@@ -308,7 +327,12 @@ export async function generateAiReplyOp(
           continue;
         }
         const normalizedMem =
-          applyAiRegexRules(tag.content, effectiveRegexRules, 'input').trim() || tag.content;
+          normalizeChatInputSegment({
+            text: tag.content,
+            inputSanitizerEnabled,
+            sanitizerStore: deps.inputSanitizerStore,
+            regexRules: effectiveRegexRules,
+          }).trim() || tag.content;
         try {
           deps.aiMemoryRepo.addMemory({
             guildId: input.guildId,

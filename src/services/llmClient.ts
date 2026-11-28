@@ -38,6 +38,7 @@ export interface LlmChatRequest {
   validateContent?: (rawContent: string) => boolean;
   isRefusalContent?: (rawContent: string) => boolean;
   maxRefusalRetries?: number;
+  refusalRetryMessages?: LlmChatMessage[];
 }
 
 export interface LlmUsage {
@@ -617,7 +618,10 @@ export class LlmClient {
           body: JSON.stringify({
             model,
             stream: useStream,
-            messages: request.messages,
+            messages:
+              refusalRetriesUsed > 0 && request.refusalRetryMessages
+                ? request.refusalRetryMessages
+                : request.messages,
             ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
             ...(request.maxTokens !== undefined ? { max_tokens: request.maxTokens } : {}),
             ...(request.topP !== undefined ? { top_p: request.topP } : {}),

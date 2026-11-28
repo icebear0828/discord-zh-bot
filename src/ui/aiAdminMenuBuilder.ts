@@ -375,9 +375,10 @@ export function buildAdminAiView(
           })
         : ['当前没有正则替换规则，可点击下方「➕ 新增正则规则」或「♻️ 恢复默认规则」。'];
 
+    const sanitizerOn = ai.inputSanitizerEnabled !== false;
     const description = [
-      `🧹 **反八股系统提示词**：${ai.antiClichePromptEnabled ? '✅ 已开启' : '⛔ 已关闭'} ｜ **生效规则**：**${enabledRegexCount}/${ai.regexRules.length}** 条（上限 ${MAX_AI_REGEX_RULES} 条）`,
-      `📌 **说明**：\`input\`/\`both\` 在发送给 AI 前归一化昵称、@提及、历史消息与记忆；\`output\`/\`both\` 在 AI 回复前清洗八股与代称（自动跳过 \`\`\`代码块\`\`\`）。`,
+      `🛡️ **输入敏感词软化**：${sanitizerOn ? '✅ 已开启' : '⛔ 已关闭'} ｜ 🧹 **反八股提示词**：${ai.antiClichePromptEnabled ? '✅ 已开启' : '⛔ 已关闭'} ｜ **生效规则**：**${enabledRegexCount}/${ai.regexRules.length}** 条（上限 ${MAX_AI_REGEX_RULES} 条）`,
+      `📌 **说明**：输入敏感词软化仅改写喂给聊天模型的输入（不改 AI 回复输出，不影响生图原词）；\`input\`/\`both\` 正则在发送给 AI 前归一化昵称、历史与记忆；\`output\`/\`both\` 在 AI 回复前清洗八股（自动跳过 \`\`\`代码块\`\`\`）。`,
       '',
       ...rulesLines,
     ].join('\n');
@@ -428,6 +429,11 @@ export function buildAdminAiView(
     components.push(
       buttonRow(
         makeButton('menu:modal:admin_ai_regex_add', '➕ 新增正则规则', ButtonStyle.Primary),
+        makeButton(
+          'menu:admin:ai_toggle_input_sanitizer',
+          `🛡️ 输入软化: ${sanitizerOn ? '开' : '关'}`,
+          sanitizerOn ? ButtonStyle.Success : ButtonStyle.Secondary,
+        ),
         makeButton(
           'menu:admin:ai_toggle_cliche_prompt',
           `🧹 反八股提示词: ${ai.antiClichePromptEnabled ? '开' : '关'}`,
