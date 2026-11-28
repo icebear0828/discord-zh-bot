@@ -9,7 +9,6 @@ import { AiMemoryRepo } from '../../src/db/repositories/aiMemoryRepo.js';
 import { GuildConfigRepo } from '../../src/db/repositories/guildConfigRepo.js';
 import {
   AiService,
-  buildSystemPrompt,
   cleanAiOutput,
   extractMemoryTags,
   formatAiMinuteTimestamp,
@@ -602,14 +601,21 @@ describe('aiService helpers & AiMemoryRepo', () => {
     expect(DEFAULT_AI_CONFIG.worldbook.length).toBeGreaterThan(0);
     expect(DEFAULT_AI_CONFIG.worldbook.length).toBeLessThanOrEqual(1000);
 
-    const prompt = buildSystemPrompt({
-      aiCfg: DEFAULT_AI_CONFIG,
-      guildMemories: [],
-      channelMemories: [],
-      userMemories: [],
-      currentUserName: '冰熊',
-      currentUserHandle: 'icebear',
+    const tmpDb = createDatabase(':memory:');
+    const previewSvc = new AiService(
+      new GuildConfigRepo(tmpDb),
+      new AiMemoryRepo(tmpDb),
+      new LlmClient(undefined),
+    );
+    const preview = previewSvc.previewCompiledPrompt('g_preview', {
+      channelId: 'c1',
+      userId: 'u1',
+      userName: '冰熊',
+      userHandle: 'icebear',
+      userContent: '你好',
     });
+    const prompt = String(preview.messages[0]?.content ?? '');
+    tmpDb.close();
 
     expect(prompt).toContain('冰熊（账号：@icebear）');
     expect(prompt).toContain('严禁在开头加');
@@ -732,13 +738,13 @@ describe('aiService helpers & AiMemoryRepo', () => {
 
     // Toggle anti-cliche prompt off
     expect(aiService.toggleAntiClichePrompt('g1')).toBe(false);
-    const promptNoCliche = buildSystemPrompt({
-      aiCfg: guildConfigRepo.getOrCreate('g1').ai,
-      guildMemories: [],
-      channelMemories: [],
-      userMemories: [],
-      currentUserName: '黑屌王',
+    const previewNoCliche = aiService.previewCompiledPrompt('g1', {
+      channelId: 'c1',
+      userId: 'u_vip',
+      userName: '黑屌王',
+      userContent: '测试',
     });
+    const promptNoCliche = String(previewNoCliche.messages[0]?.content ?? '');
     expect(promptNoCliche).not.toContain('去 AI 味与反八股');
 
     db.close();

@@ -24,7 +24,6 @@ import { handleMessageCreate, resetAiRuntimeGuards } from '../../src/events/mess
 import {
   AiOcPresetStore,
   buildOcChatStatusPrompt,
-  buildOcSelfieSkillPrompt,
   compileOcSelfiePrompt,
   DEFAULT_AI_SELFIE_CONFIG,
   extractSelfieSkillTag,
@@ -945,15 +944,15 @@ describe('OC Selfie Library & NovelAI V5 Pipeline SOP Compiler', () => {
     });
     expect(lockedBunny.id).toBe('secret_bunny');
 
-    // System prompt reflects today's active OOTD summary & compact pose/outfit protocol
-    const skillPrompt = buildOcSelfieSkillPrompt({
+    // System prompt reflects today's active OOTD summary in lightweight Chinese without leaking raw English tags
+    const statusPrompt = buildOcChatStatusPrompt({
       oc: richOc,
       activeOutfit: ootd0,
-      allowNsfw: true,
+      photoRequested: true,
     });
-    expect(skillPrompt).toContain(ootd0.summaryZh);
-    expect(skillPrompt).toContain('secret_bunny');
-    expect(skillPrompt.length).toBeLessThan(2600);
+    expect(statusPrompt).toContain(ootd0.summaryZh);
+    expect(statusPrompt).not.toContain('secret_bunny');
+    expect(statusPrompt).not.toContain('[SELFIE:');
 
     // Per-shot chat request for urban_beret swaps hairAccessory (drops gold suzu bell!) & uses urban_beret guard,
     // without mutating richOc or guild OOTD!
@@ -1147,16 +1146,13 @@ describe('OC Selfie Library & NovelAI V5 Pipeline SOP Compiler', () => {
       'Character 2: boy, faceless male, sitting beside girl, arm draped gently around her shoulder, mutual#shoulder_rest,',
     );
 
-    // 3. Skill prompt documents custom override fields when allowNsfw is true
-    const skillPrompt = buildOcSelfieSkillPrompt({
+    // 3. Chat status prompt stays free of legacy JSON tag overrides
+    const statusPrompt = buildOcChatStatusPrompt({
       oc: SAMPLE_OC_ALPHA,
-      allowNsfw: true,
+      photoRequested: true,
     });
-    expect(skillPrompt).toContain('"outfit"');
-    expect(skillPrompt).toContain('"action"');
-    expect(skillPrompt).toContain('"sentence"');
-    expect(skillPrompt).toContain('"partnerOutfit"');
-    expect(skillPrompt).toContain('"partnerAction"');
+    expect(statusPrompt).not.toContain('"outfit"');
+    expect(statusPrompt).not.toContain('"partnerAction"');
   });
 
   it('reclassifies yoga/gymnastics poses full_sexy_p066..p080 as spicy tier and supports broadened NSFW intent + intentText window', () => {
@@ -1224,18 +1220,15 @@ describe('OC Selfie Library & NovelAI V5 Pipeline SOP Compiler', () => {
   });
 
   it('overrides modest chat-LLM outfit cover-ups on explicit undress requests, provides DEFAULT_COSTUME_NSFW fallback, injects anti-clothing negative guards, and excludes chest-covering poses from nsfw tier', () => {
-    // 1. Skill prompt instructs omitting "outfit" when nsfw:true rather than suggesting bathrobes/towels
-    const skillPrompt = buildOcSelfieSkillPrompt({
+    // 1. Chat status prompt stays completely free of bathrobe/towel or explicit classifier triggers
+    const statusPrompt = buildOcChatStatusPrompt({
       oc: SAMPLE_OC_ALPHA,
-      allowNsfw: true,
+      photoRequested: true,
     });
-    expect(skillPrompt).not.toContain('浴巾');
-    expect(skillPrompt).not.toContain('睡袍');
-    expect(skillPrompt).not.toContain('轻解衣衫');
-    expect(skillPrompt).not.toContain('无遮挡褪衣');
-    expect(skillPrompt).not.toContain('遮胸内衣');
-    expect(skillPrompt).not.toContain('脱衣内容');
-    expect(skillPrompt).toContain('省略 `"outfit"`');
+    expect(statusPrompt).not.toContain('浴巾');
+    expect(statusPrompt).not.toContain('睡袍');
+    expect(statusPrompt).not.toContain('无遮挡褪衣');
+    expect(statusPrompt).not.toContain('遮胸内衣');
 
     // 2. Chest-shielding/covering poses are reclassified to 'spicy' so 'nsfw' tier stays unobstructed
     const poses = listBuiltinOcPoses();
@@ -1361,13 +1354,13 @@ describe('OC Selfie Library & NovelAI V5 Pipeline SOP Compiler', () => {
     expect(rotatedFramings.has('full')).toBe(true);
     expect(rotatedPoseIds.some((id) => id.startsWith('full_sexy_'))).toBe(true);
 
-    // 4. Skill prompt guides LLM to pair full-body clusters (nsfw_open, spicy_curve, duo_intimate, sit_girl, squat_kneel, lie_casual) with framing:"full"
-    const skillPrompt = buildOcSelfieSkillPrompt({
+    // 4. Chat status prompt delegates framing selection entirely to deterministic compiler
+    const statusPrompt2 = buildOcChatStatusPrompt({
       oc: SAMPLE_OC_ALPHA,
-      allowNsfw: true,
+      photoRequested: false,
     });
-    expect(skillPrompt).toContain('"framing":"full"');
-    expect(skillPrompt).toContain('nsfw_open');
+    expect(statusPrompt2).not.toContain('"framing"');
+    expect(statusPrompt2).not.toContain('nsfw_open');
   });
 
   it('decouples chat prompt from image tags (聊图分离) and deterministically compiles OC selfies without [SELFIE:] LLM output', async () => {

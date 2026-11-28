@@ -76,7 +76,6 @@ import {
   stripBotMention,
 } from '../../src/services/ai/aiTextAndMentions.js';
 import {
-  buildSystemPrompt,
   extractVipAliases,
   findCollidingVipAlias,
   formatSpeakerLabel,
@@ -297,7 +296,6 @@ describe('aiService split modules & facade compatibility', () => {
     expect(aiServiceFacade.findCollidingVipAlias).toBe(findCollidingVipAlias);
     expect(aiServiceFacade.extractVipAliases).toBe(extractVipAliases);
     expect(aiServiceFacade.formatSpeakerLabel).toBe(formatSpeakerLabel);
-    expect(aiServiceFacade.buildSystemPrompt).toBe(buildSystemPrompt);
     expect(aiServiceFacade.mergeConversationHistory).toBe(mergeConversationHistory);
     expect(aiServiceFacade.loadImageParts).toBe(loadImageParts);
   });

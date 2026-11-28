@@ -1,4 +1,8 @@
-import { DEFAULT_AI_CONFIG, type AiChannelOverride } from '../../config/defaults.js';
+import {
+  DEFAULT_AI_CONFIG,
+  type AiChannelOverride,
+  type AiPersonaPresetKey,
+} from '../../config/defaults.js';
 import {
   importCardFromUnknownJson,
   importPresetFromUnknownJson,
@@ -224,9 +228,16 @@ export function setGuildActiveCardOp(
     return { ok: false, error: `找不到编号为 \`${trimmed}\` 的角色卡。` };
   }
   const cfg = deps.guildConfigRepo.getOrCreate(guildId);
-  // Mirror core persona fields into legacy AiConfig columns so code rollbacks remain 100% seamless
+  const nextPreset: AiPersonaPresetKey =
+    found.id === 'community' ||
+    found.id === 'roast' ||
+    found.id === 'assistant' ||
+    found.id === 'beauty'
+      ? found.id
+      : 'custom';
   deps.guildConfigRepo.updateAi(guildId, {
     ...cfg.ai,
+    preset: nextPreset,
     activeCardId: found.id,
     personaName: found.personaName,
     identityPrompt: found.identityPrompt,
@@ -350,14 +361,7 @@ export function migrateLegacyGuildConfigToPacksOp(
   if (!deps.packStore) return;
   const cfg = deps.guildConfigRepo.getOrCreate(guildId);
   const aiCfg = cfg.ai;
-  const currentBoundCard = aiCfg.activeCardId ? deps.packStore.getCard(aiCfg.activeCardId) : null;
-  const isClobberedCustomConfig =
-    aiCfg.preset === 'custom' &&
-    currentBoundCard !== null &&
-    !currentBoundCard.id.startsWith('custom-guild-') &&
-    (currentBoundCard.identityPrompt.trim() !== aiCfg.identityPrompt.trim() ||
-      currentBoundCard.soulPrompt.trim() !== aiCfg.soulPrompt.trim());
-  if (currentBoundCard && !isClobberedCustomConfig) {
+  if (aiCfg.activeCardId && deps.packStore.getCard(aiCfg.activeCardId)) {
     return;
   }
 

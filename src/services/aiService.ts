@@ -123,7 +123,6 @@ export {
 } from './ai/aiTextAndMentions.js';
 
 export {
-  buildSystemPrompt,
   extractVipAliases,
   findCollidingVipAlias,
   formatSpeakerLabel,

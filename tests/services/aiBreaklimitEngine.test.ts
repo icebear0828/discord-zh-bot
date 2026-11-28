@@ -13,10 +13,10 @@ import {
   type PresetPack,
 } from '../../src/services/aiPackStore.js';
 import { stripCotBlocks } from '../../src/services/aiCompiler.js';
-import { AiService, buildSystemPrompt } from '../../src/services/aiService.js';
+import { AiService } from '../../src/services/aiService.js';
 import { LlmClient } from '../../src/services/llmClient.js';
 
-describe('AI Breaklimit Compilation Engine, Byte-for-Byte Legacy Parity & Channel Overrides', () => {
+describe('AI Breaklimit Compilation Engine, Default Preset Structure & Channel Overrides', () => {
   let tmpDir = '';
 
   beforeEach(() => {
@@ -29,7 +29,7 @@ describe('AI Breaklimit Compilation Engine, Byte-for-Byte Legacy Parity & Channe
     }
   });
 
-  it('guarantees 100% byte-for-byte parity with legacy buildSystemPrompt when using default preset', async () => {
+  it('compiles all canonical sections (identity, soul, timestamped group rules, anti-cliche, worldbook, profiles, memories) when using default preset', async () => {
     const db = createDatabase(':memory:');
     const guildConfigRepo = new GuildConfigRepo(db);
     const aiMemoryRepo = new AiMemoryRepo(db);
@@ -82,19 +82,6 @@ describe('AI Breaklimit Compilation Engine, Byte-for-Byte Legacy Parity & Channe
       createdBy: 'admin',
     });
 
-    const updatedCfg = guildConfigRepo.getOrCreate('g1');
-    const guildMemories = aiMemoryRepo.listMemoriesChronological('g1', 'guild', 'g1', 30);
-    const expectedLegacySystemPrompt = buildSystemPrompt({
-      aiCfg: updatedCfg.ai,
-      guildMemories,
-      channelMemories: [],
-      userMemories: [],
-      currentUserName: '大佬甲',
-      currentUserHandle: 'boss_a',
-      currentUserProfile: updatedCfg.ai.userProfiles[0],
-      activeProfiles: updatedCfg.ai.userProfiles,
-    });
-
     const res = await aiService.generateReply(
       {
         guildId: 'g1',
@@ -115,7 +102,14 @@ describe('AI Breaklimit Compilation Engine, Byte-for-Byte Legacy Parity & Channe
     }>;
     expect(sentMessages).toHaveLength(2);
     expect(sentMessages[0]?.role).toBe('system');
-    expect(sentMessages[0]?.content).toBe(expectedLegacySystemPrompt);
+    expect(sentMessages[0]?.content).toContain('# 身份设定：测试姬\n你是活人网友测试姬。');
+    expect(sentMessages[0]?.content).toContain('## 说话风格\n- 短平快直给，不写八股。');
+    expect(sentMessages[0]?.content).toContain('[YYYY-MM-DD HH:MM]');
+    expect(sentMessages[0]?.content).toContain('去 AI 味与反八股');
+    expect(sentMessages[0]?.content).toContain('## 世界书\n- 这是一条常驻世界书设定。');
+    expect(sentMessages[0]?.content).toContain('- 大佬甲（关系：核心偏爱）：群主本尊');
+    expect(sentMessages[0]?.content).toContain('- [全服] 全服记忆条目A');
+    expect(sentMessages[0]?.content).toContain('## 记忆规则');
     expect(sentMessages[1]?.role).toBe('user');
     expect(sentMessages[1]?.content).toMatch(
       /^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}\] \[大佬甲\(核心偏爱\)\]: 出来冒个泡$/,
@@ -331,6 +325,16 @@ describe('AI Breaklimit Compilation Engine, Byte-for-Byte Legacy Parity & Channe
         soulPrompt: '- 不给媚态和暧昧。',
       }).ok,
     ).toBe(true);
+    expect(
+      packStore.saveCard({
+        ...createBuiltinDefaultCard(),
+        id: 'beauty',
+        name: '第一美女',
+        personaName: '黑吊国第一美女',
+        identityPrompt: '初始第一美女设定。',
+        soulPrompt: '- 自然鲜活。',
+      }).ok,
+    ).toBe(true);
 
     const capturedSystemPrompts: string[] = [];
     const llmClient = new LlmClient(
@@ -359,12 +363,12 @@ describe('AI Breaklimit Compilation Engine, Byte-for-Byte Legacy Parity & Channe
 
     const aiService = new AiService(guildConfigRepo, aiMemoryRepo, llmClient, fetch, packStore);
 
-    // 1. Self-heals already-clobbered custom config (preset: 'custom', activeCardId: 'community')
+    // 1. Legacy inline custom config (activeCardId: null, preset: 'custom') with same personaName '白虎姬'
     const cfg = guildConfigRepo.getOrCreate('g_prod');
     guildConfigRepo.updateAi('g_prod', {
       ...cfg.ai,
       preset: 'custom',
-      activeCardId: 'community',
+      activeCardId: null,
       personaName: '白虎姬',
       identityPrompt: '2300字双正主加强设定：面对冰吊王与黑屌王坦然直白配合。',
       soulPrompt: '类型E：收起嘴硬防线，顺势迎合升温，不推拒驳回。',
@@ -404,6 +408,27 @@ describe('AI Breaklimit Compilation Engine, Byte-for-Byte Legacy Parity & Channe
     expect(bindingAfterSave.card.identityPrompt).toBe('二次编辑加强版设定：双正主深度偏爱。');
     expect(bindingAfterSave.card.soulPrompt).toBe('二次编辑文风：自然直白不催睡。');
     expect(bindingAfterSave.card.worldbook).toBe('更新后的世界书。');
+
+    // 3. Switching from custom card to 'beauty', hot-editing beauty.json on disk, and restarting
+    // must keep 'beauty' as single source of truth without reverting to stale SQLite fields
+    const switchRes = aiService.setGuildActiveCard('g_prod', 'beauty');
+    expect(switchRes.ok).toBe(true);
+    expect(guildConfigRepo.getOrCreate('g_prod').ai.preset).toBe('beauty');
+
+    const beautyPath = path.join(tmpDir, 'cards', 'beauty.json');
+    const currentBeauty = JSON.parse(fs.readFileSync(beautyPath, 'utf8')) as CharacterCardPack;
+    fs.writeFileSync(
+      beautyPath,
+      JSON.stringify({ ...currentBeauty, identityPrompt: '磁盘热改后的第一美女设定。' }, null, 2),
+      'utf8',
+    );
+    const future = new Date(Date.now() + 5000);
+    fs.utimesSync(beautyPath, future, future);
+
+    aiService.migrateLegacyGuildConfigToPacks('g_prod');
+    const bindingAfterDiskHotEdit = aiService.resolveEffectiveBinding('g_prod');
+    expect(bindingAfterDiskHotEdit.card.id).toBe('beauty');
+    expect(bindingAfterDiskHotEdit.card.identityPrompt).toBe('磁盘热改后的第一美女设定。');
 
     db.close();
   });

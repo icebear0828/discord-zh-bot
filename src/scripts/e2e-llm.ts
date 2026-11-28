@@ -1,9 +1,11 @@
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { loadEnv } from '../config/env.js';
 import { createDatabase } from '../db/database.js';
 import { AiMemoryRepo } from '../db/repositories/aiMemoryRepo.js';
 import { GuildConfigRepo } from '../db/repositories/guildConfigRepo.js';
-import { AiPackStore } from '../services/aiPackStore.js';
+import { AiPackStore, createBuiltinDefaultPreset } from '../services/aiPackStore.js';
 import { AiService } from '../services/aiService.js';
 import { LlmClient } from '../services/llmClient.js';
 
@@ -18,15 +20,42 @@ async function runLlmE2E(): Promise<void> {
   }
 
   const db = createDatabase(':memory:');
+  const tmpPacksDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bot-e2e-llm-'));
   try {
     const guildConfigRepo = new GuildConfigRepo(db);
     const aiMemoryRepo = new AiMemoryRepo(db);
     const llmClient = new LlmClient(env.llm);
     const pngBytes = Buffer.from(TINY_PNG_BASE64, 'base64');
 
-    const packsDir = path.join(path.dirname(path.resolve(env.dbPath)), 'ai-packs');
-    const packStore = new AiPackStore(packsDir);
+    const diskPacksDir = path.join(path.dirname(path.resolve(env.dbPath)), 'ai-packs');
+    const diskPackStore = new AiPackStore(diskPacksDir);
+    diskPackStore.ensureInitialized();
+
+    const packStore = new AiPackStore(tmpPacksDir);
     packStore.ensureInitialized();
+    const diskCommunity = diskPackStore.getCard('community');
+    if (diskCommunity) {
+      packStore.saveCard(diskCommunity);
+    }
+    const basePreset = diskPackStore.getPreset('default-chat') ?? createBuiltinDefaultPreset();
+    packStore.savePreset(basePreset);
+    packStore.savePreset({
+      ...basePreset,
+      id: 'd0-sandbox',
+      name: '@D0 沙盒编排测试预设',
+      prompts: [
+        ...basePreset.prompts,
+        {
+          id: 'd0_reply_format',
+          name: '@D0 点名回敬锚定',
+          role: 'system',
+          position: 'depth',
+          depth: 0,
+          enabled: true,
+          content: '[格式提示：直接点名回敬目标对象，不加任何时间戳或名字前缀。]',
+        },
+      ],
+    });
 
     const aiService = new AiService(
       guildConfigRepo,
@@ -142,12 +171,10 @@ async function runLlmE2E(): Promise<void> {
       `[E2E #3/5 改名冒充VIP-防戏耍] OK (${Date.now() - t3}ms, tokens=${res3.usage.promptTokens}+${res3.usage.completionTokens}=${res3.usage.totalTokens}) | 回复: ${res3.replyText.replace(/\s+/g, ' ').slice(0, 140)}`,
     );
 
-    // Call #4: Sandbox channel override with @D0 breaklimit preset (if jb-template exists)
-    if (packStore.getPreset('jb-template')) {
-      aiService.setChannelOverride('e2e-guild', 'e2e-sandbox-chan', {
-        presetId: 'jb-template',
-      });
-    }
+    // Call #4: Sandbox channel override with isolated @D0 preset
+    aiService.setChannelOverride('e2e-guild', 'e2e-sandbox-chan', {
+      presetId: 'd0-sandbox',
+    });
     const t4 = Date.now();
     const res4 = await aiService.generateReply(
       {
@@ -215,6 +242,7 @@ async function runLlmE2E(): Promise<void> {
     console.log('[E2E-LLM] 真实 LLM 网关全套检查（连续 5 次调用）全部成功！');
   } finally {
     db.close();
+    fs.rmSync(tmpPacksDir, { recursive: true, force: true });
   }
 }
 

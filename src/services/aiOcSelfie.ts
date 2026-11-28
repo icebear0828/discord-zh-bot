@@ -50,7 +50,6 @@ export { compileOcSelfiePrompt } from './ai/selfie/selfiePromptCompiler.js';
 
 export {
   buildOcChatStatusPrompt,
-  buildOcSelfieSkillPrompt,
   didAssistantRefuseAllPhoto,
   didAssistantRefuseDuo,
   hasExplicitSelfieRequest,

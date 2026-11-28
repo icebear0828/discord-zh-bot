@@ -291,8 +291,20 @@ export async function tryHandleAiMenuButton(
     }
 
     if (action === 'ai_reset_config') {
+      const defaultDiskCard = ctx.services.ai.getPackStore()?.getCard('community') ?? null;
       ctx.repos.guildConfig.updateAi(guildId, {
         ...DEFAULT_AI_CONFIG,
+        ...(defaultDiskCard
+          ? {
+              preset: 'community',
+              activePresetId: 'default-chat',
+              activeCardId: defaultDiskCard.id,
+              personaName: defaultDiskCard.personaName,
+              identityPrompt: defaultDiskCard.identityPrompt,
+              soulPrompt: defaultDiskCard.soulPrompt,
+              worldbook: defaultDiskCard.worldbook || DEFAULT_AI_CONFIG.worldbook,
+            }
+          : {}),
         antiClichePromptEnabled: true,
         inputSanitizerEnabled: true,
         regexRules: cloneDefaultAiRegexRules(),
