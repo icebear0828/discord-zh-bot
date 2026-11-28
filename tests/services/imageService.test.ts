@@ -284,6 +284,52 @@ describe('ImageClient', () => {
     });
     expect(capturedHeaders[1]?.['X-Gallery-Skip']).toBe('1');
   });
+
+  it('forwards initImageDataUrl, strength, and noise for img2img and omits them when absent', async () => {
+    const fetchSpy = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => {
+      return new Response(JSON.stringify({ created: 1, data: [{ b64_json: TINY_PNG_B64 }] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+
+    const client = new ImageClient(
+      {
+        baseUrl: 'https://img.example.com/v1',
+        apiKey: 'sk-img',
+        model: 'nai/nai-diffusion-5-full',
+        timeoutMs: 30_000,
+        maxRetries: 1,
+      },
+      { fetchFn: fetchSpy as unknown as typeof fetch, sleepFn: async () => undefined },
+    );
+
+    const initUrl = `data:image/png;base64,${TINY_PNG_B64}`;
+    await client.generate({
+      prompt: '1girl, smile',
+      aspectRatio: '2:3',
+      steps: 28,
+      scale: 5.0,
+      initImageDataUrl: initUrl,
+      strength: 0.55,
+      noise: 0.05,
+    });
+    const i2iBody = JSON.parse(String(fetchSpy.mock.calls[0]?.[1]?.body)) as Record<string, unknown>;
+    expect(i2iBody['image']).toBe(initUrl);
+    expect(i2iBody['strength']).toBe(0.55);
+    expect(i2iBody['noise']).toBe(0.05);
+
+    await client.generate({
+      prompt: '1girl, plain',
+      aspectRatio: '2:3',
+      steps: 28,
+      scale: 5.0,
+    });
+    const txtBody = JSON.parse(String(fetchSpy.mock.calls[1]?.[1]?.body)) as Record<string, unknown>;
+    expect('image' in txtBody).toBe(false);
+    expect('strength' in txtBody).toBe(false);
+    expect('noise' in txtBody).toBe(false);
+  });
 });
 
 describe('DefaultImagePromptProcessor', () => {
@@ -1068,6 +1114,46 @@ describe('ImageService', () => {
         }),
       }),
     );
+
+    db.close();
+  });
+
+  it('persists strength and noise for img2img batches and still uses DefaultImagePromptProcessor (zero LLM)', async () => {
+    const { db, guildConfigRepo, imageRepo, generateSpy, service } = setupService();
+    const cfg = guildConfigRepo.getOrCreate('g1');
+    guildConfigRepo.updateImageGen('g1', { ...cfg.imageGen, cooldownSec: 0 });
+
+    const initUrl = `data:image/png;base64,${TINY_PNG_B64}`;
+    const res = await service.generateBatch({
+      guildId: 'g1',
+      channelId: 'c1',
+      userId: 'u-i2i',
+      prompt: '1girl, school uniform, rating:safe',
+      initImageDataUrl: initUrl,
+      strength: 0.6,
+      noise: 0.05,
+      aspectRatio: '2:3',
+      steps: 28,
+      scale: 5.0,
+    });
+
+    expect(res.ok).toBe(true);
+    expect(generateSpy).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        prompt: '1girl, school uniform, rating:safe',
+        initImageDataUrl: initUrl,
+        strength: 0.6,
+        noise: 0.05,
+      }),
+    );
+    if (res.ok) {
+      const firstRec = res.items[0]!.record;
+      expect(firstRec.strength).toBe(0.6);
+      expect(firstRec.noise).toBe(0.05);
+      const loaded = imageRepo.getById(firstRec.id);
+      expect(loaded?.strength).toBe(0.6);
+      expect(loaded?.noise).toBe(0.05);
+    }
 
     db.close();
   });

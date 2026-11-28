@@ -46,7 +46,7 @@ export interface NaiCharCaption {
 }
 
 export interface ImageGalleryMeta {
-  source: 'discord-draw' | 'discord-selfie';
+  source: 'discord-draw' | 'discord-selfie' | 'discord-img2img';
   authorId?: string;
   authorName?: string;
   authorAvatar?: string;
@@ -65,6 +65,9 @@ export interface ImageGenerateRequest {
   seed?: number;
   charCaptions?: readonly NaiCharCaption[];
   useCoords?: boolean;
+  initImageDataUrl?: string;
+  strength?: number;
+  noise?: number;
   timeoutMs?: number;
   galleryMeta?: ImageGalleryMeta;
 }
@@ -263,6 +266,15 @@ export class ImageClient {
     }
     if (request.useCoords === true) {
       payload['use_coords'] = true;
+    }
+    if (request.initImageDataUrl?.trim()) {
+      payload['image'] = request.initImageDataUrl.trim();
+    }
+    if (request.strength !== undefined && Number.isFinite(request.strength)) {
+      payload['strength'] = Number(Math.max(0.01, Math.min(0.99, request.strength)).toFixed(2));
+    }
+    if (request.noise !== undefined && Number.isFinite(request.noise)) {
+      payload['noise'] = Number(Math.max(0, Math.min(0.99, request.noise)).toFixed(2));
     }
 
     let lastErr: ImageApiError | null = null;

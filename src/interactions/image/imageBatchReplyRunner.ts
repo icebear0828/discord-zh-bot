@@ -11,10 +11,13 @@ import {
 } from '../../config/defaults.js';
 import type { AppContext } from '../../core/context.js';
 import {
+  DEFAULT_IMG2IMG_NOISE,
+  DEFAULT_IMG2IMG_STRENGTH,
   isValidImageAspectRatio,
   type GenerateImageBatchInput,
   type ImageService,
 } from '../../services/imageService.js';
+import type { InitAttachmentLike } from '../../services/image/imageInitLoader.js';
 import { createErrorEmbed } from '../../ui/embeds.js';
 import {
   buildImageBatchProgressMessage,
@@ -168,4 +171,39 @@ export function parseModalStepsAndScale(
   const steps = parseIntInRange(readOptionalModalField(interaction, 'steps'), 1, MAX_IMAGE_STEPS);
   const scale = parseNumberInRange(readOptionalModalField(interaction, 'scale'), 1.0, 10.0);
   return { steps, scale };
+}
+
+export function parseModalStrengthAndNoise(
+  interaction: ModalSubmitInteraction,
+): { strength: number | null; noise: number | null } {
+  const combined = readOptionalModalField(interaction, 'i2iParams').trim();
+  if (!combined) {
+    return { strength: DEFAULT_IMG2IMG_STRENGTH, noise: DEFAULT_IMG2IMG_NOISE };
+  }
+  const tokens = combined
+    .split(/[|｜/,，\s]+/)
+    .map((t) => t.trim())
+    .filter(Boolean);
+  const strength = tokens[0] ? parseNumberInRange(tokens[0], 0.05, 0.99) : null;
+  if (strength === null) {
+    return { strength: null, noise: null };
+  }
+  const noise = tokens[1] ? parseNumberInRange(tokens[1], 0, 0.99) : DEFAULT_IMG2IMG_NOISE;
+  if (noise === null) {
+    return { strength: null, noise: null };
+  }
+  return {
+    strength: Number(strength.toFixed(2)),
+    noise: Number(noise.toFixed(2)),
+  };
+}
+
+export interface MessageAttachmentCollectionLike {
+  first?: () => InitAttachmentLike | null | undefined;
+}
+
+export function pickMessageInitAttachment(
+  attachments: MessageAttachmentCollectionLike | null | undefined,
+): InitAttachmentLike | null {
+  return attachments?.first?.() ?? null;
 }

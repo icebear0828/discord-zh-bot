@@ -57,6 +57,7 @@ export function buildImageLobbyMessage(guildName?: string, galleryUrl?: string):
         '• 👥 **NAI V5 角色分栏**：支持 `Character 1~6` 独立外貌服装、专属负面词、站位坐标及整段多栏粘贴自动拆分',
         '• 🎲 **1~5 张串行连抽**：单线程顺序出图 + 1~3 秒防风控间隔，支持私密出图与剧透模糊遮罩',
         '• 📜 **历史一键复用**：随时从最近画过的作品下拉选中，直接改词或换比例重绘',
+        '• 🖼️ **垫图改图 / 精修**：发送 `/改图` 上传底图，或直接点击卡片「垫图改图 / 细节精修」（Opus 0 Anlas）',
         '• ⚡ **快速指令**：也可随时输入 `/画图` 打开工作台，或直接填英文 Tag 一步出图',
       ].join('\n'),
     )
@@ -188,6 +189,8 @@ export function buildImageBatchResultMessages(params: {
   const primaryFiles = buildAttachmentsForItems(primaryChunk);
   const followUpChunks = chunks.slice(1);
 
+  const isImg2Img = typeof record.strength === 'number';
+
   const primaryEmbed = new EmbedBuilder()
     .setColor(COLORS.FUN)
     .setAuthor({
@@ -195,9 +198,13 @@ export function buildImageBatchResultMessages(params: {
       ...(authorAvatarUrl ? { iconURL: authorAvatarUrl } : {}),
     })
     .setTitle(
-      isBatch
-        ? `🎨 批量出图完成（${items.length}/${requestedCount} 张）${record.spoiler ? '（剧透遮罩）' : ''}`
-        : `🎨 出图完成 #${record.id}${record.spoiler ? '（剧透遮罩）' : ''}`,
+      isImg2Img
+        ? isBatch
+          ? `🖼️ 垫图重绘完成（${items.length}/${requestedCount} 张）${record.spoiler ? '（剧透遮罩）' : ''}`
+          : `🖼️ 垫图重绘完成 #${record.id}${record.spoiler ? '（剧透遮罩）' : ''}`
+        : isBatch
+          ? `🎨 批量出图完成（${items.length}/${requestedCount} 张）${record.spoiler ? '（剧透遮罩）' : ''}`
+          : `🎨 出图完成 #${record.id}${record.spoiler ? '（剧透遮罩）' : ''}`,
     )
     .setDescription(
       [
@@ -226,6 +233,15 @@ export function buildImageBatchResultMessages(params: {
     .addFields(
       { name: '📐 比例', value: record.aspectRatio, inline: true },
       { name: '🎛️ 步数 / CFG', value: `${record.steps} / ${record.scale}`, inline: true },
+      ...(isImg2Img
+        ? [
+            {
+              name: '🎚️ 重绘 / 噪点',
+              value: `${record.strength} / ${record.noise ?? 0}`,
+              inline: true,
+            },
+          ]
+        : []),
       {
         name: isBatch ? '🎲 种子 / 总耗时' : '🎲 种子 / 耗时',
         value: `${formatBatchSeedText(items, isBatch)} · ${(totalLatencyMs / 1000).toFixed(1)}s`,
@@ -274,12 +290,18 @@ export function buildImageBatchResultMessages(params: {
     buttons.push(makeButton(`img:del:${record.id}`, '🗑️ 撤回', ButtonStyle.Danger));
   }
 
+  const i2iButtons = [
+    makeButton(`img:i2i:${record.id}${countSuffix}`, '🖼️ 垫图改图', ButtonStyle.Secondary),
+    makeButton(`img:enhance:${record.id}`, '✨ 细节精修', ButtonStyle.Secondary),
+  ];
+
   const primary: BuiltImageResultMessage = {
     embeds: [primaryEmbed],
     files: primaryFiles,
     components: [
       new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(ratioRerollSelect),
       buttonRow(...buttons),
+      buttonRow(...i2iButtons),
     ],
   };
 
@@ -390,6 +412,7 @@ export function buildUserImageMenuView(
     `🙈 **出图方式**：${effectiveEphemeral ? '私密出图（仅自己可见）' : '频道公开出图'} ｜ **遮罩**：${imgCfg.forceSpoiler ? '🔞 全局强制开启' : effectiveSpoiler ? '🔞 已开启' : '👁️ 关闭'}`,
     `🔞 **默认预设策略**：${imgCfg.defaultPositivePrompt ? `自动前置 \`${truncateText(imgCfg.defaultPositivePrompt, 60)}\`` : '原样直通'} ｜ **Rescale**：**${imgCfg.defaultCfgRescale}**`,
     `👥 **角色分栏支持**：弹窗支持 \`Character 1~6\` 独立栏、\`@x,y\`/\`@B3\` 站位及完整多栏文本一键粘贴拆分`,
+    `🖼️ **垫图改图**：发送 \`/改图\` 上传参考图，或直接点击卡片「🖼️ 垫图改图 / ✨ 细节精修」（零 LLM · Opus 免费）`,
     `🚫 **常驻负面词**：${userPrefs.negativePrompt ? truncateText(userPrefs.negativePrompt, 80) : '*（未设置，默认自动合并防打码UC）*'}`,
     `⏱️ **冷却状态**：${cooldownText} ｜ **队列**：生成中 ${queue.running} / 排队 ${queue.pending}`,
     ...recentPreviewLines,

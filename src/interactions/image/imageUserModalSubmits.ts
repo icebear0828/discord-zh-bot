@@ -5,6 +5,10 @@ import {
   VALID_IMAGE_ASPECT_RATIOS,
 } from '../../config/defaults.js';
 import type { AppContext } from '../../core/context.js';
+import {
+  downloadInitImageAttachment,
+  validateInitAttachmentMeta,
+} from '../../services/image/imageInitLoader.js';
 import { isValidImageAspectRatio } from '../../services/imageService.js';
 import { createErrorEmbed } from '../../ui/embeds.js';
 import { buildUserImageMenuView } from '../../ui/imageMenuBuilder.js';
@@ -20,8 +24,10 @@ import {
 import {
   executeAndReplyImageBatch,
   parseModalStepsAndScale,
+  parseModalStrengthAndNoise,
   parseOptionalBatchCount,
   parseRatioOrDefault,
+  pickMessageInitAttachment,
   readOptionalModalField,
   resolveEffectiveUserDefaults,
 } from './imageBatchReplyRunner.js';
@@ -226,6 +232,107 @@ export async function handleImageModal(
       authorName: interaction.user.displayName,
       authorAvatarUrl: interaction.user.displayAvatarURL(),
       failTitle: '⚠️ 重绘失败',
+    });
+    return;
+  }
+
+  if (modalAction === 'modal_i2i') {
+    const recId = parsePositiveInt(parts[2] ?? '');
+    const requestedCount = parseOptionalBatchCount(parts[3]);
+    const orig = recId ? (imageSvc.getRecordById(recId) ?? ctx.repos.image?.getById(recId)) : null;
+    const prompt = interaction.fields.getTextInputValue('prompt').trim();
+    const charPrompts = readOptionalModalField(interaction, 'charPrompts').trim();
+    const negativePrompt = readOptionalModalField(interaction, 'negativePrompt').trim() || undefined;
+    const { strength, noise } = parseModalStrengthAndNoise(interaction);
+    const { steps, scale } = parseModalStepsAndScale(interaction);
+
+    if (!prompt || strength === null || noise === null || steps === null || scale === null) {
+      await interaction.reply({
+        embeds: [
+          createErrorEmbed(
+            '❌ 参数无效',
+            `请检查输入：重绘强度 0.05~0.99、噪点 0~0.99（格式如 \`0.6 | 0\`），步数 1~${MAX_IMAGE_STEPS}、引导 1.0~10.0（格式如 \`28 | 5.0\`）。`,
+          ),
+        ],
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    const att = pickMessageInitAttachment(interaction.message?.attachments);
+    if (!att) {
+      await interaction.reply({
+        embeds: [
+          createErrorEmbed(
+            '❌ 未找到可用底图',
+            '原消息卡片未附带可读取的底图（请改用 `/改图` 重新上传垫图）。',
+          ),
+        ],
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    const metaCheck = validateInitAttachmentMeta(att);
+    if (!metaCheck.ok) {
+      await interaction.reply({
+        embeds: [createErrorEmbed('❌ 底图格式无效', metaCheck.errorMessage)],
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    const precheck = imageSvc.precheckRequest({
+      guildId,
+      channelId: interaction.channelId ?? orig?.channelId ?? '',
+      userId: interaction.user.id,
+      isAdmin: Boolean(actor.isAdmin),
+    });
+    if (!precheck.ok) {
+      await interaction.reply({
+        embeds: [createErrorEmbed('⚠️ 暂无法改图', precheck.errorMessage)],
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    const isPrivate = Boolean(orig?.ephemeral);
+    await interaction.deferReply(isPrivate ? { flags: MessageFlags.Ephemeral } : {});
+
+    const dl = await downloadInitImageAttachment(att);
+    if (!dl.ok) {
+      await interaction.editReply({
+        embeds: [createErrorEmbed('❌ 底图读取失败', dl.errorMessage)],
+        components: [],
+      });
+      return;
+    }
+
+    await executeAndReplyImageBatch({
+      interaction,
+      imageService: imageSvc,
+      input: {
+        guildId,
+        channelId: interaction.channelId ?? orig?.channelId ?? '',
+        userId: interaction.user.id,
+        prompt,
+        count: requestedCount,
+        ...(charPrompts ? { rawCharacterPrompt: charPrompts } : {}),
+        ...(charPrompts && orig?.useCoords ? { useCoords: true } : {}),
+        negativePrompt,
+        aspectRatio: orig?.aspectRatio ?? dl.inferredAspectRatio ?? undefined,
+        steps,
+        scale,
+        initImageDataUrl: dl.dataUrl,
+        strength,
+        noise,
+        spoiler: Boolean(orig?.spoiler),
+        ephemeral: isPrivate,
+        isAdmin: Boolean(actor.isAdmin),
+      },
+      authorName: interaction.user.displayName,
+      authorAvatarUrl: interaction.user.displayAvatarURL(),
+      failTitle: '⚠️ 改图失败',
     });
   }
 }

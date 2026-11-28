@@ -5,7 +5,15 @@ import {
 } from 'discord.js';
 import { MAX_IMAGE_BATCH_COUNT, MAX_IMAGE_STEPS } from '../../config/defaults.js';
 import type { AppContext } from '../../core/context.js';
-import { isValidImageAspectRatio } from '../../services/imageService.js';
+import {
+  downloadInitImageAttachment,
+  validateInitAttachmentMeta,
+} from '../../services/image/imageInitLoader.js';
+import {
+  DEFAULT_IMG2IMG_NOISE,
+  ENHANCE_IMG2IMG_STRENGTH,
+  isValidImageAspectRatio,
+} from '../../services/imageService.js';
 import { createErrorEmbed } from '../../ui/embeds.js';
 import { buildImageLobbyMessage, buildUserImageMenuView } from '../../ui/imageMenuBuilder.js';
 import type { MenuFeedback } from '../../ui/menuShared.js';
@@ -22,11 +30,13 @@ import {
   executeAndReplyImageBatch,
   parseOptionalBatchCount,
   parseRatioOrDefault,
+  pickMessageInitAttachment,
   resolveEffectiveUserDefaults,
 } from './imageBatchReplyRunner.js';
 import {
   buildCreateImageModal,
   buildEditImageModal,
+  buildImg2ImgModal,
   buildUserPrefsModal,
 } from './imageModals.js';
 
@@ -245,6 +255,120 @@ export async function handleImageButton(
 
   if (action === 'edit') {
     await interaction.showModal(buildEditImageModal(record, requestedCount));
+    return;
+  }
+
+  if (action === 'i2i') {
+    const att = pickMessageInitAttachment(interaction.message?.attachments);
+    const metaCheck = att ? validateInitAttachmentMeta(att) : null;
+    if (!att || !metaCheck?.ok) {
+      await interaction.reply({
+        embeds: [
+          createErrorEmbed(
+            '❌ 未找到可用底图',
+            metaCheck && !metaCheck.ok
+              ? metaCheck.errorMessage
+              : '当前卡片消息未附带可读取的底图（可使用 `/改图` 直接上传图片重绘）。',
+          ),
+        ],
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+    await interaction.showModal(buildImg2ImgModal(record, requestedCount));
+    return;
+  }
+
+  if (action === 'enhance') {
+    const imageSvc = ctx.services.image;
+    if (!imageSvc || !imageSvc.isConfigured()) {
+      await interaction.reply({
+        embeds: [createErrorEmbed('❌ 生图未配置', '生图服务尚未配置完成，请联系管理员。')],
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    const att = pickMessageInitAttachment(interaction.message?.attachments);
+    if (!att) {
+      await interaction.reply({
+        embeds: [
+          createErrorEmbed(
+            '❌ 未找到可用底图',
+            '当前卡片消息未附带可读取的底图（可使用 `/改图` 上传原图并设定 strength=0.35 精修）。',
+          ),
+        ],
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    const metaCheck = validateInitAttachmentMeta(att);
+    if (!metaCheck.ok) {
+      await interaction.reply({
+        embeds: [createErrorEmbed('❌ 底图格式无效', metaCheck.errorMessage)],
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    const precheck = imageSvc.precheckRequest({
+      guildId,
+      channelId: interaction.channelId,
+      userId: interaction.user.id,
+      isAdmin: Boolean(actor.isAdmin),
+    });
+    if (!precheck.ok) {
+      await interaction.reply({
+        embeds: [createErrorEmbed('⚠️ 暂无法精修', precheck.errorMessage)],
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    const isPrivate = record.ephemeral;
+    await interaction.deferReply(isPrivate ? { flags: MessageFlags.Ephemeral } : {});
+
+    const dl = await downloadInitImageAttachment(att);
+    if (!dl.ok) {
+      await interaction.editReply({
+        embeds: [createErrorEmbed('❌ 底图读取失败', dl.errorMessage)],
+        components: [],
+      });
+      return;
+    }
+
+    const enhancePrompt = record.rawPrompt.toLowerCase().includes('upscaled, blurry')
+      ? record.rawPrompt
+      : `${record.rawPrompt.trim()}, -2::upscaled, blurry::`;
+
+    await executeAndReplyImageBatch({
+      interaction,
+      imageService: imageSvc,
+      input: {
+        guildId,
+        channelId: interaction.channelId,
+        userId: interaction.user.id,
+        prompt: enhancePrompt,
+        count: 1,
+        negativePrompt: record.negativePrompt || undefined,
+        ...(record.charCaptions.length > 0 ? { charCaptions: record.charCaptions } : {}),
+        ...(record.useCoords ? { useCoords: true } : {}),
+        aspectRatio: record.aspectRatio ?? dl.inferredAspectRatio ?? undefined,
+        steps: MAX_IMAGE_STEPS,
+        scale: record.scale,
+        seed: null,
+        initImageDataUrl: dl.dataUrl,
+        strength: ENHANCE_IMG2IMG_STRENGTH,
+        noise: DEFAULT_IMG2IMG_NOISE,
+        spoiler: record.spoiler,
+        ephemeral: isPrivate,
+        isAdmin: Boolean(actor.isAdmin),
+      },
+      authorName: interaction.user.displayName,
+      authorAvatarUrl: interaction.user.displayAvatarURL(),
+      failTitle: '⚠️ 细节精修失败',
+    });
     return;
   }
 

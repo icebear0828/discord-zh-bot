@@ -15,8 +15,11 @@ import {
 import { runGenerateBatch, runGenerateOcSelfie } from './image/imageBatchEngine.js';
 import { ImageCooldownAndQueue } from './image/imageCooldownAndQueue.js';
 import {
+  DEFAULT_IMG2IMG_NOISE,
+  DEFAULT_IMG2IMG_STRENGTH,
   defaultRandomDelayMs,
   defaultSleep,
+  ENHANCE_IMG2IMG_STRENGTH,
   isValidImageAspectRatio,
   type GenerateImageBatchInput,
   type GenerateImageBatchResult,
@@ -30,6 +33,9 @@ import {
 } from './image/imageTypes.js';
 
 export {
+  DEFAULT_IMG2IMG_NOISE,
+  DEFAULT_IMG2IMG_STRENGTH,
+  ENHANCE_IMG2IMG_STRENGTH,
   isValidImageAspectRatio,
   type GenerateImageBatchInput,
   type GenerateImageBatchResult,

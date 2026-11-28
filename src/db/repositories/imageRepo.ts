@@ -25,6 +25,8 @@ export interface ImageGenerationRecord {
   steps: number;
   scale: number;
   seed: number | null;
+  strength: number | null;
+  noise: number | null;
   spoiler: boolean;
   ephemeral: boolean;
   model: string;
@@ -47,6 +49,8 @@ export interface CreateImageGenerationInput {
   steps: number;
   scale: number;
   seed: number | null;
+  strength?: number | null;
+  noise?: number | null;
   spoiler: boolean;
   ephemeral: boolean;
   model: string;
@@ -107,6 +111,8 @@ interface ImageGenerationRow {
   steps: number;
   scale: number;
   seed: number | null;
+  strength?: number | null;
+  noise?: number | null;
   spoiler: number;
   ephemeral: number;
   model: string;
@@ -131,6 +137,8 @@ CREATE TABLE IF NOT EXISTS image_generations (
   steps INTEGER NOT NULL,
   scale REAL NOT NULL,
   seed INTEGER,
+  strength REAL,
+  noise REAL,
   spoiler INTEGER NOT NULL DEFAULT 0,
   ephemeral INTEGER NOT NULL DEFAULT 0,
   model TEXT NOT NULL,
@@ -169,6 +177,12 @@ export function initImageSchema(db: Database.Database): void {
   }
   if (!genCols.some((col) => col.name === 'use_coords')) {
     db.exec('ALTER TABLE image_generations ADD COLUMN use_coords INTEGER NOT NULL DEFAULT 0;');
+  }
+  if (!genCols.some((col) => col.name === 'strength')) {
+    db.exec('ALTER TABLE image_generations ADD COLUMN strength REAL;');
+  }
+  if (!genCols.some((col) => col.name === 'noise')) {
+    db.exec('ALTER TABLE image_generations ADD COLUMN noise REAL;');
   }
 
   const cols = db.pragma('table_info(image_user_prefs)') as Array<{ name: string }>;
@@ -244,6 +258,8 @@ function mapRow(row: ImageGenerationRow): ImageGenerationRecord {
     steps: row.steps,
     scale: row.scale,
     seed: row.seed,
+    strength: row.strength ?? null,
+    noise: row.noise ?? null,
     spoiler: row.spoiler === 1,
     ephemeral: row.ephemeral === 1,
     model: row.model,
@@ -297,9 +313,9 @@ export class ImageRepo {
           `INSERT INTO image_generations (
             guild_id, channel_id, user_id, raw_prompt, final_prompt, negative_prompt,
             char_captions_json, use_coords,
-            aspect_ratio, steps, scale, seed, spoiler, ephemeral, model, status, error_code,
+            aspect_ratio, steps, scale, seed, strength, noise, spoiler, ephemeral, model, status, error_code,
             latency_ms, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           input.guildId,
@@ -314,6 +330,8 @@ export class ImageRepo {
           Math.round(input.steps),
           input.scale,
           input.seed,
+          input.strength ?? null,
+          input.noise ?? null,
           input.spoiler ? 1 : 0,
           input.ephemeral ? 1 : 0,
           input.model,

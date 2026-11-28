@@ -1440,9 +1440,40 @@ describe('OC Selfie Library & NovelAI V5 Pipeline SOP Compiler', () => {
       '这个地图怎么走',
       '我发张截图给你看',
       '换个角度再来一张', // without prior photo turn!
+      '现在要咋让小姬生图',
+      '为啥我的小姬生成不了图了',
+      '不用生图，文字说就行',
+      '禁止发图',
+      '这张照片是谁拍的',
+      '我刚拍了张照片给你看',
+      '今天穿什么',
     ];
     for (const txt of nonPhotoInputs) {
       expect(hasExplicitSelfieRequest(txt), `must NOT trigger on: ${txt}`).toBe(false);
+    }
+
+    const colloquialPhotoInputs = [
+      '看看照片',
+      '看照片',
+      '看下你的照片',
+      '看看写真',
+      '看看穿搭',
+      '看看今日穿搭',
+      '看看黑丝',
+      '生图',
+      '给我生图',
+      '给我生张图',
+      '帮我生个图看看',
+      '出张图',
+      '发照片',
+      '发图',
+      '发个图看看',
+      '来点照片',
+      '画张图',
+      '画幅图看看',
+    ];
+    for (const txt of colloquialPhotoInputs) {
+      expect(hasExplicitSelfieRequest(txt), `must trigger on: ${txt}`).toBe(true);
     }
 
     expect(hasExplicitSelfieRequest('换个角度再来一张', '今天吃什么')).toBe(false);

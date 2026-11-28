@@ -28,8 +28,8 @@ function validateNode(node: JsonOptionLike, path: string): void {
 }
 
 describe('command registry localization & Discord constraints', () => {
-  it('registers 32 unique commands with valid names, zh-CN localizations, and descriptions', () => {
-    expect(commands).toHaveLength(32);
+  it('registers 33 unique commands with valid names, zh-CN localizations, and descriptions', () => {
+    expect(commands).toHaveLength(33);
 
     const names = new Set<string>();
     const zhNames = new Set<string>();
@@ -56,6 +56,8 @@ describe('command registry localization & Discord constraints', () => {
     expect(zhNames.has('ai')).toBe(true);
     expect(names.has('draw')).toBe(true);
     expect(zhNames.has('画图')).toBe(true);
+    expect(names.has('img2img')).toBe(true);
+    expect(zhNames.has('改图')).toBe(true);
     expect(names.has('信用')).toBe(true);
     expect(zhNames.has('信用')).toBe(true);
     expect(names.has('贷款')).toBe(true);

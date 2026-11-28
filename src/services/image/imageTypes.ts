@@ -44,6 +44,9 @@ export interface GenerateImageInput {
   charCaptions?: readonly NaiCharCaption[];
   rawCharacterPrompt?: string;
   useCoords?: boolean;
+  initImageDataUrl?: string;
+  strength?: number | null;
+  noise?: number | null;
   spoiler?: boolean;
   ephemeral?: boolean;
   isAdmin?: boolean;
@@ -109,6 +112,9 @@ export const MAX_PROMPT_LENGTH = 4000;
 export const MAX_CHAR_PROMPT_LENGTH = 3000;
 export const MAX_NEGATIVE_PROMPT_LENGTH = 1000;
 export const MAX_SEED_VALUE = 2_147_483_647;
+export const DEFAULT_IMG2IMG_STRENGTH = 0.6;
+export const DEFAULT_IMG2IMG_NOISE = 0;
+export const ENHANCE_IMG2IMG_STRENGTH = 0.35;
 export const FATAL_ERROR_CODES: ReadonlySet<ImageErrorCode> = new Set([
   'not_configured',
   'auth_error',

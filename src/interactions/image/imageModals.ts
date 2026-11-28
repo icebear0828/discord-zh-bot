@@ -12,6 +12,10 @@ import {
 } from '../../config/defaults.js';
 import type { AppContext } from '../../core/context.js';
 import type { ImageGenerationRecord } from '../../db/repositories/imageRepo.js';
+import {
+  DEFAULT_IMG2IMG_NOISE,
+  DEFAULT_IMG2IMG_STRENGTH,
+} from '../../services/imageService.js';
 import { formatCharacterPromptsText } from '../../services/imagePromptProcessor.js';
 import { truncateText } from '../../ui/menuShared.js';
 import { prefilledField } from '../menuHelpers.js';
@@ -119,7 +123,21 @@ export function buildUserPrefsModal(params: {
     );
 }
 
-export function buildEditImageModal(rec: ImageGenerationRecord, requestedCount = 1): ModalBuilder {
+function buildSharedRecordPromptRows(rec: ImageGenerationRecord): {
+  promptRow: ActionRowBuilder<TextInputBuilder>;
+  charRow: ActionRowBuilder<TextInputBuilder>;
+  negRow: ActionRowBuilder<TextInputBuilder>;
+  safeSteps: number;
+} {
+  const promptInput = new TextInputBuilder()
+    .setCustomId('prompt')
+    .setLabel(truncateText('Base Prompt 主提示词（支持多栏粘贴）', 45))
+    .setStyle(TextInputStyle.Paragraph)
+    .setMinLength(1)
+    .setMaxLength(4000)
+    .setValue(truncateText(rec.rawPrompt, 4000))
+    .setRequired(true);
+
   const charInput = new TextInputBuilder()
     .setCustomId('charPrompts')
     .setLabel(truncateText('Character 1~6 角色栏（空行分隔多人，可选）', 45))
@@ -142,29 +160,61 @@ export function buildEditImageModal(rec: ImageGenerationRecord, requestedCount =
     negInput.setValue(truncateText(rec.negativePrompt.trim(), 1000));
   }
 
+  return {
+    promptRow: new ActionRowBuilder<TextInputBuilder>().addComponents(promptInput),
+    charRow: new ActionRowBuilder<TextInputBuilder>().addComponents(charInput),
+    negRow: new ActionRowBuilder<TextInputBuilder>().addComponents(negInput),
+    safeSteps: Math.min(MAX_IMAGE_STEPS, rec.steps),
+  };
+}
+
+export function buildEditImageModal(rec: ImageGenerationRecord, requestedCount = 1): ModalBuilder {
+  const { promptRow, charRow, negRow, safeSteps } = buildSharedRecordPromptRows(rec);
   const countSuffix = requestedCount > 1 ? `:${requestedCount}` : '';
-  const safeSteps = Math.min(MAX_IMAGE_STEPS, rec.steps);
   return new ModalBuilder()
     .setCustomId(`img:modal_edit:${rec.id}${countSuffix}`)
     .setTitle(truncateText(`✏️ 修改提示词并重绘 (#${rec.id})`, 45))
     .addComponents(
-      new ActionRowBuilder<TextInputBuilder>().addComponents(
-        new TextInputBuilder()
-          .setCustomId('prompt')
-          .setLabel(truncateText('Base Prompt 主提示词（支持多栏粘贴）', 45))
-          .setStyle(TextInputStyle.Paragraph)
-          .setMinLength(1)
-          .setMaxLength(4000)
-          .setValue(truncateText(rec.rawPrompt, 4000))
-          .setRequired(true),
-      ),
-      new ActionRowBuilder<TextInputBuilder>().addComponents(charInput),
-      new ActionRowBuilder<TextInputBuilder>().addComponents(negInput),
+      promptRow,
+      charRow,
+      negRow,
       prefilledField(
         'aspectRatio',
         truncateText(`比例（${VALID_IMAGE_ASPECT_RATIOS.join(' / ')}）`, 45),
         rec.aspectRatio,
         10,
+      ),
+      prefilledField(
+        'params',
+        `步数 Steps | 引导 CFG（1~${MAX_IMAGE_STEPS} | 1~10）`,
+        `${safeSteps} | ${rec.scale}`,
+        20,
+      ),
+    );
+}
+
+/**
+ * Builds the modal opened by clicking "🖼️ 垫图改图" on an existing result card.
+ */
+export function buildImg2ImgModal(rec: ImageGenerationRecord, requestedCount = 1): ModalBuilder {
+  const { promptRow, charRow, negRow, safeSteps } = buildSharedRecordPromptRows(rec);
+  const countSuffix = requestedCount > 1 ? `:${requestedCount}` : '';
+  const defaultStrength =
+    typeof rec.strength === 'number' ? rec.strength : DEFAULT_IMG2IMG_STRENGTH;
+  const defaultNoise = typeof rec.noise === 'number' ? rec.noise : DEFAULT_IMG2IMG_NOISE;
+
+  return new ModalBuilder()
+    .setCustomId(`img:modal_i2i:${rec.id}${countSuffix}`)
+    .setTitle(truncateText(`🖼️ 基于此图重绘 (#${rec.id})`, 45))
+    .addComponents(
+      promptRow,
+      charRow,
+      negRow,
+      prefilledField(
+        'i2iParams',
+        truncateText('重绘强度 Strength | 噪点 Noise（0.05~0.99 | 0~0.99）', 45),
+        `${defaultStrength} | ${defaultNoise}`,
+        20,
       ),
       prefilledField(
         'params',

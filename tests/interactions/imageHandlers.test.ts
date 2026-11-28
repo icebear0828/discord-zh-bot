@@ -12,6 +12,7 @@ import {
 } from 'discord.js';
 import { describe, expect, it, vi } from 'vitest';
 import { drawCommand } from '../../src/commands/ai/draw.js';
+import { img2imgCommand } from '../../src/commands/ai/img2img.js';
 import {
   DEFAULT_NAI_NEGATIVE_PROMPT,
   DEFAULT_NAI_POSITIVE_PROMPT,
@@ -184,13 +185,17 @@ describe('/draw command & img:* interactions', () => {
     expect(editPayload.files[0]?.name).toMatch(/^nai-draw-.*\.png$/);
     expect(editPayload.files[0]?.spoiler).toBe(false);
     expect(editPayload.embeds[0]?.toJSON().image?.url).toMatch(/^attachment:\/\/nai-draw-.*\.png$/);
-    expect(editPayload.components).toHaveLength(2);
+    expect(editPayload.components).toHaveLength(3);
     const ratioSelectComp = editPayload.components[0]!.toJSON().components[0]!;
     expect(ratioSelectComp).toMatchObject({ custom_id: 'img:ratio_reroll:1' });
     const btnIds = editPayload.components[1]!.toJSON().components.map((c) =>
       'custom_id' in c ? c.custom_id : '',
     );
     expect(btnIds).toEqual(['img:reroll:1', 'img:edit:1', 'img:open_workbench', 'img:del:1']);
+    const i2iRowIds = editPayload.components[2]!.toJSON().components.map((c) =>
+      'custom_id' in c ? c.custom_id : '',
+    );
+    expect(i2iRowIds).toEqual(['img:i2i:1', 'img:enhance:1']);
 
     // 3. Batch count=3 + private + spoiler mode: 3 PNG files, omits embed.setImage, spoiler=true on all, wires :3 reroll
     const batchDefer = vi.fn(async () => undefined);
@@ -232,6 +237,10 @@ describe('/draw command & img:* interactions', () => {
       'custom_id' in c ? c.custom_id : '',
     );
     expect(batchBtnIds).toEqual(['img:reroll:2:3', 'img:edit:2:3', 'img:open_workbench']);
+    const batchI2iRowIds = batchFinalPayload.components[2]!.toJSON().components.map((c) =>
+      'custom_id' in c ? c.custom_id : '',
+    );
+    expect(batchI2iRowIds).toEqual(['img:i2i:2:3', 'img:enhance:2']);
 
     // 4. Zero-arg /draw opens ephemeral interactive workbench immediately
     const zeroArgReply = vi.fn(async () => undefined);
@@ -1110,5 +1119,319 @@ describe('/draw command & img:* interactions', () => {
     ).toContain('extra limbs');
 
     db.close();
+  });
+
+  it('supports /改图 command, card img2img modal, and 1-click enhance under Opus 0-Anlas constraints', async () => {
+    const { db, guildConfig, generateSpy, imageService, ctx } = createImageTestCtx();
+    const cfg = guildConfig.getOrCreate('g1');
+    guildConfig.updateImageGen('g1', { ...cfg.imageGen, cooldownSec: 30 });
+
+    const png320x180 = Buffer.alloc(32);
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(png320x180, 0);
+    png320x180.writeUInt32BE(13, 8);
+    png320x180.write('IHDR', 12, 'ascii');
+    png320x180.writeUInt32BE(320, 16);
+    png320x180.writeUInt32BE(180, 20);
+
+    const fetchMock = vi.fn(async () => new Response(png320x180, { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      // 1. Rejects invalid MIME and oversized attachment BEFORE deferReply (and does not consume cooldown)
+      const badMimeReply = vi.fn(async () => undefined);
+      const badMimeDefer = vi.fn(async () => undefined);
+      await img2imgCommand.execute(
+        {
+          guildId: 'g1',
+          channelId: 'c1',
+          inCachedGuild: () => true,
+          member: makeMember('u-i2i'),
+          user: { id: 'u-i2i', displayName: 'Bob', displayAvatarURL: () => 'https://example.com/b.png' },
+          options: {
+            getAttachment: () => ({
+              url: 'https://cdn.example/bad.pdf',
+              contentType: 'application/pdf',
+              size: 1024,
+              name: 'bad.pdf',
+            }),
+            getString: (name: string) => (name === 'prompt' ? '1girl, smile' : null),
+            getNumber: () => null,
+            getInteger: () => null,
+            getBoolean: () => null,
+          },
+          reply: badMimeReply,
+          deferReply: badMimeDefer,
+        } as unknown as ChatInputCommandInteraction,
+        ctx,
+      );
+      expect(badMimeReply).toHaveBeenCalledWith(
+        expect.objectContaining({ flags: MessageFlags.Ephemeral }),
+      );
+      expect(badMimeDefer).not.toHaveBeenCalled();
+      expect(imageService.getUserCooldownRemainingSec('g1', 'u-i2i')).toBe(0);
+
+      const bigReply = vi.fn(async () => undefined);
+      await img2imgCommand.execute(
+        {
+          guildId: 'g1',
+          channelId: 'c1',
+          inCachedGuild: () => true,
+          member: makeMember('u-i2i'),
+          user: { id: 'u-i2i', displayName: 'Bob', displayAvatarURL: () => 'https://example.com/b.png' },
+          options: {
+            getAttachment: () => ({
+              url: 'https://cdn.example/big.png',
+              contentType: 'image/png',
+              size: 11 * 1024 * 1024,
+              name: 'big.png',
+            }),
+            getString: (name: string) => (name === 'prompt' ? '1girl, smile' : null),
+            getNumber: () => null,
+            getInteger: () => null,
+            getBoolean: () => null,
+          },
+          reply: bigReply,
+        } as unknown as ChatInputCommandInteraction,
+        ctx,
+      );
+      expect(bigReply).toHaveBeenCalledWith(
+        expect.objectContaining({ flags: MessageFlags.Ephemeral }),
+      );
+      expect(imageService.getUserCooldownRemainingSec('g1', 'u-i2i')).toBe(0);
+
+      // 2. Ignored channel triggers precheckRequest BEFORE deferReply
+      guildConfig.updateImageGen('g1', {
+        ...cfg.imageGen,
+        cooldownSec: 30,
+        ignoredChannelIds: ['c-ignored'],
+      });
+      const ignoredReply = vi.fn(async () => undefined);
+      const ignoredDefer = vi.fn(async () => undefined);
+      await img2imgCommand.execute(
+        {
+          guildId: 'g1',
+          channelId: 'c-ignored',
+          inCachedGuild: () => true,
+          member: makeMember('u-i2i'),
+          user: { id: 'u-i2i', displayName: 'Bob', displayAvatarURL: () => 'https://example.com/b.png' },
+          options: {
+            getAttachment: () => ({
+              url: 'https://cdn.example/ok.png',
+              contentType: 'image/png',
+              size: png320x180.length,
+              name: 'ok.png',
+            }),
+            getString: (name: string) => (name === 'prompt' ? '1girl, smile' : null),
+            getNumber: () => null,
+            getInteger: () => null,
+            getBoolean: () => null,
+          },
+          reply: ignoredReply,
+          deferReply: ignoredDefer,
+        } as unknown as ChatInputCommandInteraction,
+        ctx,
+      );
+      expect(ignoredReply).toHaveBeenCalledWith(
+        expect.objectContaining({ flags: MessageFlags.Ephemeral }),
+      );
+      expect(ignoredDefer).not.toHaveBeenCalled();
+
+      // 3. Valid /改图 infers 16:9 from 320x180 PNG and renders img2img result card
+      guildConfig.updateImageGen('g1', {
+        ...cfg.imageGen,
+        cooldownSec: 30,
+        ignoredChannelIds: [],
+      });
+      const i2iDefer = vi.fn(async () => undefined);
+      const i2iEdit = vi.fn(async () => undefined);
+      await img2imgCommand.execute(
+        {
+          guildId: 'g1',
+          channelId: 'c1',
+          inCachedGuild: () => true,
+          member: makeMember('u-i2i'),
+          user: { id: 'u-i2i', displayName: 'Bob', displayAvatarURL: () => 'https://example.com/b.png' },
+          options: {
+            getAttachment: () => ({
+              url: 'https://cdn.example/base.png',
+              contentType: 'image/png',
+              size: png320x180.length,
+              name: 'base.png',
+            }),
+            getString: (name: string) => (name === 'prompt' ? '1girl, blue dress, rating:safe' : null),
+            getNumber: (name: string) => {
+              if (name === 'strength') return 0.55;
+              if (name === 'noise') return 0.08;
+              return null;
+            },
+            getInteger: () => null,
+            getBoolean: () => false,
+          },
+          deferReply: i2iDefer,
+          editReply: i2iEdit,
+          followUp: vi.fn(async () => undefined),
+        } as unknown as ChatInputCommandInteraction,
+        ctx,
+      );
+      expect(i2iDefer).toHaveBeenCalledWith({});
+      expect(generateSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          aspectRatio: '16:9',
+          initImageDataUrl: `data:image/png;base64,${png320x180.toString('base64')}`,
+          strength: 0.55,
+          noise: 0.08,
+        }),
+      );
+      const cardPayload = i2iEdit.mock.calls[0]?.[0] as {
+        embeds: Array<{ toJSON(): APIEmbed }>;
+      };
+      const cardEmbed = cardPayload.embeds[0]!.toJSON();
+      expect(cardEmbed.title).toContain('🖼️ 垫图重绘完成');
+      expect(cardEmbed.fields?.some((f) => f.name === '🎚️ 重绘 / 噪点' && f.value === '0.55 / 0.08')).toBe(
+        true,
+      );
+
+      // 4. Cooldown enforced BEFORE deferReply on subsequent /改图 by non-admin
+      const cdReply = vi.fn(async () => undefined);
+      const cdDefer = vi.fn(async () => undefined);
+      await img2imgCommand.execute(
+        {
+          guildId: 'g1',
+          channelId: 'c1',
+          inCachedGuild: () => true,
+          member: makeMember('u-i2i'),
+          user: { id: 'u-i2i', displayName: 'Bob', displayAvatarURL: () => 'https://example.com/b.png' },
+          options: {
+            getAttachment: () => ({
+              url: 'https://cdn.example/base.png',
+              contentType: 'image/png',
+              size: png320x180.length,
+              name: 'base.png',
+            }),
+            getString: (name: string) => (name === 'prompt' ? '1girl, red dress' : null),
+            getNumber: () => null,
+            getInteger: () => null,
+            getBoolean: () => null,
+          },
+          reply: cdReply,
+          deferReply: cdDefer,
+        } as unknown as ChatInputCommandInteraction,
+        ctx,
+      );
+      expect(cdReply).toHaveBeenCalledWith(
+        expect.objectContaining({ flags: MessageFlags.Ephemeral }),
+      );
+      expect(cdDefer).not.toHaveBeenCalled();
+
+      // Clear cooldown for card button tests
+      guildConfig.updateImageGen('g1', { ...cfg.imageGen, cooldownSec: 0, ignoredChannelIds: [] });
+
+      // 5. Card img:i2i:1 button opens img:modal_i2i:1 modal prefilled with Strength | Noise & Steps | CFG
+      const cardAttachmentMap = new Map([
+        [
+          'att-1',
+          {
+            url: 'https://cdn.example/card-img.png',
+            contentType: 'image/png',
+            size: png320x180.length,
+            name: 'nai-draw-1.png',
+          },
+        ],
+      ]);
+      const cardAttachments = {
+        size: cardAttachmentMap.size,
+        first: () => cardAttachmentMap.get('att-1'),
+      };
+
+      const i2iShowModal = vi.fn(async () => undefined);
+      await handleImageButton(
+        {
+          guildId: 'g1',
+          channelId: 'c1',
+          customId: 'img:i2i:1',
+          inCachedGuild: () => true,
+          member: makeMember('u1'),
+          user: { id: 'u1', displayName: 'Alice', displayAvatarURL: () => 'https://example.com/a.png' },
+          message: { attachments: cardAttachments },
+          showModal: i2iShowModal,
+        } as unknown as ButtonInteraction,
+        ctx,
+      );
+      const i2iModalJson = (
+        i2iShowModal.mock.calls[0]?.[0] as {
+          toJSON(): {
+            custom_id: string;
+            components: Array<{ components: Array<{ custom_id: string; value?: string }> }>;
+          };
+        }
+      ).toJSON();
+      expect(i2iModalJson.custom_id).toBe('img:modal_i2i:1');
+      const flatInputs = i2iModalJson.components.flatMap((r) => r.components);
+      expect(flatInputs.find((c) => c.custom_id === 'i2iParams')?.value).toBe('0.55 | 0.08');
+      expect(flatInputs.find((c) => c.custom_id === 'params')?.value).toBe('28 | 5');
+
+      // 6. Submitting img:modal_i2i:1 downloads message attachment and submits img2img
+      await handleImageModal(
+        {
+          guildId: 'g1',
+          channelId: 'c1',
+          customId: 'img:modal_i2i:1',
+          inCachedGuild: () => true,
+          member: makeMember('u1'),
+          user: { id: 'u1', displayName: 'Alice', displayAvatarURL: () => 'https://example.com/a.png' },
+          message: { attachments: cardAttachments },
+          fields: {
+            getTextInputValue: (id: string) => {
+              if (id === 'prompt') return '1girl, maid dress, rating:safe';
+              if (id === 'i2iParams') return '0.65 | 0.1';
+              if (id === 'params') return '25 | 5.5';
+              return '';
+            },
+          },
+          deferReply: vi.fn(async () => undefined),
+          editReply: vi.fn(async () => undefined),
+          followUp: vi.fn(async () => undefined),
+        } as unknown as ModalSubmitInteraction,
+        ctx,
+      );
+      expect(generateSpy).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          aspectRatio: '16:9',
+          initImageDataUrl: `data:image/png;base64,${png320x180.toString('base64')}`,
+          strength: 0.65,
+          noise: 0.1,
+          steps: 25,
+          scale: 5.5,
+        }),
+      );
+
+      // 7. 1-click Enhance button img:enhance:1 uses strength=0.35, noise=0, steps=28, and appends -2::upscaled, blurry::
+      await handleImageButton(
+        {
+          guildId: 'g1',
+          channelId: 'c1',
+          customId: 'img:enhance:1',
+          inCachedGuild: () => true,
+          member: makeMember('u1'),
+          user: { id: 'u1', displayName: 'Alice', displayAvatarURL: () => 'https://example.com/a.png' },
+          message: { attachments: cardAttachments },
+          deferReply: vi.fn(async () => undefined),
+          editReply: vi.fn(async () => undefined),
+          followUp: vi.fn(async () => undefined),
+        } as unknown as ButtonInteraction,
+        ctx,
+      );
+      expect(generateSpy).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          prompt: expect.stringContaining('-2::upscaled, blurry::'),
+          initImageDataUrl: `data:image/png;base64,${png320x180.toString('base64')}`,
+          strength: 0.35,
+          noise: 0,
+          steps: 28,
+        }),
+      );
+    } finally {
+      vi.unstubAllGlobals();
+      db.close();
+    }
   });
 });

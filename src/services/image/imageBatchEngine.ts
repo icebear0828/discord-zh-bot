@@ -5,6 +5,8 @@ import { ImageApiError, ImageClient, type NaiCharCaption } from '../imageClient.
 import type { ImagePromptProcessor } from '../imagePromptProcessor.js';
 import type { ImageCooldownAndQueue } from './imageCooldownAndQueue.js';
 import {
+  DEFAULT_IMG2IMG_NOISE,
+  DEFAULT_IMG2IMG_STRENGTH,
   FATAL_ERROR_CODES,
   isValidImageAspectRatio,
   MAX_CHAR_PROMPT_LENGTH,
@@ -116,6 +118,35 @@ export async function runGenerateBatch(
     input.ephemeral !== undefined ? input.ephemeral : userPrefs.ephemeral,
   );
   const effectiveModel = imageCfg.modelOverride?.trim() || deps.imageClient.getDefaultModel();
+  const initImageDataUrl = input.initImageDataUrl?.trim() || undefined;
+  const img2imgStrength = initImageDataUrl
+    ? Number(
+        Math.max(
+          0.01,
+          Math.min(
+            0.99,
+            input.strength !== undefined &&
+              input.strength !== null &&
+              Number.isFinite(input.strength)
+              ? input.strength
+              : DEFAULT_IMG2IMG_STRENGTH,
+          ),
+        ).toFixed(2),
+      )
+    : null;
+  const img2imgNoise = initImageDataUrl
+    ? Number(
+        Math.max(
+          0,
+          Math.min(
+            0.99,
+            input.noise !== undefined && input.noise !== null && Number.isFinite(input.noise)
+              ? input.noise
+              : DEFAULT_IMG2IMG_NOISE,
+          ),
+        ).toFixed(2),
+      )
+    : null;
 
   return new Promise<GenerateImageBatchResult>((resolve) => {
     const execute = async (): Promise<void> => {
@@ -194,8 +225,15 @@ export async function runGenerateBatch(
             seed: itemSeed ?? undefined,
             charCaptions: finalCharCaptions.length > 0 ? finalCharCaptions : undefined,
             useCoords: finalUseCoords ? true : undefined,
+            ...(initImageDataUrl
+              ? {
+                  initImageDataUrl,
+                  strength: img2imgStrength ?? DEFAULT_IMG2IMG_STRENGTH,
+                  noise: img2imgNoise ?? DEFAULT_IMG2IMG_NOISE,
+                }
+              : {}),
             galleryMeta: {
-              source: 'discord-draw',
+              source: initImageDataUrl ? 'discord-img2img' : 'discord-draw',
               authorId: input.userId,
               ...(input.authorName ? { authorName: input.authorName } : {}),
               ...(input.authorAvatarUrl ? { authorAvatar: input.authorAvatarUrl } : {}),
@@ -218,6 +256,8 @@ export async function runGenerateBatch(
             steps,
             scale,
             seed: itemSeed,
+            strength: img2imgStrength,
+            noise: img2imgNoise,
             spoiler,
             ephemeral,
             model: genRes.model,
@@ -264,6 +304,8 @@ export async function runGenerateBatch(
               steps,
               scale,
               seed: itemSeed,
+              strength: img2imgStrength,
+              noise: img2imgNoise,
               spoiler,
               ephemeral,
               model: effectiveModel || 'unknown',
