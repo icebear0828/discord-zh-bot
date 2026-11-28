@@ -17,7 +17,10 @@ import {
   type GenerateImageBatchInput,
   type ImageService,
 } from '../../services/imageService.js';
-import type { InitAttachmentLike } from '../../services/image/imageInitLoader.js';
+import {
+  validateInitAttachmentMeta,
+  type InitAttachmentLike,
+} from '../../services/image/imageInitLoader.js';
 import { createErrorEmbed } from '../../ui/embeds.js';
 import {
   buildImageBatchProgressMessage,
@@ -198,12 +201,64 @@ export function parseModalStrengthAndNoise(
   };
 }
 
-export interface MessageAttachmentCollectionLike {
-  first?: () => InitAttachmentLike | null | undefined;
+export interface EmbedImageLike {
+  url?: string | null;
+  proxyURL?: string | null;
+  proxy_url?: string | null;
+  content_type?: string | null;
 }
 
+export interface MessageEmbedLike {
+  image?: EmbedImageLike | null;
+  data?: {
+    image?: EmbedImageLike | null;
+  } | null;
+}
+
+export interface MessageAttachmentCollectionLike {
+  first?: () => InitAttachmentLike | null | undefined;
+  values?: () => IterableIterator<InitAttachmentLike>;
+}
+
+export interface InitSourceMessageLike {
+  attachments?: MessageAttachmentCollectionLike | null;
+  embeds?: ReadonlyArray<MessageEmbedLike> | null;
+}
+
+/**
+ * Extracts a usable init image from message attachments (batch/spoiler cards)
+ * or embeds[i].image (single non-spoiler cards where Discord embeds `attachment://`).
+ */
 export function pickMessageInitAttachment(
-  attachments: MessageAttachmentCollectionLike | null | undefined,
+  message: InitSourceMessageLike | null | undefined,
 ): InitAttachmentLike | null {
-  return attachments?.first?.() ?? null;
+  const attachments = message?.attachments;
+  if (attachments?.values) {
+    for (const item of attachments.values()) {
+      if (validateInitAttachmentMeta(item).ok) {
+        return item;
+      }
+    }
+  }
+  const firstAtt = attachments?.first?.() ?? null;
+  if (firstAtt) {
+    return firstAtt;
+  }
+
+  for (const embed of message?.embeds ?? []) {
+    const img = embed.image ?? embed.data?.image ?? null;
+    const rawProxy = img?.proxyURL?.trim() || img?.proxy_url?.trim() || null;
+    const rawUrl = img?.url?.trim() || rawProxy || '';
+    if (!rawUrl) continue;
+    const contentType = img?.content_type ?? embed.data?.image?.content_type ?? null;
+    const pathName = rawUrl.split(/[?#]/, 1)[0]?.split('/').pop() || null;
+    return {
+      url: rawUrl,
+      fallbackUrl: rawProxy && rawProxy !== rawUrl ? rawProxy : null,
+      contentType,
+      name: pathName,
+      size: null,
+    };
+  }
+  return null;
 }

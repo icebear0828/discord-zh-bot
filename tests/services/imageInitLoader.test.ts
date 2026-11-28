@@ -182,5 +182,34 @@ describe('imageInitLoader', () => {
       height: 1216,
       inferredAspectRatio: '2:3',
     });
+
+    // Embed-sourced CDN image (no contentType, no name, signed query string, proxyURL fallback)
+    const embedSignedUrl =
+      'https://cdn.discordapp.com/attachments/1/2/nai-draw-277.png?ex=6b0bdf9c&is=6b0a8e1c&hm=abc&';
+    const embedProxyUrl =
+      'https://media.discordapp.net/attachments/1/2/nai-draw-277.png?ex=6b0bdf9c&is=6b0a8e1c&hm=abc&';
+    expect(validateInitAttachmentMeta({ url: embedSignedUrl })).toEqual({
+      ok: true,
+      mime: 'image/png',
+    });
+
+    const fallbackFetch = vi.fn(async (reqUrl: string | URL | Request) => {
+      if (String(reqUrl).includes('cdn.discordapp.com')) {
+        return new Response('not found', { status: 404 });
+      }
+      return new Response(validPng, { status: 200 });
+    });
+    const fallbackRes = await downloadInitImageAttachment(
+      { url: embedSignedUrl, fallbackUrl: embedProxyUrl },
+      fallbackFetch as unknown as typeof fetch,
+    );
+    expect(fallbackFetch).toHaveBeenCalledTimes(2);
+    expect(fallbackRes).toEqual({
+      ok: true,
+      dataUrl: `data:image/png;base64,${validPng.toString('base64')}`,
+      width: 832,
+      height: 1216,
+      inferredAspectRatio: '2:3',
+    });
   });
 });

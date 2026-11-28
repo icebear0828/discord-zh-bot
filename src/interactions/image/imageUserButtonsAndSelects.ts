@@ -259,7 +259,7 @@ export async function handleImageButton(
   }
 
   if (action === 'i2i') {
-    const att = pickMessageInitAttachment(interaction.message?.attachments);
+    const att = pickMessageInitAttachment(interaction.message);
     const metaCheck = att ? validateInitAttachmentMeta(att) : null;
     if (!att || !metaCheck?.ok) {
       await interaction.reply({
@@ -289,7 +289,7 @@ export async function handleImageButton(
       return;
     }
 
-    const att = pickMessageInitAttachment(interaction.message?.attachments);
+    const att = pickMessageInitAttachment(interaction.message);
     if (!att) {
       await interaction.reply({
         embeds: [

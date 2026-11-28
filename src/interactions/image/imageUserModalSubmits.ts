@@ -259,7 +259,7 @@ export async function handleImageModal(
       return;
     }
 
-    const att = pickMessageInitAttachment(interaction.message?.attachments);
+    const att = pickMessageInitAttachment(interaction.message);
     if (!att) {
       await interaction.reply({
         embeds: [

@@ -28,6 +28,7 @@ const OPUS_RATIO_TABLE: ReadonlyArray<{ ratio: ImageAspectRatio; value: number }
 
 export interface InitAttachmentLike {
   url: string;
+  fallbackUrl?: string | null;
   contentType?: string | null;
   size?: number | null;
   name?: string | null;
@@ -52,16 +53,26 @@ export type DownloadInitImageResult =
     }
   | { ok: false; errorMessage: string };
 
-function normalizeMime(rawMime: string | null | undefined, fileName?: string | null): string | null {
+function extractPathnameLower(rawUrl: string | null | undefined): string {
+  return (rawUrl ?? '').trim().split(/[?#]/, 1)[0]?.toLowerCase() ?? '';
+}
+
+function normalizeMime(
+  rawMime: string | null | undefined,
+  fileName?: string | null,
+  rawUrl?: string | null,
+): string | null {
   const cleaned = rawMime?.split(';')[0]?.trim().toLowerCase() ?? '';
   if (cleaned === 'image/jpg') return 'image/jpeg';
   if (cleaned && ALLOWED_INIT_IMAGE_MIMES.has(cleaned)) return cleaned;
-  if (cleaned) return cleaned;
+  if (cleaned && cleaned !== 'application/octet-stream') return cleaned;
 
-  const lowerName = fileName?.trim().toLowerCase() ?? '';
-  for (const [ext, mime] of Object.entries(EXT_TO_MIME)) {
-    if (lowerName.endsWith(ext)) {
-      return mime;
+  for (const candidate of [extractPathnameLower(fileName), extractPathnameLower(rawUrl)]) {
+    if (!candidate) continue;
+    for (const [ext, mime] of Object.entries(EXT_TO_MIME)) {
+      if (candidate.endsWith(ext)) {
+        return mime;
+      }
     }
   }
   return null;
@@ -232,7 +243,7 @@ export function validateInitAttachmentMeta(
     };
   }
 
-  const mime = normalizeMime(attachment.contentType, attachment.name);
+  const mime = normalizeMime(attachment.contentType, attachment.name, attachment.url);
   if (!mime || !ALLOWED_INIT_IMAGE_MIMES.has(mime)) {
     return {
       ok: false,
@@ -264,19 +275,39 @@ export async function downloadInitImageAttachment(
     };
   }
 
+  const candidateUrls = [url];
+  const fallbackUrl = attachment.fallbackUrl?.trim() ?? '';
+  if (
+    fallbackUrl &&
+    fallbackUrl !== url &&
+    (fallbackUrl.startsWith('https://') || fallbackUrl.startsWith('http://'))
+  ) {
+    candidateUrls.push(fallbackUrl);
+  }
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), INIT_IMAGE_FETCH_TIMEOUT_MS);
 
   try {
-    const res = await fetchFn(url, { signal: controller.signal });
-    if (!res.ok) {
-      return {
-        ok: false,
-        errorMessage: `下载垫图失败（HTTP ${res.status}），请稍后重试或重新上传图片。`,
-      };
+    let lastStatus = 0;
+    let buf: Buffer | null = null;
+
+    for (const targetUrl of candidateUrls) {
+      const res = await fetchFn(targetUrl, { signal: controller.signal });
+      if (!res.ok) {
+        lastStatus = res.status;
+        continue;
+      }
+      buf = Buffer.from(await res.arrayBuffer());
+      break;
     }
 
-    const buf = Buffer.from(await res.arrayBuffer());
+    if (!buf) {
+      return {
+        ok: false,
+        errorMessage: `下载垫图失败（HTTP ${lastStatus}），请稍后重试或重新上传图片。`,
+      };
+    }
     if (buf.length === 0) {
       return {
         ok: false,

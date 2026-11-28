@@ -1429,6 +1429,90 @@ describe('/draw command & img:* interactions', () => {
           steps: 28,
         }),
       );
+
+      // 8. Real Discord non-spoiler card shape: empty attachments[], image moved by Discord into embeds[0].image
+      const emptyAttachments = { size: 0, first: () => undefined };
+      const embedCardEmbeds = [
+        {
+          image: {
+            url: 'https://cdn.discordapp.com/attachments/g1/c1/nai-draw-1.png?ex=6b0bdf9c&hm=xyz&',
+            proxyURL:
+              'https://media.discordapp.net/attachments/g1/c1/nai-draw-1.png?ex=6b0bdf9c',
+          },
+        },
+      ];
+
+      const embedI2iModalSpy = vi.fn(async () => undefined);
+      await handleImageButton(
+        {
+          guildId: 'g1',
+          channelId: 'c1',
+          customId: 'img:i2i:1',
+          inCachedGuild: () => true,
+          member: makeMember('u1'),
+          user: { id: 'u1', displayName: 'Alice', displayAvatarURL: () => 'https://example.com/a.png' },
+          message: { attachments: emptyAttachments, embeds: embedCardEmbeds },
+          showModal: embedI2iModalSpy,
+        } as unknown as ButtonInteraction,
+        ctx,
+      );
+      expect(embedI2iModalSpy).toHaveBeenCalledTimes(1);
+
+      await handleImageModal(
+        {
+          guildId: 'g1',
+          channelId: 'c1',
+          customId: 'img:modal_i2i:1',
+          inCachedGuild: () => true,
+          member: makeMember('u1'),
+          user: { id: 'u1', displayName: 'Alice', displayAvatarURL: () => 'https://example.com/a.png' },
+          message: { attachments: emptyAttachments, embeds: embedCardEmbeds },
+          fields: {
+            getTextInputValue: (id: string) => {
+              if (id === 'prompt') return '1girl, kimonos, rating:safe';
+              if (id === 'i2iParams') return '0.5 | 0';
+              if (id === 'params') return '28 | 5';
+              return '';
+            },
+          },
+          deferReply: vi.fn(async () => undefined),
+          editReply: vi.fn(async () => undefined),
+          followUp: vi.fn(async () => undefined),
+        } as unknown as ModalSubmitInteraction,
+        ctx,
+      );
+      expect(generateSpy).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          aspectRatio: '16:9',
+          initImageDataUrl: `data:image/png;base64,${png320x180.toString('base64')}`,
+          strength: 0.5,
+          noise: 0,
+        }),
+      );
+
+      await handleImageButton(
+        {
+          guildId: 'g1',
+          channelId: 'c1',
+          customId: 'img:enhance:1',
+          inCachedGuild: () => true,
+          member: makeMember('u1'),
+          user: { id: 'u1', displayName: 'Alice', displayAvatarURL: () => 'https://example.com/a.png' },
+          message: { attachments: emptyAttachments, embeds: embedCardEmbeds },
+          deferReply: vi.fn(async () => undefined),
+          editReply: vi.fn(async () => undefined),
+          followUp: vi.fn(async () => undefined),
+        } as unknown as ButtonInteraction,
+        ctx,
+      );
+      expect(generateSpy).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          prompt: expect.stringContaining('-2::upscaled, blurry::'),
+          initImageDataUrl: `data:image/png;base64,${png320x180.toString('base64')}`,
+          strength: 0.35,
+          noise: 0,
+        }),
+      );
     } finally {
       vi.unstubAllGlobals();
       db.close();
